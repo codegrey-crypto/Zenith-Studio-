@@ -1,0 +1,6 @@
+{
+  "name": "Zenith Studio",
+  "description": "Professional-grade mobile graphic and compositing environment with Ibis Paint canvas-centricity and Alight Motion non-destructive effects.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

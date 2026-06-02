@@ -1,0 +1,12729 @@
+package com.example.studio.ui
+
+import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateRotation
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.studio.model.*
+import com.example.ui.theme.*
+import java.util.UUID
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.studio.viewmodel.WorkspaceViewModel
+import com.example.studio.database.ProjectEntity
+import com.example.studio.model.LayerSerializer
+import android.util.SparseArray
+import android.util.SparseIntArray
+import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.asAndroidBitmap
+
+val gradientPresets = listOf(
+    // 0. Sunset Blaze
+    listOf(Color(0xFF3F2B96), Color(0xFFA8C0FF), Color(0xFFFF8A00)),
+    // 1. Cosmic Neon
+    listOf(Color(0xFFE040FB), Color(0xFF00E5FF), Color(0xFFFFEA00)),
+    // 2. Sunset Wave (Redesigned warm, rich oranges and fiery ambers)
+    listOf(Color(0xFFFF3D00), Color(0xFFFF9100), Color(0xFFFFEA00)),
+    // 3. Sweet Candy
+    listOf(Color(0xFFEC008C), Color(0xFFFC6767)),
+    // 4. Amber Embers (Redesigned deep gold, electric orange, and amber highlights)
+    listOf(Color(0xFFE65100), Color(0xFFF57C00), Color(0xFFFFD54F)),
+    // 5. Gold Luxury
+    listOf(Color(0xFFF12711), Color(0xFFF5AF19)),
+    // 6. Cyberpunk Noir
+    listOf(Color(0xFF200122), Color(0xFF6F0000))
+)
+
+fun interpolateMultiColor(colors: List<androidx.compose.ui.graphics.Color>, fraction: Float): androidx.compose.ui.graphics.Color {
+    if (colors.isEmpty()) return androidx.compose.ui.graphics.Color.Transparent
+    if (colors.size == 1) return colors.first()
+    val f = fraction.coerceIn(0f, 1f)
+    val segmentCount = colors.size - 1
+    val segmentFloat = f * segmentCount
+    val index = segmentFloat.toInt().coerceIn(0, segmentCount - 1)
+    val localFraction = segmentFloat - index
+    val c1 = colors[index]
+    val c2 = colors[index + 1]
+    return androidx.compose.ui.graphics.Color(
+        red = c1.red + (c2.red - c1.red) * localFraction,
+        green = c1.green + (c2.green - c1.green) * localFraction,
+        blue = c1.blue + (c2.blue - c1.blue) * localFraction,
+        alpha = c1.alpha + (c2.alpha - c1.alpha) * localFraction
+    )
+}
+
+private fun getLayerGeometryHash(layer: StudioLayer): Int {
+    var result = layer.id.hashCode()
+    result = 31 * result + layer.type.ordinal
+    result = 31 * result + java.lang.Float.floatToIntBits(layer.width)
+    result = 31 * result + java.lang.Float.floatToIntBits(layer.height)
+    result = 31 * result + java.lang.Float.floatToIntBits(layer.cornerRadius)
+    result = 31 * result + layer.polygonEdges
+    result = 31 * result + java.lang.Float.floatToIntBits(layer.starInnerRadiusRatio)
+    result = 31 * result + java.lang.Float.floatToIntBits(layer.strokeThickness)
+    if (layer.brushPoints.isNotEmpty()) {
+        result = 31 * result + layer.brushPoints.hashCode()
+    }
+    return result
+}
+
+private fun rotateOffset(offset: Offset, degrees: Float): Offset {
+    val rad = Math.toRadians(degrees.toDouble())
+    val cos = Math.cos(rad)
+    val sin = Math.sin(rad)
+    val rx = offset.x * cos - offset.y * sin
+    val ry = offset.x * sin + offset.y * cos
+    return Offset(rx.toFloat(), ry.toFloat())
+}
+
+private fun screenToCanvas(
+    screenPos: Offset,
+    viewportWidth: Float,
+    viewportHeight: Float,
+    canvasPanX: Float,
+    canvasPanY: Float,
+    canvasRotation: Float,
+    totalScale: Float,
+    canvasWidth: Float,
+    canvasHeight: Float
+): Offset {
+    val p3 = Offset(
+        screenPos.x - (viewportWidth / 2f + canvasPanX),
+        screenPos.y - (viewportHeight / 2f + canvasPanY)
+    )
+    val p2 = rotateOffset(p3, -canvasRotation)
+    val p1 = p2 / totalScale.coerceAtLeast(0.001f)
+    return Offset(
+        p1.x + canvasWidth / 2f,
+        p1.y + canvasHeight / 2f
+    )
+}
+
+private fun screenDeltaToCanvas(
+    delta: Offset,
+    canvasRotation: Float,
+    totalScale: Float
+): Offset {
+    val rotated = rotateOffset(delta, -canvasRotation)
+    return rotated / totalScale.coerceAtLeast(0.001f)
+}
+
+private fun canvasToLayerLocal(canvasPos: Offset, layer: StudioLayer): Offset {
+    // 1. Translation: shift relative to layer's top-left position
+    val shifted = Offset(canvasPos.x - layer.positionX, canvasPos.y - layer.positionY)
+    
+    // 2. Rotation around pivot (layer.width * layer.pivotX, layer.height * layer.pivotY)
+    val pivot = Offset(layer.width * layer.pivotX, layer.height * layer.pivotY)
+    val toPivot = shifted - pivot
+    val unrotated = rotateOffset(toPivot, -layer.rotation)
+    val posAfterRotation = unrotated + pivot
+    
+    // 3. Scaling around pivot
+    val unscaledX = (posAfterRotation.x - pivot.x) / layer.scaleX.coerceAtLeast(0.01f) + pivot.x
+    val unscaledY = (posAfterRotation.y - pivot.y) / layer.scaleY.coerceAtLeast(0.01f) + pivot.y
+    
+    return Offset(unscaledX, unscaledY)
+}
+
+class CappedHistoryStack(private val maxLimit: Int = 40) {
+    val list = androidx.compose.runtime.mutableStateListOf<List<com.example.studio.model.StudioLayer>>()
+    
+    val size: Int get() = list.size
+    
+    fun isNotEmpty(): Boolean = list.isNotEmpty()
+    fun isEmpty(): Boolean = list.isEmpty()
+    
+    fun add(element: List<com.example.studio.model.StudioLayer>) {
+        list.add(element)
+        while (list.size > maxLimit) {
+            list.removeAt(0)
+        }
+    }
+    
+    fun removeAt(index: Int): List<com.example.studio.model.StudioLayer> {
+        return list.removeAt(index)
+    }
+    
+    fun clear() {
+        list.clear()
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WorkspaceScreen(modifier: Modifier = Modifier) {
+    val workspaceViewModel: WorkspaceViewModel = viewModel()
+    val previousProjects by workspaceViewModel.previousProjects.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+
+    var projectId by remember { mutableStateOf("") }
+    var projectName by remember { mutableStateOf("") }
+    var showRenameProjectDialog by remember { mutableStateOf(false) }
+    var projectRenameValue by remember { mutableStateOf("") }
+
+    // Initial State Setup - Empty to allow user manually adding anything they want, Canvas-style!
+    var layers by remember {
+        mutableStateOf(emptyList<StudioLayer>())
+    }
+
+    var selectedLayerId by remember { mutableStateOf("") }
+    var activeTool by remember { mutableStateOf("Brush") } // Brush, Move, Shapes, Text
+
+    val undoStack = remember { CappedHistoryStack(40) }
+    val redoStack = remember { CappedHistoryStack(40) }
+
+    // State managers for dynamic brush parameters
+    var brushSize by remember { mutableStateOf(16f) }
+    var brushOpacity by remember { mutableStateOf(1.0f) }
+    var brushColor by remember { mutableStateOf(Color(0xFFFFB300)) }
+    var brushSmoothing by remember { mutableStateOf(true) }
+    var brushPresetIndex by remember { mutableStateOf(0) }
+    var currentStrokePoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    val sharedTransformMatrix = remember { androidx.compose.ui.graphics.Matrix() }
+    var activeBezierPointIndex by remember { mutableStateOf(-1) }
+
+    // Floating UI selector for adding specific shapes
+    var showAddShapeDialog by remember { mutableStateOf(false) }
+    var showBrushesLibrary by remember { mutableStateOf(false) }
+
+    var rulerEnabled by remember { mutableStateOf(false) }
+    var rulerOrientation by remember { mutableStateOf("Horizontal") }
+    var rulerPosition by remember { mutableStateOf(300f) }
+    var gridEnabled by remember { mutableStateOf(false) }
+    var showExportResolutionDialog by remember { mutableStateOf(false) }
+
+    var rulerAngle by remember { mutableStateOf(0f) }
+    var rulerLocked by remember { mutableStateOf(false) }
+    var snapToRuler by remember { mutableStateOf(true) }
+    var gridColumns by remember { mutableStateOf(8) }
+    var gridRows by remember { mutableStateOf(8) }
+
+    var fontSearchQuery by remember { mutableStateOf("") }
+    var selectedCategoryFilter by remember { mutableStateOf("All") }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val imagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        uri?.let {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    it,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+            }
+            undoStack.add(layers)
+            redoStack.clear()
+            val newL = com.example.studio.model.StudioLayer(
+                name = "Imported Image",
+                type = com.example.studio.model.LayerType.IMAGE_CARD,
+                positionX = 150f,
+                positionY = 200f,
+                width = 400f,
+                height = 400f,
+                baseColor = Color.White,
+                imageUri = it.toString()
+            )
+            layers = listOf(newL) + layers
+            selectedLayerId = newL.id
+            showAddShapeDialog = false
+        }
+    }
+
+    val fontPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        uri?.let {
+            try {
+                val contentResolver = context.contentResolver
+                var displayName = "imported_font_${System.currentTimeMillis()}.ttf"
+                val cursor = contentResolver.query(it, null, null, null, null)
+                cursor?.use { c ->
+                    if (c.moveToFirst()) {
+                        val nameIndex = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex != -1) {
+                            val name = c.getString(nameIndex)
+                            if (!name.isNullOrEmpty()) {
+                                displayName = name
+                            }
+                        }
+                    }
+                }
+                
+                val fontsDir = java.io.File(context.filesDir, "fonts")
+                if (!fontsDir.exists()) {
+                    fontsDir.mkdirs()
+                }
+                val destFile = java.io.File(fontsDir, displayName)
+                contentResolver.openInputStream(it)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                
+                android.widget.Toast.makeText(context, "Font imported: ${destFile.nameWithoutExtension}", android.widget.Toast.LENGTH_SHORT).show()
+                
+                if (selectedLayerId.isNotEmpty()) {
+                    val targetL = layers.find { it.id == selectedLayerId }
+                    if (targetL != null && targetL.type == LayerType.TEXT) {
+                        val cleanName = destFile.nameWithoutExtension.replace("_", " ").replace("-", " ")
+                        undoStack.add(layers)
+                        redoStack.clear()
+                        layers = layers.map { l ->
+                            if (l.id == selectedLayerId) {
+                                l.copy(
+                                    fontPath = destFile.absolutePath,
+                                    fontFamilyName = cleanName
+                                )
+                            } else l
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                android.widget.Toast.makeText(context, "Failed to import font", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val imageBitmapCache = remember { mutableStateMapOf<String, androidx.compose.ui.graphics.ImageBitmap>() }
+    val loadingUris = remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(layers) {
+        val currentImageUris = layers.filter { it.type == LayerType.IMAGE_CARD && !it.imageUri.isNullOrEmpty() }
+            .mapNotNull { it.imageUri }
+            .toSet()
+        val cacheKeys = imageBitmapCache.keys.toList()
+        cacheKeys.forEach { key ->
+            if (key !in currentImageUris) {
+                imageBitmapCache.remove(key)
+            }
+        }
+        layers.forEach { layer ->
+            if (layer.type == LayerType.IMAGE_CARD && !layer.imageUri.isNullOrEmpty()) {
+                val uriStr = layer.imageUri
+                if (!imageBitmapCache.containsKey(uriStr) && !loadingUris.value.contains(uriStr)) {
+                    loadingUris.value = loadingUris.value + uriStr
+                    val loaded = withContext(Dispatchers.IO) {
+                        try {
+                            val uri = android.net.Uri.parse(uriStr)
+                            // 1. Get image boundaries safely
+                            val options = android.graphics.BitmapFactory.Options().apply {
+                                inJustDecodeBounds = true
+                            }
+                            context.contentResolver.openInputStream(uri)?.use { stream ->
+                                android.graphics.BitmapFactory.decodeStream(stream, null, options)
+                            }
+                            // 2. Limit maximum dimension to 1024px to prevent OutOfMemoryError
+                            val maxDimension = 1024
+                            var inSampleSize = 1
+                            if (options.outWidth > maxDimension || options.outHeight > maxDimension) {
+                                val halfWidth = options.outWidth / 2
+                                val halfHeight = options.outHeight / 2
+                                while ((halfWidth / inSampleSize) >= maxDimension || (halfHeight / inSampleSize) >= maxDimension) {
+                                    inSampleSize *= 2
+                                }
+                            }
+                            // 3. Decode safely with proper inSampleSize
+                            val finalOptions = android.graphics.BitmapFactory.Options().apply {
+                                this.inSampleSize = inSampleSize
+                            }
+                            val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+                                android.graphics.BitmapFactory.decodeStream(stream, null, finalOptions)
+                            }
+                            bitmap?.asImageBitmap()
+                        } catch (t: Throwable) {
+                            null
+                        }
+                    }
+                    if (loaded != null) {
+                        imageBitmapCache[uriStr] = loaded
+                    }
+                    loadingUris.value = loadingUris.value - uriStr
+                }
+            }
+        }
+    }
+
+    var scaleFactor by remember { mutableStateOf(1.0f) }
+    var canvasPanX by remember { mutableStateOf(0f) }
+    var canvasPanY by remember { mutableStateOf(0f) }
+    var canvasRotation by remember { mutableStateOf(0f) }
+
+    // Collapsible Panel States
+    var isLayersPanelVisible by remember { mutableStateOf(true) }
+    var isBottomPanelVisible by remember { mutableStateOf(true) }
+    var showEffectsGallery by remember { mutableStateOf(false) }
+
+    // Layer Renaming States
+    var renamingLayerId by remember { mutableStateOf<String?>(null) }
+    var renamingLayerName by remember { mutableStateOf("") }
+
+    // Selected effect ID mapping
+    val selectedLayer = layers.find { it.id == selectedLayerId }
+    var selectedEffectIndex by remember { mutableStateOf(0) }
+
+    // Optimization cached states to avoid frame GC pressure inside DrawScope loops
+    val pathCache = remember { SparseArray<Path>() }
+    val pathPointsCountCache = remember { SparseIntArray() }
+    val dashEffect8 = remember { PathEffect.dashPathEffect(floatArrayOf(8f, 8f)) }
+    val dashEffect12 = remember { PathEffect.dashPathEffect(floatArrayOf(12f, 8f)) }
+
+    // Canvas size initialization state variables
+    var isProjectInitialized by remember { mutableStateOf(false) }
+    var canvasWidthInput by remember { mutableStateOf("1080") }
+    var canvasHeightInput by remember { mutableStateOf("1350") }
+    var selectedPresetIndex by remember { mutableStateOf(0) }
+    
+    var showExportSettingsDialog by remember { mutableStateOf(false) }
+    var exportMultiplier by remember { mutableFloatStateOf(1.0f) }
+    var exportIsCmyk by remember { mutableStateOf(false) }
+    
+    var canvasWidth by remember { mutableStateOf(1080f) }
+    var canvasHeight by remember { mutableStateOf(1350f) }
+
+    // Background Auto-Save Side-Effect
+    LaunchedEffect(layers, canvasWidth, canvasHeight, projectName, projectId) {
+        if (isProjectInitialized && projectId.isNotEmpty()) {
+            kotlinx.coroutines.delay(1000)
+            workspaceViewModel.saveProject(
+                id = projectId,
+                name = projectName,
+                width = canvasWidth,
+                height = canvasHeight,
+                layers = layers
+            )
+        }
+    }
+
+    var viewportWidth by remember { mutableStateOf(1200f) }
+    var viewportHeight by remember { mutableStateOf(1200f) }
+
+    val fitScale = remember(viewportWidth, viewportHeight, canvasWidth, canvasHeight) {
+        val scaleW = viewportWidth / canvasWidth
+        val scaleH = viewportHeight / canvasHeight
+        minOf(scaleW, scaleH) * 0.85f // 15% safety margin on mobile
+    }
+    val totalScale = fitScale * scaleFactor
+    
+    val canvasX = (viewportWidth - canvasWidth * totalScale) / 2f
+    val canvasY = (viewportHeight - canvasHeight * totalScale) / 2f
+
+    val currentLayersState = rememberUpdatedState(layers)
+    val currentCanvasXState = rememberUpdatedState(canvasX)
+    val currentCanvasYState = rememberUpdatedState(canvasY)
+    val currentTotalScaleState = rememberUpdatedState(totalScale)
+    val currentActiveToolState = rememberUpdatedState(activeTool)
+    val currentSelectedLayerIdState = rememberUpdatedState(selectedLayerId)
+
+    val currentCanvasPanXState = rememberUpdatedState(canvasPanX)
+    val currentCanvasPanYState = rememberUpdatedState(canvasPanY)
+    val currentCanvasRotationState = rememberUpdatedState(canvasRotation)
+    val currentViewportWidthState = rememberUpdatedState(viewportWidth)
+    val currentViewportHeightState = rememberUpdatedState(viewportHeight)
+    val currentCanvasWidthState = rememberUpdatedState(canvasWidth)
+    val currentCanvasHeightState = rememberUpdatedState(canvasHeight)
+
+    val executeArtworkExport: (Float, Boolean) -> Unit = { mult, cmyk ->
+        android.widget.Toast.makeText(context, "Exporting high-resolution artwork to Gallery...", android.widget.Toast.LENGTH_SHORT).show()
+        scope.launch {
+            try {
+                val targetW = canvasWidth * mult
+                val targetH = canvasHeight * mult
+                
+                val exportedBitmap = withContext(Dispatchers.Default) {
+                    exportCanvasToBitmap(
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight,
+                        layers = layers,
+                        imageBitmapCache = imageBitmapCache,
+                        targetWidth = targetW,
+                        targetHeight = targetH,
+                        isCmyk = cmyk
+                    )
+                }
+                
+                val filename = (if (projectName.isBlank()) "Masterpiece" else projectName) + "_" + (if (cmyk) "CMYK_" else "RGB_") + targetW.toInt() + "x" + targetH.toInt() + "_" + System.currentTimeMillis()
+                val uri = withContext(Dispatchers.IO) {
+                    saveBitmapToGallery(context, exportedBitmap, filename)
+                }
+                
+                if (uri != null) {
+                    android.widget.Toast.makeText(context, "Exported successfully to Public Pictures (${targetW.toInt()}x${targetH.toInt()})!", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    android.widget.Toast.makeText(context, "Export failed. Please check device state.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                android.widget.Toast.makeText(context, "Export error: ${e.localizedMessage ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val onExportArtwork: () -> Unit = {
+        showExportSettingsDialog = true
+    }
+
+    if (!isProjectInitialized) {
+        CanvasSetupScreen(
+            canvasWidthInput = canvasWidthInput,
+            canvasHeightInput = canvasHeightInput,
+            selectedPresetIndex = selectedPresetIndex,
+            onWidthChange = { canvasWidthInput = it },
+            onHeightChange = { canvasHeightInput = it },
+            onPresetSelect = { index ->
+                selectedPresetIndex = index
+                when (index) {
+                    0 -> { canvasWidthInput = "1080"; canvasHeightInput = "1350" } // Instagram Portrait
+                    1 -> { canvasWidthInput = "1080"; canvasHeightInput = "1920" } // Instagram Story
+                    2 -> { canvasWidthInput = "1080"; canvasHeightInput = "1080" } // Square Post
+                    3 -> { canvasWidthInput = "1920"; canvasHeightInput = "1080" } // FHD Landscape
+                    4 -> { canvasWidthInput = "1200"; canvasHeightInput = "1600" } // Modern Poster
+                    5 -> { /* Custom size - let user adjust manually */ }
+                }
+            },
+            onInitialize = {
+                val w = canvasWidthInput.toFloatOrNull() ?: 1080f
+                val h = canvasHeightInput.toFloatOrNull() ?: 1350f
+                val finalW = w.coerceIn(100f, 8000f)
+                val finalH = h.coerceIn(100f, 8000f)
+                canvasWidth = finalW
+                canvasHeight = finalH
+                val nid = UUID.randomUUID().toString()
+                projectId = nid
+                projectName = "Design ${finalW.toInt()}x${finalH.toInt()}"
+                layers = emptyList()
+                isProjectInitialized = true
+                workspaceViewModel.saveProject(nid, projectName, finalW, finalH, emptyList())
+            },
+            previousProjects = previousProjects,
+            onLoadProject = { proj ->
+                projectId = proj.id
+                projectName = proj.name
+                canvasWidth = proj.width
+                canvasHeight = proj.height
+                canvasWidthInput = proj.width.toInt().toString()
+                canvasHeightInput = proj.height.toInt().toString()
+                scope.launch {
+                    val decoded = withContext(Dispatchers.Default) {
+                        LayerSerializer.deserialize(proj.layersJson)
+                    }
+                    layers = decoded
+                    selectedLayerId = if (decoded.isNotEmpty()) decoded[0].id else ""
+                    isProjectInitialized = true
+                }
+            },
+            onDeleteProject = { id ->
+                workspaceViewModel.deleteProject(id)
+            },
+            onRenameProject = { proj, newName ->
+                workspaceViewModel.renameProject(proj, newName)
+            }
+        )
+    } else {
+        // App Workspace UI Grid Root
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(DarkOnyx)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+        ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // -- TOP PLATFORM CONTROL SHELF --
+            TopControlShelf(
+                activeTool = activeTool,
+                onToolChange = { activeTool = it },
+                onUndo = {
+                    if (undoStack.isNotEmpty()) {
+                        val prev = undoStack.removeAt(undoStack.size - 1)
+                        redoStack.add(layers)
+                        layers = prev
+                    }
+                },
+                onRedo = {
+                    if (redoStack.isNotEmpty()) {
+                        val next = redoStack.removeAt(redoStack.size - 1)
+                        undoStack.add(layers)
+                        layers = next
+                    }
+                },
+                canUndo = undoStack.isNotEmpty(),
+                canRedo = redoStack.isNotEmpty(),
+                layersPanelVisible = isLayersPanelVisible,
+                onToggleLayersPanel = { isLayersPanelVisible = !isLayersPanelVisible },
+                bottomPanelVisible = isBottomPanelVisible,
+                onToggleBottomPanel = { isBottomPanelVisible = !isBottomPanelVisible },
+                onExitWorkspace = {
+                    // Reset workspace when exiting to main menu
+                    isProjectInitialized = false
+                    projectId = ""
+                    projectName = ""
+                    layers = emptyList()
+                    selectedLayerId = ""
+                    activeTool = "Brush"
+                    imageBitmapCache.clear()
+                },
+                onExportCanvas = onExportArtwork
+            )
+
+            if (showRenameProjectDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRenameProjectDialog = false },
+                    title = { Text("Rename Design Masterpiece", color = TextPrimary, style = Typography.titleMedium) },
+                    text = {
+                        OutlinedTextField(
+                            value = projectRenameValue,
+                            onValueChange = { projectRenameValue = it },
+                            label = { Text("Design Title", style = Typography.bodyMedium) },
+                            textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = IndustrialAmber,
+                                focusedLabelColor = IndustrialAmber,
+                                cursorColor = IndustrialAmber,
+                                unfocusedBorderColor = HighslateOutline,
+                                unfocusedLabelColor = TextSecondary
+                            ),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                if (projectRenameValue.isNotBlank()) {
+                                    projectName = projectRenameValue
+                                }
+                                showRenameProjectDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
+                        ) {
+                            Text("SAVE", color = DarkOnyx, fontWeight = FontWeight.Bold, style = Typography.bodyMedium)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRenameProjectDialog = false }) {
+                            Text("CANCEL", color = TextSecondary, style = Typography.bodyMedium)
+                        }
+                    },
+                    containerColor = SlatePanel,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+
+            // -- MAIN CREATIVE CORE GRID --
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Leftside Dock Panel: Compact dynamic utility toolstrip
+                LeftsideToolDock(
+                    activeTool = activeTool,
+                    onSelectTool = {
+                        activeTool = it
+                        if (it == "Shapes") {
+                            showAddShapeDialog = true
+                        } else if (it == "Text") {
+                            val newL = StudioLayer(
+                                name = "Text Layer",
+                                type = LayerType.TEXT,
+                                positionX = 350f,
+                                positionY = 450f,
+                                width = 350f,
+                                height = 100f,
+                                baseColor = Color.White,
+                                textContent = "DOUBLE TAP TO EDIT"
+                            )
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = listOf(newL) + layers
+                            selectedLayerId = newL.id
+                            activeTool = "Move"
+                        } else if (it == "Grid") {
+                            gridEnabled = true
+                            isBottomPanelVisible = true
+                        } else if (it == "Ruler") {
+                            rulerEnabled = true
+                            isBottomPanelVisible = true
+                        }
+                    }
+                )
+
+                // Central Workspace Canvas Container
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF0F0F12))
+                        .border(1.dp, HighslateOutline, RoundedCornerShape(12.dp))
+                        .onSizeChanged { size ->
+                            viewportWidth = size.width.toFloat()
+                            viewportHeight = size.height.toFloat()
+                        }
+                        .testTag("canvas_viewport"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Chess board / transparency checker grid background simulation
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .drawBehind {
+                                // Super-performant, single-draw background fill for the entire workspace
+                                drawRect(
+                                    color = Color(0xFF0C0C0E),
+                                    topLeft = Offset.Zero,
+                                    size = size
+                                )
+                            }
+                            // Single unified pointer input block combining Tap selection, multi-touch Pan/Zoom/Rotate, and single-finger Layer Move/Resize/Draw
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    var dragMode: String? = null
+                                    var isTransforming = false
+                                    var hasMovedPastSlop = false
+                                    val touchSlop = viewConfiguration.touchSlop
+                                    var accumOffset = Offset.Zero
+
+                                    val ts = currentTotalScaleState.value
+                                    val lyrs = currentLayersState.value
+                                    val selId = currentSelectedLayerIdState.value
+                                    val tool = currentActiveToolState.value
+
+                                    val localStartOffset = screenToCanvas(
+                                        screenPos = down.position,
+                                        viewportWidth = currentViewportWidthState.value,
+                                        viewportHeight = currentViewportHeightState.value,
+                                        canvasPanX = currentCanvasPanXState.value,
+                                        canvasPanY = currentCanvasPanYState.value,
+                                        canvasRotation = currentCanvasRotationState.value,
+                                        totalScale = ts,
+                                        canvasWidth = currentCanvasWidthState.value,
+                                        canvasHeight = currentCanvasHeightState.value
+                                    )
+                                    val localStartX = localStartOffset.x
+                                    val localStartY = localStartOffset.y
+
+                                    var lastEvent = down
+
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val activePointers = event.changes.filter { it.pressed }
+
+                                        if (activePointers.size >= 2) {
+                                            isTransforming = true
+                                            dragMode = null
+
+                                            val zoom = event.calculateZoom()
+                                            val rotation = event.calculateRotation()
+                                            val pan = event.calculatePan()
+
+                                            if (zoom != 1f) {
+                                                scaleFactor = (scaleFactor * zoom).coerceIn(0.3f, 5.0f)
+                                            }
+                                            if (rotation != 0f) {
+                                                canvasRotation = (canvasRotation + rotation) % 360f
+                                            }
+                                            if (pan != Offset.Zero) {
+                                                canvasPanX += pan.x
+                                                canvasPanY += pan.y
+                                            }
+
+                                            event.changes.forEach { it.consume() }
+                                        } else if (activePointers.size == 1 && !isTransforming) {
+                                            val pointer = activePointers[0]
+                                            val position = pointer.position
+                                            val prevPosition = pointer.previousPosition
+                                            val diff = position - prevPosition
+
+                                            accumOffset += diff
+
+                                            if (!hasMovedPastSlop) {
+                                                if (accumOffset.getDistance() > touchSlop) {
+                                                    hasMovedPastSlop = true
+
+                                                    if (tool == "Brush" || tool == "Eraser") {
+                                                        var targetId = selId
+                                                        val currentSelected = lyrs.find { it.id == selId }
+                                                        if (currentSelected == null || currentSelected.type != LayerType.FREEHAND_DRAWING) {
+                                                            val newL = StudioLayer(
+                                                                name = if (tool == "Eraser") "Eraser Layer" else "Drawing Layer ${lyrs.filter { it.type == LayerType.FREEHAND_DRAWING }.size + 1}",
+                                                                type = LayerType.FREEHAND_DRAWING,
+                                                                positionX = 0f,
+                                                                positionY = 0f,
+                                                                width = currentCanvasWidthState.value,
+                                                                height = currentCanvasHeightState.value,
+                                                                baseColor = brushColor,
+                                                                effects = listOf(
+                                                                    PhotoshopEffectTemplates.create(effectType = "BrushConfig").let { eff ->
+                                                                        var updated = eff.updateParameter("Size", brushSize)
+                                                                        updated = updated.updateParameter("Opacity", brushOpacity)
+                                                                        updated = updated.updateParameter("Smoothing", if (brushSmoothing) 1.0f else 0.0f)
+                                                                        updated = updated.updateParameter("Preset", brushPresetIndex.toFloat())
+                                                                        updated
+                                                                    }
+                                                                ),
+                                                                brushPoints = emptyList()
+                                                            )
+                                                            undoStack.add(layers)
+                                                            redoStack.clear()
+                                                            layers = listOf(newL) + layers
+                                                            selectedLayerId = newL.id
+                                                            targetId = newL.id
+                                                        }
+                                                        currentStrokePoints = emptyList()
+                                                        var snappedStartX = localStartX
+                                                        var snappedStartY = localStartY
+                                                        if (rulerEnabled && snapToRuler) {
+                                                            val angleRad = (rulerAngle * Math.PI / 180.0)
+                                                            val dX: Float
+                                                            val dY: Float
+                                                            val aX: Float
+                                                            val aY: Float
+                                                            if (rulerOrientation == "Horizontal") {
+                                                                dX = Math.cos(angleRad).toFloat()
+                                                                dY = Math.sin(angleRad).toFloat()
+                                                                aX = 0f
+                                                                aY = rulerPosition
+                                                            } else {
+                                                                dX = -Math.sin(angleRad).toFloat()
+                                                                dY = Math.cos(angleRad).toFloat()
+                                                                aX = rulerPosition
+                                                                aY = 0f
+                                                            }
+                                                            val t = (localStartX - aX) * dX + (localStartY - aY) * dY
+                                                            snappedStartX = aX + t * dX
+                                                            snappedStartY = aY + t * dY
+                                                        }
+                                                        currentStrokePoints = currentStrokePoints + Offset(snappedStartX, snappedStartY)
+                                                    } else {
+                                                        val currentSelected = lyrs.find { it.id == selId }
+                                                        if (currentSelected != null && !currentSelected.isAlphaLocked) {
+                                                            val brX = currentSelected.positionX + currentSelected.width
+                                                            val brY = currentSelected.positionY + currentSelected.height
+                                                            val distBr = (localStartX - brX) * (localStartX - brX) + (localStartY - brY) * (localStartY - brY)
+
+                                                            var isNearBezier = false
+                                                            if (currentSelected.type == LayerType.VECTOR_BEZIER) {
+                                                                val touchLocal = canvasToLayerLocal(localStartOffset, currentSelected)
+                                                                val thresholdTemp = 60f / ts.coerceAtLeast(0.3f)
+                                                                val thresholdTempSq = thresholdTemp * thresholdTemp
+                                                                if (currentSelected.brushPoints.isNotEmpty()) {
+                                                                    var nearestIndex = -1
+                                                                    var minDistanceSq = Float.MAX_VALUE
+                                                                    for (idx in currentSelected.brushPoints.indices) {
+                                                                        val pt = currentSelected.brushPoints[idx]
+                                                                        val dx = (touchLocal.x - pt.x) * currentSelected.scaleX
+                                                                        val dy = (touchLocal.y - pt.y) * currentSelected.scaleY
+                                                                        val distSq = dx * dx + dy * dy
+                                                                        if (distSq < thresholdTempSq && distSq < minDistanceSq) {
+                                                                            minDistanceSq = distSq
+                                                                            nearestIndex = idx
+                                                                        }
+                                                                    }
+                                                                    if (nearestIndex >= 0) {
+                                                                        activeBezierPointIndex = nearestIndex
+                                                                        isNearBezier = true
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            val threshold = 60f / ts.coerceAtLeast(0.3f)
+                                                            val thresholdSq = threshold * threshold
+                                                            if (distBr < thresholdSq) {
+                                                                dragMode = "resize"
+                                                            } else if (isNearBezier) {
+                                                                dragMode = "bezier"
+                                                            } else {
+                                                                dragMode = "move"
+                                                            }
+                                                        } else {
+                                                            dragMode = "move"
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (hasMovedPastSlop) {
+                                                val localChangeOffset = screenToCanvas(
+                                                    screenPos = position,
+                                                    viewportWidth = currentViewportWidthState.value,
+                                                    viewportHeight = currentViewportHeightState.value,
+                                                    canvasPanX = currentCanvasPanXState.value,
+                                                    canvasPanY = currentCanvasPanYState.value,
+                                                    canvasRotation = currentCanvasRotationState.value,
+                                                    totalScale = ts,
+                                                    canvasWidth = currentCanvasWidthState.value,
+                                                    canvasHeight = currentCanvasHeightState.value
+                                                )
+                                                val localChangeX = localChangeOffset.x
+                                                val localChangeY = localChangeOffset.y
+
+                                                val localDragOffset = screenDeltaToCanvas(
+                                                    delta = diff,
+                                                    canvasRotation = currentCanvasRotationState.value,
+                                                    totalScale = ts
+                                                )
+                                                val localDragX = localDragOffset.x
+                                                val localDragY = localDragOffset.y
+
+                                                if (tool == "Brush" || tool == "Eraser") {
+                                                    var snappedX = localChangeX
+                                                    var snappedY = localChangeY
+                                                    if (rulerEnabled && snapToRuler) {
+                                                        val angleRad = (rulerAngle * Math.PI / 180.0)
+                                                        val dX: Float
+                                                        val dY: Float
+                                                        val aX: Float
+                                                        val aY: Float
+                                                        if (rulerOrientation == "Horizontal") {
+                                                            dX = Math.cos(angleRad).toFloat()
+                                                            dY = Math.sin(angleRad).toFloat()
+                                                            aX = 0f
+                                                            aY = rulerPosition
+                                                        } else {
+                                                            dX = -Math.sin(angleRad).toFloat()
+                                                            dY = Math.cos(angleRad).toFloat()
+                                                            aX = rulerPosition
+                                                            aY = 0f
+                                                        }
+                                                        val t = (localChangeX - aX) * dX + (localChangeY - aY) * dY
+                                                        snappedX = aX + t * dX
+                                                        snappedY = aY + t * dY
+                                                    }
+                                                    currentStrokePoints = currentStrokePoints + Offset(snappedX, snappedY)
+                                                    pathCache.remove(999999)
+                                                    pathCache.remove(1999999)
+                                                } else if (tool == "Ruler") {
+                                                    if (!rulerLocked) {
+                                                        if (rulerOrientation == "Horizontal") {
+                                                            rulerPosition = localChangeY
+                                                        } else {
+                                                            rulerPosition = localChangeX
+                                                        }
+                                                    }
+                                                } else {
+                                                    if (dragMode == "resize") {
+                                                        layers = layers.map { layer ->
+                                                            if (layer.id == selId && !layer.isAlphaLocked) {
+                                                                val newW = (localChangeX - layer.positionX).coerceIn(20f, 2000f)
+                                                                val newH = (localChangeY - layer.positionY).coerceIn(20f, 2000f)
+                                                                layer.copy(width = newW, height = newH)
+                                                            } else layer
+                                                        }
+                                                    } else if (dragMode == "bezier") {
+                                                        layers = layers.map { layer ->
+                                                            if (layer.id == selId && !layer.isAlphaLocked && layer.type == LayerType.VECTOR_BEZIER) {
+                                                                val localCtrl = canvasToLayerLocal(localChangeOffset, layer)
+                                                                val updatedPoints = layer.brushPoints.toMutableList()
+                                                                val idx = activeBezierPointIndex
+                                                                if (idx in updatedPoints.indices) {
+                                                                    updatedPoints[idx] = localCtrl
+                                                                } else if (updatedPoints.isEmpty()) {
+                                                                    updatedPoints.add(localCtrl)
+                                                                }
+                                                                layer.copy(brushPoints = updatedPoints)
+                                                            } else layer
+                                                        }
+                                                    } else {
+                                                        layers = layers.map { layer ->
+                                                            if (layer.id == selId && !layer.isAlphaLocked) {
+                                                                val updatedBrushPoints = if (layer.type == LayerType.VECTOR_BEZIER) {
+                                                                    layer.brushPoints
+                                                                } else {
+                                                                    layer.brushPoints
+                                                                }
+                                                                var finalX = layer.positionX + localDragX
+                                                                var finalY = layer.positionY + localDragY
+                                                                if (rulerEnabled && snapToRuler) {
+                                                                    val angleRad = (rulerAngle * Math.PI / 180.0)
+                                                                    val dX: Float
+                                                                    val dY: Float
+                                                                    val aX: Float
+                                                                    val aY: Float
+                                                                    if (rulerOrientation == "Horizontal") {
+                                                                        dX = Math.cos(angleRad).toFloat()
+                                                                        dY = Math.sin(angleRad).toFloat()
+                                                                        aX = 0f
+                                                                        aY = rulerPosition
+                                                                    } else {
+                                                                        dX = -Math.sin(angleRad).toFloat()
+                                                                        dY = Math.cos(angleRad).toFloat()
+                                                                        aX = rulerPosition
+                                                                        aY = 0f
+                                                                    }
+                                                                    val lCenterX = finalX + layer.width / 2f
+                                                                    val lCenterY = finalY + layer.height / 2f
+                                                                    val tCent = (lCenterX - aX) * dX + (lCenterY - aY) * dY
+                                                                    val snappedCenterX = aX + tCent * dX
+                                                                    val snappedCenterY = aY + tCent * dY
+                                                                    finalX += (snappedCenterX - lCenterX)
+                                                                    finalY += (snappedCenterY - lCenterY)
+                                                                }
+                                                                layer.copy(
+                                                                    positionX = finalX,
+                                                                    positionY = finalY,
+                                                                    brushPoints = updatedBrushPoints
+                                                                )
+                                                            } else layer
+                                                        }
+                                                    }
+                                                }
+                                                pointer.consume()
+                                            }
+                                        }
+                                    } while (event.changes.any { it.pressed })
+
+                                    // Gesture over: finalize actions
+                                    if (!isTransforming) {
+                                        activeBezierPointIndex = -1
+                                        dragMode = null
+                                        if (hasMovedPastSlop) {
+                                            if ((tool == "Brush" || tool == "Eraser") && currentStrokePoints.isNotEmpty()) {
+                                                val targetId = selectedLayerId
+                                                if (targetId.isNotEmpty()) {
+                                                    undoStack.add(layers)
+                                                    redoStack.clear()
+                                                    layers = layers.map { layer ->
+                                                        if (layer.id == targetId && layer.type == LayerType.FREEHAND_DRAWING) {
+                                                            pathCache.remove(layer.id.hashCode())
+                                                            pathCache.remove(layer.id.hashCode() + 1000000)
+                                                            val strokeToCommit = buildStrokeHeaderPoints(
+                                                                isEraser = (tool == "Eraser"),
+                                                                presetIndex = brushPresetIndex,
+                                                                size = brushSize,
+                                                                opacity = brushOpacity,
+                                                                smoothing = brushSmoothing
+                                                            ) + currentStrokePoints
+                                                            val updatedPoints = if (layer.brushPoints.isNotEmpty()) {
+                                                                layer.brushPoints + androidx.compose.ui.geometry.Offset.Unspecified + strokeToCommit
+                                                            } else {
+                                                                strokeToCommit
+                                                            }
+                                                            layer.copy(brushPoints = updatedPoints)
+                                                        } else layer
+                                                    }
+                                                }
+                                                currentStrokePoints = emptyList()
+                                                pathCache.remove(999999)
+                                                pathCache.remove(1999999)
+                                            }
+                                        } else {
+                                            // Handle Tap Selection
+                                            val tapOffset = down.position
+                                            val localOffset = screenToCanvas(
+                                                screenPos = tapOffset,
+                                                viewportWidth = currentViewportWidthState.value,
+                                                viewportHeight = currentViewportHeightState.value,
+                                                canvasPanX = currentCanvasPanXState.value,
+                                                canvasPanY = currentCanvasPanYState.value,
+                                                canvasRotation = currentCanvasRotationState.value,
+                                                totalScale = ts,
+                                                canvasWidth = currentCanvasWidthState.value,
+                                                canvasHeight = currentCanvasHeightState.value
+                                            )
+                                            val localX = localOffset.x
+                                            val localY = localOffset.y
+
+                                            if (tool == "Pen") {
+                                                val clickPt = localOffset
+                                                val currentSelected = lyrs.find { it.id == selectedLayerId }
+                                                if (currentSelected != null && currentSelected.type == LayerType.VECTOR_BEZIER) {
+                                                    val clickLocal = canvasToLayerLocal(clickPt, currentSelected)
+                                                    val lastAnchor = currentSelected.brushPoints.lastOrNull()
+                                                    val updatedPoints = if (lastAnchor != null) {
+                                                        val midway = Offset((lastAnchor.x + clickLocal.x) / 2f, (lastAnchor.y + clickLocal.y) / 2f)
+                                                        currentSelected.brushPoints + midway + clickLocal
+                                                    } else {
+                                                        listOf(clickLocal)
+                                                    }
+                                                    undoStack.add(layers)
+                                                    redoStack.clear()
+                                                    layers = layers.map {
+                                                        if (it.id == currentSelected.id) {
+                                                            it.copy(brushPoints = updatedPoints)
+                                                        } else it
+                                                    }
+                                                    pathCache.clear()
+                                                } else {
+                                                    val newL = StudioLayer(
+                                                        name = "Pen Vector Path ${lyrs.filter { it.type == LayerType.VECTOR_BEZIER }.size + 1}",
+                                                        type = LayerType.VECTOR_BEZIER,
+                                                        positionX = 0f,
+                                                        positionY = 0f,
+                                                        width = currentCanvasWidthState.value,
+                                                        height = currentCanvasHeightState.value,
+                                                        baseColor = brushColor,
+                                                        brushPoints = listOf(clickPt)
+                                                     )
+                                                     undoStack.add(layers)
+                                                     redoStack.clear()
+                                                     layers = listOf(newL) + layers
+                                                     selectedLayerId = newL.id
+                                                     pathCache.clear()
+                                                 }
+                                             } else {
+                                                 val clicked = lyrs.find { layer ->
+                                                     layer.isVisible && !layer.isAlphaLocked &&
+                                                     layer.type != com.example.studio.model.LayerType.FREEHAND_DRAWING &&
+                                                     localX >= layer.positionX &&
+                                                     localX <= (layer.positionX + layer.width) &&
+                                                     localY >= layer.positionY &&
+                                                     localY <= (layer.positionY + layer.height)
+                                                 }
+                                                 if (clicked != null) {
+                                                     selectedLayerId = clicked.id
+                                                 }
+                                             }
+                                        }
+                                    }
+                                }
+                            }
+                    ) {
+                        try {
+                            if (pathCache.size() > 1024) {
+                                // Smart selective trim: only garbage-collect old path hashes that aren't in current layers
+                                val activeHashes = layers.map { getLayerGeometryHash(it) }.toSet()
+                                val gridCacheKey = -9999 xor (canvasWidth.toInt() shl 16) xor canvasHeight.toInt()
+                                val keysToRemove = mutableListOf<Int>()
+                                for (i in 0 until pathCache.size()) {
+                                    val key = pathCache.keyAt(i)
+                                    if (key != gridCacheKey && key !in activeHashes && key != 999999 && key != 1999999) {
+                                        keysToRemove.add(key)
+                                    }
+                                }
+                                for (key in keysToRemove) {
+                                    pathCache.remove(key)
+                                }
+                                if (pathCache.size() > 1024) {
+                                    pathCache.clear()
+                                }
+                            }
+
+                            val ts = currentTotalScaleState.value
+                            // Non-destructive rendering pipeline passes
+                            withTransform({
+                                translate(left = currentViewportWidthState.value / 2f + currentCanvasPanXState.value, top = currentViewportHeightState.value / 2f + currentCanvasPanYState.value)
+                                rotate(degrees = currentCanvasRotationState.value, pivot = Offset.Zero)
+                                scale(scaleX = ts, scaleY = ts, pivot = Offset.Zero)
+                                translate(left = -currentCanvasWidthState.value / 2f, top = -currentCanvasHeightState.value / 2f)
+                                clipRect(left = 0f, top = 0f, right = currentCanvasWidthState.value, bottom = currentCanvasHeightState.value)
+                            }) {
+                                // 1. Solid backdrop fill for canvas limits
+                                drawRect(
+                                    color = Color.White,
+                                    topLeft = Offset.Zero,
+                                    size = Size(canvasWidth, canvasHeight)
+                                )
+
+                                // 2. Gorgeous, zero-lag, ultra-modern blueprint grid compiled into a single GPU call
+                                val gridCacheKey = -9999 xor (canvasWidth.toInt() shl 16) xor canvasHeight.toInt()
+                                var gridPath = pathCache.get(gridCacheKey)
+                                if (gridPath == null) {
+                                    val newPath = Path()
+                                    val gridSpacing = 100f
+                                    var gy = gridSpacing
+                                    while (gy < canvasHeight) {
+                                        newPath.moveTo(0f, gy)
+                                        newPath.lineTo(canvasWidth, gy)
+                                        gy += gridSpacing
+                                    }
+                                    var gx = gridSpacing
+                                    while (gx < canvasWidth) {
+                                        newPath.moveTo(gx, 0f)
+                                        newPath.lineTo(gx, canvasHeight)
+                                        gx += gridSpacing
+                                    }
+                                    gridPath = newPath
+                                    pathCache.put(gridCacheKey, newPath)
+                                }
+                                drawPath(
+                                    path = gridPath,
+                                    color = Color(0xFFE5E5EA),
+                                    style = Stroke(width = 1f)
+                                )
+
+                                // 3. Canvas boundary outline border
+                                drawRect(
+                                    color = Color(0xFF1E1E24),
+                                    topLeft = Offset.Zero,
+                                    size = Size(canvasWidth, canvasHeight),
+                                    style = Stroke(width = 2.5f)
+                                )
+
+                                for (index in layers.indices.reversed()) {
+                                    val originalLayer = layers[index]
+                                    if (!originalLayer.isVisible) continue
+                                    val layerOpacity = originalLayer.opacity
+                                    val composeBlendMode = originalLayer.blendMode.toComposeBlendMode()
+
+                                    // Non-destructive shadow copy applying dynamic adjustment color FX
+                                    val layer = originalLayer
+
+                                    val beneathLayer = if (index + 1 < layers.size) layers[index + 1] else null
+
+                                    val drawLayerWithTransforms = {
+                                        var twirlFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+                                        var pinchFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+                                        var sphereFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+                                        for (effect in layer.effects) {
+                                            if (!effect.isEnabled) continue
+                                            if (effect is com.example.studio.model.StudioEffect.PhotoshopEffect) {
+                                                when (effect.effectType) {
+                                                    "Twirl" -> twirlFil = effect
+                                                    "Pinch" -> pinchFil = effect
+                                                    "Spherize" -> sphereFil = effect
+                                                }
+                                            }
+                                        }
+
+                                        val additionalTwirl = twirlFil?.let { (it.parameters["Angle"]?.value ?: 100f) * 0.12f } ?: 0f
+                                        val additionalScale = (pinchFil?.let { 1f + (it.parameters["Amount"]?.value ?: 50f) / 100f * 0.15f } ?: 1f) *
+                                                              (sphereFil?.let { 1f + (it.parameters["Amount"]?.value ?: 100f) / 100f * 0.20f } ?: 1f)
+
+                                        withTransform({
+                                            translate(left = layer.positionX, top = layer.positionY)
+                                        }) {
+                                            val matrix = sharedTransformMatrix.apply {
+                                                reset()
+                                                val centerX = layer.width * layer.pivotX
+                                                val centerY = layer.height * layer.pivotY
+                                                
+                                                translate(centerX, centerY)
+                                                
+                                                val sx = layer.skewX
+                                                val sy = layer.skewY
+                                                val px = layer.perspX
+                                                val py = layer.perspY
+                                                
+                                                if (sx != 0f || sy != 0f || px != 0f || py != 0f) {
+                                                    val skewPersp = androidx.compose.ui.graphics.Matrix().apply {
+                                                        reset()
+                                                        if (sx != 0f) {
+                                                            values[4] = sx
+                                                        }
+                                                        if (sy != 0f) {
+                                                            values[1] = sy
+                                                        }
+                                                        if (px != 0f) {
+                                                            values[3] = px
+                                                        }
+                                                        if (py != 0f) {
+                                                            values[7] = py
+                                                        }
+                                                    }
+                                                    timesAssign(skewPersp)
+                                                }
+                                                
+                                                rotateZ(layer.rotation + additionalTwirl)
+                                                scale(layer.scaleX * additionalScale, layer.scaleY * additionalScale, 1f)
+                                                translate(-centerX, -centerY)
+                                            }
+                                            drawContext.canvas.concat(matrix)
+                                            drawAllEffectsAndLayersLocal(
+                                                layer = layer,
+                                                layerOpacity = layerOpacity,
+                                                selectedLayerId = selectedLayerId,
+                                                pathCache = pathCache,
+                                                pathPointsCountCache = pathPointsCountCache,
+                                                totalScale = totalScale,
+                                                dashEffect = dashEffect8, imageBitmapCache = imageBitmapCache,
+                                                composeBlendMode = composeBlendMode
+                                             )
+                                         }
+                                     }
+
+                                     val oldDrawLayerWithTransformsDummy = {
+                                        withTransform({
+                                            translate(left = layer.positionX, top = layer.positionY)
+                                            rotate(degrees = layer.rotation, pivot = Offset(layer.width * layer.pivotX, layer.height * layer.pivotY))
+                                            scale(scaleX = layer.scaleX, scaleY = layer.scaleY, pivot = Offset(layer.width * layer.pivotX, layer.height * layer.pivotY))
+                                        }) {
+                                        // Draw layer basis in local coordinates
+                                        when (layer.type) {
+                                            LayerType.VECTOR_RECT -> {
+                                                // Gaussian blur effect visual simulator: overlapping soft draw states
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawRect(
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.18f),
+                                                            topLeft = Offset(-o * blurRadius * 0.4f, -o * blurRadius * 0.4f),
+                                                            size = Size(layer.width + o * blurRadius * 0.8f, layer.height + o * blurRadius * 0.8f),
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+
+                                                drawRect(
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    topLeft = Offset.Zero,
+                                                    size = Size(layer.width, layer.height),
+                                                    blendMode = composeBlendMode
+                                                )
+
+                                                // Inner Glow effect visual simulator
+                                                val glowIntensity = getGlowIntensity(layer)
+                                                if (glowIntensity > 0f) {
+                                                    drawRect(
+                                                        color = Color(0xFFFF9800).copy(alpha = layerOpacity * 0.5f),
+                                                        topLeft = Offset.Zero,
+                                                        size = Size(layer.width, layer.height),
+                                                        style = Stroke(width = glowIntensity * 0.5f)
+                                                    )
+                                                }
+                                            }
+                                            
+                                            LayerType.VECTOR_TRIANGLE -> {
+                                                val cacheKey = getLayerGeometryHash(layer)
+                                                var path = pathCache.get(cacheKey)
+                                                if (path == null) {
+                                                    val newPath = Path().apply {
+                                                        moveTo(layer.width / 2f, 0f)
+                                                        lineTo(layer.width, layer.height)
+                                                        lineTo(0f, layer.height)
+                                                        close()
+                                                    }
+                                                    pathCache.put(cacheKey, newPath)
+                                                    path = newPath
+                                                }
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawPath(
+                                                            path = path,
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.12f),
+                                                            style = Stroke(width = o * blurRadius),
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+                                                drawPath(
+                                                    path = path,
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    blendMode = composeBlendMode
+                                                )
+                                            }
+ 
+                                            LayerType.VECTOR_PENTAGON -> {
+                                                val cacheKey = getLayerGeometryHash(layer)
+                                                var path = pathCache.get(cacheKey)
+                                                if (path == null) {
+                                                    val newPath = Path().apply {
+                                                        val cx = layer.width / 2f
+                                                        val cy = layer.height / 2f
+                                                        val rx = layer.width / 2f
+                                                        val ry = layer.height / 2f
+                                                        for (i in 0 until 5) {
+                                                            val angle = Math.toRadians((i * 72 - 90).toDouble())
+                                                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                                                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                                                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                                                        }
+                                                        close()
+                                                    }
+                                                    pathCache.put(cacheKey, newPath)
+                                                    path = newPath
+                                                }
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawPath(
+                                                            path = path,
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.12f),
+                                                            style = Stroke(width = o * blurRadius),
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+                                                drawPath(
+                                                    path = path,
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    blendMode = composeBlendMode
+                                                )
+                                            }
+ 
+                                            LayerType.VECTOR_HEXAGON -> {
+                                                val cacheKey = getLayerGeometryHash(layer)
+                                                var path = pathCache.get(cacheKey)
+                                                if (path == null) {
+                                                    val newPath = Path().apply {
+                                                        val cx = layer.width / 2f
+                                                        val cy = layer.height / 2f
+                                                        val rx = layer.width / 2f
+                                                        val ry = layer.height / 2f
+                                                        for (i in 0 until 6) {
+                                                            val angle = Math.toRadians((i * 60 - 90).toDouble())
+                                                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                                                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                                                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                                                        }
+                                                        close()
+                                                    }
+                                                    pathCache.put(cacheKey, newPath)
+                                                    path = newPath
+                                                }
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawPath(
+                                                            path = path,
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.12f),
+                                                            style = Stroke(width = o * blurRadius),
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+                                                drawPath(
+                                                    path = path,
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    blendMode = composeBlendMode
+                                                )
+                                            }
+ 
+                                            LayerType.VECTOR_OVAL -> {
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawOval(
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.15f),
+                                                            topLeft = Offset(-o * blurRadius * 0.4f, -o * blurRadius * 0.4f),
+                                                            size = Size(layer.width + o * blurRadius * 0.8f, layer.height + o * blurRadius * 0.8f),
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+                                                drawOval(
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    topLeft = Offset.Zero,
+                                                    size = Size(layer.width, layer.height),
+                                                    blendMode = composeBlendMode
+                                                )
+                                            }
+ 
+                                            LayerType.VECTOR_LINE -> {
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawLine(
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.18f),
+                                                            start = Offset.Zero,
+                                                            end = Offset(layer.width, layer.height),
+                                                            strokeWidth = 6f + o * blurRadius * 0.5f,
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+                                                drawLine(
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    start = Offset.Zero,
+                                                    end = Offset(layer.width, layer.height),
+                                                    strokeWidth = 6f,
+                                                    blendMode = composeBlendMode
+                                                )
+                                            }
+ 
+                                            LayerType.VECTOR_BEZIER -> {
+                                                val start = Offset(0f, layer.height)
+                                                val end = Offset(layer.width, layer.height)
+                                                val controlLocal = layer.brushPoints.getOrNull(0) ?: Offset(layer.width / 2f, 0f)
+
+                                                val cacheKey = getLayerGeometryHash(layer)
+                                                var path = pathCache.get(cacheKey)
+                                                if (path == null) {
+                                                    val newPath = Path().apply {
+                                                        if (layer.brushPoints.size > 1) {
+                                                            val startPt = layer.brushPoints[0]
+                                                            moveTo(startPt.x, startPt.y)
+                                                            var i = 1
+                                                            while (i < layer.brushPoints.size) {
+                                                                val ctrl = layer.brushPoints.getOrNull(i) ?: break
+                                                                val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
+                                                                quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
+                                                                i += 2
+                                                            }
+                                                        } else {
+                                                            moveTo(start.x, start.y)
+                                                            quadraticTo(controlLocal.x, controlLocal.y, end.x, end.y)
+                                                        }
+                                                    }
+                                                    pathCache.put(cacheKey, newPath)
+                                                    path = newPath
+                                                }
+                                                val blurRadius = getBlurRadius(layer)
+                                                val shapeStyle = if (layer.isAlphaLocked) {
+                                                    androidx.compose.ui.graphics.drawscope.Fill
+                                                } else {
+                                                    Stroke(width = 8f)
+                                                }
+
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        val blurStyle = if (layer.isAlphaLocked) {
+                                                            androidx.compose.ui.graphics.drawscope.Fill
+                                                        } else {
+                                                            Stroke(width = 8f + o * blurRadius * 0.5f)
+                                                        }
+                                                        drawPath(
+                                                            path = path,
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.15f),
+                                                            style = blurStyle,
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+                                                drawPath(
+                                                    path = path,
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    style = shapeStyle,
+                                                    blendMode = composeBlendMode
+                                                )
+
+                                                // Paint support guidelines if layer is selected
+                                                if (layer.id == selectedLayerId) {
+                                                    if (layer.brushPoints.size > 1) {
+                                                        val size = layer.brushPoints.size
+                                                        for (i in 0 until size step 2) {
+                                                            val anchor = layer.brushPoints[i]
+                                                            drawCircle(
+                                                                color = Color(0xFF00E5FF),
+                                                                radius = 9f / totalScale.coerceAtLeast(0.5f),
+                                                                center = anchor
+                                                            )
+                                                            drawCircle(
+                                                                color = Color.White,
+                                                                radius = 4.5f / totalScale.coerceAtLeast(0.5f),
+                                                                center = anchor
+                                                            )
+
+                                                            val ctrl = layer.brushPoints.getOrNull(i + 1)
+                                                            if (ctrl != null) {
+                                                                drawLine(
+                                                                    color = Color.LightGray.copy(alpha = 0.6f),
+                                                                    start = anchor,
+                                                                    end = ctrl,
+                                                                    strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                                                                    pathEffect = dashEffect8
+                                                                )
+
+                                                                val nextAnchor = layer.brushPoints.getOrNull(i + 2)
+                                                                if (nextAnchor != null) {
+                                                                    drawLine(
+                                                                        color = Color.LightGray.copy(alpha = 0.6f),
+                                                                        start = nextAnchor,
+                                                                        end = ctrl,
+                                                                        strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                                                                        pathEffect = dashEffect8
+                                                                    )
+                                                                }
+
+                                                                drawCircle(
+                                                                    color = IndustrialAmber,
+                                                                    radius = 8.5f / totalScale.coerceAtLeast(0.5f),
+                                                                    center = ctrl
+                                                                )
+                                                                drawCircle(
+                                                                    color = Color.White,
+                                                                    radius = 4f / totalScale.coerceAtLeast(0.5f),
+                                                                    center = ctrl
+                                                                )
+                                                            }
+                                                        }
+                                                    } else {
+                                                        drawLine(
+                                                            color = Color.LightGray.copy(alpha = 0.5f),
+                                                            start = start,
+                                                            end = controlLocal,
+                                                            strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                                                            pathEffect = dashEffect8
+                                                        )
+                                                        drawLine(
+                                                            color = Color.LightGray.copy(alpha = 0.5f),
+                                                            start = end,
+                                                            end = controlLocal,
+                                                            strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                                                            pathEffect = dashEffect8
+                                                        )
+                                                        drawCircle(
+                                                            color = IndustrialAmber,
+                                                            radius = 10f / totalScale.coerceAtLeast(0.5f),
+                                                            center = controlLocal
+                                                        )
+                                                        drawCircle(
+                                                            color = Color.White,
+                                                            radius = 5f / totalScale.coerceAtLeast(0.5f),
+                                                            center = controlLocal
+                                                        )
+                                                    }
+                                                }
+                                            }
+ 
+                                            LayerType.VECTOR_CIRCLE -> {
+                                                val radius = layer.width / 2f
+                                                val center = Offset(radius, layer.height / 2f)
+
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawCircle(
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.15f),
+                                                            radius = radius + o * blurRadius * 0.4f,
+                                                            center = center,
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+ 
+                                                drawCircle(
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    radius = radius,
+                                                    center = center,
+                                                    blendMode = composeBlendMode
+                                                )
+                                            }
+ 
+                                            LayerType.VECTOR_STAR -> {
+                                                val cacheKey = getLayerGeometryHash(layer)
+                                                var path = pathCache.get(cacheKey)
+                                                if (path == null) {
+                                                    val pathStar = Path()
+                                                    val cx = layer.width / 2f
+                                                    val cy = layer.height / 2f
+                                                    val rOuter = layer.width / 2f
+                                                    val rInner = rOuter * 0.4f
+                                                    var angle = Math.PI / 2.0 * 3.0
+                                                    val step = Math.PI / 5.0
+
+                                                    pathStar.moveTo(
+                                                        (cx + Math.cos(angle) * rOuter).toFloat(),
+                                                        (cy + Math.sin(angle) * rOuter).toFloat()
+                                                    )
+
+                                                    for (i in 0..10) {
+                                                        val r = if (i % 2 == 0) rOuter else rInner
+                                                        pathStar.lineTo(
+                                                            (cx + Math.cos(angle) * r).toFloat(),
+                                                            (cy + Math.sin(angle) * r).toFloat()
+                                                        )
+                                                        angle += step
+                                                    }
+                                                    pathStar.close()
+                                                    pathCache.put(cacheKey, pathStar)
+                                                    path = pathStar
+                                                }
+                                                val blurRadius = getBlurRadius(layer)
+                                                if (blurRadius > 0f) {
+                                                    for (o in 1..4) {
+                                                        drawPath(
+                                                            path = path,
+                                                            color = layer.baseColor.copy(alpha = layerOpacity * 0.12f),
+                                                            style = Stroke(width = o * blurRadius),
+                                                            blendMode = composeBlendMode
+                                                        )
+                                                    }
+                                                }
+ 
+                                                drawPath(
+                                                    path = path,
+                                                    color = layer.baseColor.copy(alpha = layerOpacity),
+                                                    blendMode = composeBlendMode
+                                                )
+                                            }
+
+                                            LayerType.TEXT -> {
+                                                drawTextLayerInternal(
+                                                    layer = layer,
+                                                    opacityMultiplier = layerOpacity,
+                                                    composeBlendMode = composeBlendMode
+                                                )
+                                            }
+
+                                            LayerType.FREEHAND_DRAWING -> {
+                                                if (layer.brushPoints.size > 1) {
+                                                    val brushConfig = layer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                    val bSize = brushConfig?.parameters?.get("Size")?.value ?: 12f
+                                                    val bOpacity = brushConfig?.parameters?.get("Opacity")?.value ?: 1.0f
+                                                    val bSmoothing = (brushConfig?.parameters?.get("Smoothing")?.value ?: 1.0f) > 0.5f
+                                                    val bPreset = brushConfig?.parameters?.get("Preset")?.value?.toInt() ?: 0
+
+                                                    drawBrushStroke(
+                                                        points = layer.brushPoints,
+                                                        color = layer.baseColor,
+                                                        size = bSize,
+                                                        opacity = bOpacity * layerOpacity,
+                                                        presetIndex = bPreset,
+                                                        smoothing = bSmoothing,
+                                                        originX = layer.positionX,
+                                                        originY = layer.positionY,
+                                                        composeBlendMode = composeBlendMode,
+                                                        pathCache = pathCache,
+                                                        pathPointsCountCache = pathPointsCountCache,
+                                                        cacheKey = layer.id.hashCode()
+                                                    )
+                                                }
+                                            }
+
+                                            LayerType.IMAGE_CARD -> {
+                                                val uriStr = layer.imageUri
+                                                val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
+                                                if (loadedBitmap != null) {
+                                                    drawImage(
+                                                        image = loadedBitmap,
+                                                        dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                                                        alpha = layerOpacity,
+                                                        blendMode = composeBlendMode
+                                                    )
+                                                } else {
+                                                    // Draws a beautifully stylized placeholder graphics pattern card
+                                                    drawRect(
+                                                        color = Color(0xFF37474F).copy(alpha = layerOpacity),
+                                                        topLeft = Offset.Zero,
+                                                        size = Size(layer.width, layer.height),
+                                                        blendMode = composeBlendMode
+                                                    )
+                                                    // Inner details representing nested comps
+                                                    drawCircle(
+                                                        color = Color(0xFFFFCC80).copy(alpha = layerOpacity * 0.7f),
+                                                        radius = 35f,
+                                                        center = Offset(layer.width / 2f, layer.height / 2f)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // Overlay selected layer bounds and sizing anchor highlights
+                                        if (layer.id == selectedLayerId) {
+                                            drawRect(
+                                                color = IndustrialAmber.copy(0.8f),
+                                                topLeft = Offset(-6f, -6f),
+                                                size = Size(layer.width + 12f, layer.height + 12f),
+                                                style = Stroke(
+                                                    width = 1.5f / totalScale.coerceAtLeast(0.5f),
+                                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f / totalScale.coerceAtLeast(0.5f), 8f / totalScale.coerceAtLeast(0.5f)))
+                                                )
+                                            )
+                                            // Handle anchor points
+                                            drawCircle(
+                                                color = EnergeticYellow,
+                                                radius = 8f / totalScale.coerceAtLeast(0.5f),
+                                                center = Offset.Zero
+                                            )
+                                            // Distinct accent badge on active resize corner handle
+                                            drawCircle(
+                                                color = EnergeticYellow,
+                                                radius = 11f / totalScale.coerceAtLeast(0.5f),
+                                                center = Offset(layer.width, layer.height)
+                                            )
+                                            drawCircle(
+                                                color = Color(0xFFFF5722),
+                                                radius = 5.5f / totalScale.coerceAtLeast(0.5f),
+                                                center = Offset(layer.width, layer.height)
+                                            )
+                                        }
+                                        
+                                    }
+                                    }
+
+                                    // Invoke drawing lambda, constraining within Clipping Mask boundaries if enabled
+                                    if (layer.isClippingMask && beneathLayer != null) {
+                                        clipRect(
+                                            left = beneathLayer.positionX,
+                                            top = beneathLayer.positionY,
+                                            right = beneathLayer.positionX + beneathLayer.width,
+                                            bottom = beneathLayer.positionY + beneathLayer.height
+                                        ) {
+                                            drawSingleConnectedLayer(
+                                                layer = layer,
+                                                layerOpacity = layerOpacity,
+                                                selectedLayerId = selectedLayerId,
+                                                pathCache = pathCache,
+                                                pathPointsCountCache = pathPointsCountCache,
+                                                totalScale = totalScale,
+                                                dashEffect = dashEffect8,
+                                                imageBitmapCache = imageBitmapCache,
+                                                composeBlendMode = composeBlendMode,
+                                                sharedTransformMatrix = sharedTransformMatrix
+                                            )
+                                        }
+                                    } else {
+                                        drawSingleConnectedLayer(
+                                             layer = layer,
+                                             layerOpacity = layerOpacity,
+                                             selectedLayerId = selectedLayerId,
+                                             pathCache = pathCache,
+                                             pathPointsCountCache = pathPointsCountCache,
+                                             totalScale = totalScale,
+                                             dashEffect = dashEffect8,
+                                             imageBitmapCache = imageBitmapCache,
+                                             composeBlendMode = composeBlendMode,
+                                             sharedTransformMatrix = sharedTransformMatrix
+                                         )
+                                    }
+                                }
+
+                                if (gridEnabled) {
+                                    val w = canvasWidth
+                                    val h = canvasHeight
+                                    val cols = gridColumns.coerceIn(1, 200)
+                                    val rows = gridRows.coerceIn(1, 200)
+                                    val colWidth = w / cols
+                                    val rowHeight = h / rows
+                                    
+                                    for (i in 0..cols) {
+                                        val x = i * colWidth
+                                        drawLine(
+                                            color = Color(0xFF00FF66).copy(alpha = 0.25f),
+                                            start = Offset(x, 0f),
+                                            end = Offset(x, h),
+                                            strokeWidth = 1f / totalScale.coerceAtLeast(0.5f)
+                                        )
+                                    }
+                                    for (j in 0..rows) {
+                                        val y = j * rowHeight
+                                        drawLine(
+                                            color = Color(0xFF00FF66).copy(alpha = 0.25f),
+                                            start = Offset(0f, y),
+                                            end = Offset(w, y),
+                                            strokeWidth = 1f / totalScale.coerceAtLeast(0.5f)
+                                        )
+                                    }
+                                }
+
+                                if (rulerEnabled) {
+                                    val w = canvasWidth
+                                    val h = canvasHeight
+                                    val rulerColor = Color(0xFF00FF66)
+                                    val strokeW = 1.8f / totalScale.coerceAtLeast(0.5f)
+                                    
+                                    if (rulerOrientation == "Horizontal") {
+                                        withTransform({
+                                            rotate(degrees = rulerAngle, pivot = Offset(w / 2f, rulerPosition))
+                                        }) {
+                                            drawLine(
+                                                color = rulerColor,
+                                                start = Offset(0f, rulerPosition),
+                                                end = Offset(w, rulerPosition),
+                                                strokeWidth = strokeW
+                                            )
+                                            val tickSpacing = 20f
+                                            val maxTicks = (w / tickSpacing).toInt().coerceAtLeast(0).coerceAtMost(500)
+                                            for (i in 0..maxTicks) {
+                                                val xCoordinate = i * tickSpacing
+                                                val isMajor = xCoordinate.toInt() % 100 == 0
+                                                val tickLen = if (isMajor) 15f else 7f
+                                                drawLine(
+                                                    color = rulerColor.copy(alpha = if (isMajor) 0.8f else 0.5f),
+                                                    start = Offset(xCoordinate, rulerPosition - tickLen / totalScale.coerceAtLeast(0.5f)),
+                                                    end = Offset(xCoordinate, rulerPosition + tickLen / totalScale.coerceAtLeast(0.5f)),
+                                                    strokeWidth = (if (isMajor) 1.2f else 0.7f) / totalScale.coerceAtLeast(0.5f)
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        withTransform({
+                                            rotate(degrees = rulerAngle, pivot = Offset(rulerPosition, h / 2f))
+                                        }) {
+                                            drawLine(
+                                                color = rulerColor,
+                                                start = Offset(rulerPosition, 0f),
+                                                end = Offset(rulerPosition, h),
+                                                strokeWidth = strokeW
+                                            )
+                                            val tickSpacing = 20f
+                                            val maxTicks = (h / tickSpacing).toInt().coerceAtLeast(0).coerceAtMost(500)
+                                            for (j in 0..maxTicks) {
+                                                val yCoordinate = j * tickSpacing
+                                                val isMajor = yCoordinate.toInt() % 100 == 0
+                                                val tickLen = if (isMajor) 15f else 7f
+                                                drawLine(
+                                                    color = rulerColor.copy(alpha = if (isMajor) 0.8f else 0.5f),
+                                                    start = Offset(rulerPosition - tickLen / totalScale.coerceAtLeast(0.5f), yCoordinate),
+                                                    end = Offset(rulerPosition + tickLen / totalScale.coerceAtLeast(0.5f), yCoordinate),
+                                                    strokeWidth = (if (isMajor) 1.2f else 0.7f) / totalScale.coerceAtLeast(0.5f)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (currentStrokePoints.size > 1) {
+                                    drawBrushStroke(
+                                        points = currentStrokePoints,
+                                        color = brushColor,
+                                        size = brushSize,
+                                        opacity = brushOpacity,
+                                        presetIndex = brushPresetIndex,
+                                        smoothing = brushSmoothing,
+                                        originX = 0f,
+                                        originY = 0f,
+                                        composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+                                        pathCache = pathCache,
+                                        pathPointsCountCache = pathPointsCountCache,
+                                        cacheKey = 999999
+                                    )
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // Fail-safe compilation error handler
+                        }
+                    }
+
+                    // On-screen Canvas controls info sticker & Export group layout
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .background(DarkOnyx.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
+                                .border(0.5.dp, HighslateOutline, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AspectRatio,
+                                contentDescription = "Canvas Info",
+                                tint = IndustrialAmber,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "Canvas: ${canvasWidth.toInt()}x${canvasHeight.toInt()} px | Zoom: ${(scaleFactor * 100).toInt()}%" + 
+                                    if (canvasRotation != 0f) " | Rot: ${canvasRotation.toInt()}°" else "",
+                                style = Typography.labelSmall,
+                                color = TextSecondary
+                            )
+                            if (canvasRotation != 0f || canvasPanX != 0f || canvasPanY != 0f || scaleFactor != 1.0f) {
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .background(IndustrialAmber, RoundedCornerShape(4.dp))
+                                        .clickable {
+                                            scaleFactor = 1.0f
+                                            canvasPanX = 0f
+                                            canvasPanY = 0f
+                                            canvasRotation = 0f
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Reset Viewport",
+                                        tint = DarkOnyx,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Hand tool helper button
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp)
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            IconButton(
+                                onClick = { scaleFactor += 0.1f },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(MidSlate, RoundedCornerShape(4.dp)),
+                            ) {
+                                Icon(Icons.Default.Add, "Zoom In", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                            }
+                            IconButton(
+                                onClick = { if (scaleFactor > 0.3f) scaleFactor -= 0.1f },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(MidSlate, RoundedCornerShape(4.dp)),
+                            ) {
+                                Icon(Icons.Default.Remove, "Zoom Out", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+
+
+                    if (!isBottomPanelVisible) {
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(bottom = 8.dp, end = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = { isBottomPanelVisible = true },
+                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                shape = RoundedCornerShape(24.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.height(38.dp)
+                            ) {
+                                Icon(Icons.Default.Tune, "Show parameters", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("PARAMETERS", style = Typography.labelSmall.copy(fontSize = 10.sp), color = TextPrimary, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                // Collapsible sidebar drawer for layer management panel (with smooth animations)
+                AnimatedVisibility(
+                    visible = isLayersPanelVisible,
+                    enter = expandHorizontally() + fadeIn(),
+                    exit = shrinkHorizontally() + fadeOut()
+                ) {
+                    RightsideLayerDrawer(
+                        layers = layers,
+                        selectedLayerId = selectedLayerId,
+                        onSelectLayer = { selectedLayerId = it },
+                        onChangeVisibility = { id ->
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = layers.map { if (it.id == id) it.copy(isVisible = !it.isVisible) else it }
+                        },
+                        onChangeAlphaLock = { id ->
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = layers.map { if (it.id == id) it.copy(isAlphaLocked = !it.isAlphaLocked) else it }
+                        },
+                        onChangeClippingMask = { id ->
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = layers.map { if (it.id == id) it.copy(isClippingMask = !it.isClippingMask) else it }
+                        },
+                        onLayerReorderUp = { index ->
+                            if (index > 0) {
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                val list = layers.toMutableList()
+                                val removed = list.removeAt(index)
+                                list.add(index - 1, removed)
+                                layers = list
+                            }
+                        },
+                        onLayerReorderDown = { index ->
+                            if (index < layers.size - 1) {
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                val list = layers.toMutableList()
+                                val removed = list.removeAt(index)
+                                list.add(index + 1, removed)
+                                layers = list
+                            }
+                        },
+                        onAddLayer = {
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            val newL = StudioLayer(
+                                name = "Empty Layer ${layers.size + 1}",
+                                type = LayerType.FREEHAND_DRAWING,
+                                positionX = 0f,
+                                positionY = 0f,
+                                width = canvasWidth,
+                                height = canvasHeight,
+                                baseColor = Color.Transparent,
+                                effects = listOf(
+                                    PhotoshopEffectTemplates.create(effectType = "BrushConfig").let { eff ->
+                                        var updated = eff.updateParameter("Size", brushSize)
+                                        updated = updated.updateParameter("Opacity", brushOpacity)
+                                        updated = updated.updateParameter("Smoothing", if (brushSmoothing) 1.0f else 0.0f)
+                                        updated = updated.updateParameter("Preset", brushPresetIndex.toFloat())
+                                        updated
+                                    }
+                                ),
+                                brushPoints = emptyList()
+                            )
+                            layers = listOf(newL) + layers
+                            selectedLayerId = newL.id
+                        },
+                        onDuplicateLayer = { id ->
+                            val orig = layers.find { it.id == id }
+                            if (orig != null) {
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                val copy = orig.copy(
+                                    id = UUID.randomUUID().toString(),
+                                    name = "${orig.name} (Copy)",
+                                    positionX = orig.positionX + 40f,
+                                    positionY = orig.positionY + 40f
+                                )
+                                layers = listOf(copy) + layers
+                                selectedLayerId = copy.id
+                            }
+                        },
+
+                        onDeleteLayer = { id ->
+                            if (layers.size > 1) {
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                layers = layers.filter { it.id != id }
+                                selectedLayerId = layers[0].id
+                            }
+                        },
+                        onBlendModeChange = { id, mode ->
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = layers.map { if (it.id == id) it.copy(blendMode = mode) else it }
+                        },
+                        onOpacityChange = { id, op ->
+                            layers = layers.map { if (it.id == id) it.copy(opacity = op) else it }
+                        },
+                        onTriggerRename = { id, currentName ->
+                            renamingLayerId = id
+                            renamingLayerName = currentName
+                        },
+                        onCloseDrawer = { isLayersPanelVisible = false }
+                    )
+                }
+            }
+
+            // -- BOTTOM EFFECTS & PARAMETERS PANEL (with smooth animated transition) --
+            AnimatedVisibility(
+                visible = isBottomPanelVisible,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                BottomEffectPanel(
+                    selectedLayer = selectedLayer,
+                    selectedEffectIndex = selectedEffectIndex,
+                    onSelectEffectIndex = { selectedEffectIndex = it },
+                    onAddEffect = { effect ->
+                        if (selectedLayer != null) {
+                            layers = layers.map { layer ->
+                                if (layer.id == selectedLayer.id) {
+                                    layer.copy(effects = layer.effects + effect)
+                                } else layer
+                            }
+                        }
+                    },
+                    onUpdateEffectParam = { effectId, paramName, newValue ->
+                        if (selectedLayer != null) {
+                            layers = layers.map { layer ->
+                                if (layer.id == selectedLayer.id) {
+                                    val updatedEffects = layer.effects.map { eff ->
+                                        if (eff.id == effectId) {
+                                            eff.updateParameter(paramName, newValue)
+                                        } else eff
+                                    }
+                                    layer.copy(effects = updatedEffects)
+                                } else layer
+                            }
+                        }
+                    },
+                    onRemoveEffect = { effectId ->
+                        if (selectedLayer != null) {
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = layers.map { layer ->
+                                if (layer.id == selectedLayer.id) {
+                                    layer.copy(effects = layer.effects.filter { it.id != effectId })
+                                } else layer
+                            }
+                        }
+                    },
+                    onToggleEffectEnabled = { effectId ->
+                        if (selectedLayer != null) {
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = layers.map { layer ->
+                                if (layer.id == selectedLayer.id) {
+                                    val updatedEffects = layer.effects.map { eff ->
+                                        if (eff.id == effectId) {
+                                            eff.toggleEnabled()
+                                        } else eff
+                                    }
+                                    layer.copy(effects = updatedEffects)
+                                } else layer
+                            }
+                        }
+                    },
+                    onUpdateLayer = { updatedLayer ->
+                        layers = layers.map { if (it.id == updatedLayer.id) updatedLayer else it }
+                    },
+                    onCloseBottomPanel = { isBottomPanelVisible = false },
+                    onOpenEffectsGallery = { showEffectsGallery = true },
+                    onOpenBrushesLibrary = { showBrushesLibrary = true },
+                    activeTool = activeTool,
+                    brushSize = brushSize,
+                    onBrushSizeChange = { brushSize = it },
+                    brushOpacity = brushOpacity,
+                    onBrushOpacityChange = { brushOpacity = it },
+                    brushColor = brushColor,
+                    onBrushColorChange = { brushColor = it },
+                    brushSmoothing = brushSmoothing,
+                    onBrushSmoothingChange = { brushSmoothing = it },
+                    brushPresetIndex = brushPresetIndex,
+                    onBrushPresetIndexChange = { brushPresetIndex = it },
+                    fontSearchQuery = fontSearchQuery,
+                    onFontSearchQueryChange = { fontSearchQuery = it },
+                    selectedCategoryFilter = selectedCategoryFilter,
+                    onSelectedCategoryFilterChange = { selectedCategoryFilter = it },
+                    onImportFontClick = { fontPickerLauncher.launch("*/*") },
+                    onExportCanvas = onExportArtwork,
+                    gridEnabled = gridEnabled,
+                    onGridEnabledChange = { gridEnabled = it },
+                    rulerEnabled = rulerEnabled,
+                    onRulerEnabledChange = { rulerEnabled = it },
+                    rulerOrientation = rulerOrientation,
+                    onRulerOrientationChange = { rulerOrientation = it },
+                    rulerPosition = rulerPosition,
+                    onRulerPositionChange = { rulerPosition = it },
+                    gridColumns = gridColumns,
+                    onGridColumnsChange = { gridColumns = it },
+                    gridRows = gridRows,
+                    onGridRowsChange = { gridRows = it },
+                    rulerAngle = rulerAngle,
+                    onRulerAngleChange = { rulerAngle = it },
+                    rulerLocked = rulerLocked,
+                    onRulerLockedChange = { rulerLocked = it },
+                    snapToRuler = snapToRuler,
+                    onSnapToRulerChange = { snapToRuler = it }
+                )
+            }
+
+            if (showEffectsGallery && selectedLayer != null) {
+                EffectsGalleryOverlay(
+                    onClose = { showEffectsGallery = false },
+                    onAddEffect = { effect ->
+                        undoStack.add(layers)
+                        redoStack.clear()
+                        layers = layers.map { layer ->
+                            if (layer.id == selectedLayer.id) {
+                                layer.copy(effects = layer.effects + effect)
+                            } else layer
+                        }
+                        selectedEffectIndex = selectedLayer.effects.size
+                    }
+                )
+            }
+
+            if (showBrushesLibrary) {
+                BrushesLibraryOverlay(
+                    currentPreset = brushPresetIndex,
+                    onPresetChange = { 
+                        brushPresetIndex = it
+                        if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                            layers = layers.map { layer ->
+                                if (layer.id == selectedLayer.id) {
+                                    val updatedEffects = layer.effects.map { eff ->
+                                        if (eff.name == "BrushConfig") {
+                                            eff.updateParameter("Preset", it.toFloat())
+                                        } else eff
+                                    }
+                                    layer.copy(effects = updatedEffects)
+                                } else layer
+                            }
+                        }
+                    },
+                    currentSize = brushSize,
+                    onSizeChange = {
+                        brushSize = it
+                        if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                            layers = layers.map { layer ->
+                                if (layer.id == selectedLayer.id) {
+                                    val updatedEffects = layer.effects.map { eff ->
+                                        if (eff.name == "BrushConfig") {
+                                            eff.updateParameter("Size", it)
+                                        } else eff
+                                    }
+                                    layer.copy(effects = updatedEffects)
+                                } else layer
+                            }
+                        }
+                    },
+                    currentOpacity = brushOpacity,
+                    onOpacityChange = {
+                        brushOpacity = it
+                        if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                            layers = layers.map { layer ->
+                                if (layer.id == selectedLayer.id) {
+                                    val updatedEffects = layer.effects.map { eff ->
+                                        if (eff.name == "BrushConfig") {
+                                            eff.updateParameter("Opacity", it)
+                                        } else eff
+                                    }
+                                    layer.copy(effects = updatedEffects)
+                                } else layer
+                            }
+                        }
+                    },
+                    currentColor = brushColor,
+                    currentSmoothing = brushSmoothing,
+                    onClose = { showBrushesLibrary = false }
+                )
+            }
+        }
+
+        // Layer renaming Dialog Box overlay to make the Layers stack completely editable
+        if (renamingLayerId != null) {
+            AlertDialog(
+                onDismissRequest = { renamingLayerId = null },
+                title = { Text("Rename Layer Source", style = Typography.titleLarge, color = TextPrimary) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Provide a descriptive tag name inside the compositing list.", style = Typography.bodyMedium, color = TextSecondary)
+                        OutlinedTextField(
+                            value = renamingLayerName,
+                            onValueChange = { renamingLayerName = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = IndustrialAmber,
+                                unfocusedBorderColor = HighslateOutline,
+                                cursorColor = IndustrialAmber
+                            )
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            undoStack.add(layers)
+                            redoStack.clear()
+                            layers = layers.map {
+                                if (it.id == renamingLayerId) it.copy(name = renamingLayerName) else it
+                            }
+                            renamingLayerId = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
+                    ) {
+                        Text("Rename", color = DarkOnyx, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { renamingLayerId = null }) {
+                        Text("Cancel", color = TextSecondary)
+                    }
+                },
+                containerColor = SlatePanel
+            )
+        }
+
+        // Advanced high-density and color-space export popup Settings Dialog
+        if (showExportSettingsDialog) {
+            AlertDialog(
+                onDismissRequest = { showExportSettingsDialog = false },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Download, contentDescription = null, tint = EnergeticYellow)
+                        Text("Export Pro Canvas Settings", style = Typography.titleLarge, color = TextPrimary)
+                    }
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text("Configure your design resolution up to ultra-sharp 8K and select color spaces optimized for print or screen layout outputs.", style = Typography.bodyMedium, color = TextSecondary)
+                        
+                        // Section 1: Resolution Multiplier
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Export Resolution Preset", style = Typography.labelSmall, color = EnergeticYellow)
+                            
+                            val originalW = canvasWidth.toInt()
+                            val originalH = canvasHeight.toInt()
+                            
+                            listOf(
+                                Triple(1.0f, "Standard (1x)", "${originalW}x${originalH}"),
+                                Triple(2.0f, "Quad HD (2x)", "${originalW * 2}x${originalH * 2}"),
+                                Triple(4.0f, "Ultra HD (4x)", "${originalW * 4}x${originalH * 4}"),
+                                Triple(8000f / maxOf(canvasWidth, canvasHeight), "8K Masterpiece", "${((canvasWidth * (8000f / maxOf(canvasWidth, canvasHeight)))).toInt()}x${((canvasHeight * (8000f / maxOf(canvasWidth, canvasHeight)))).toInt()}")
+                            ).forEach { (mult, label, resStr) ->
+                                val isSelected = exportMultiplier == mult || (mult > 7f && exportMultiplier > 7f)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) Color(0xFF1B3B2B) else Color(0xFF131317))
+                                        .border(BorderStroke(if (isSelected) 1.5.dp else 1.dp, if (isSelected) Color(0xFF00FF66) else HighslateOutline), RoundedCornerShape(8.dp))
+                                        .clickable { 
+                                            exportMultiplier = mult 
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(label, style = Typography.bodyMedium, color = if (isSelected) Color(0xFF00FF66) else TextPrimary, fontWeight = FontWeight.Bold)
+                                        Text(resStr, style = Typography.labelSmall, color = TextSecondary)
+                                    }
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = { exportMultiplier = mult },
+                                        colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF00FF66), unselectedColor = TextSecondary)
+                                    )
+                                }
+                            }
+                        }
+                        
+                        // Section 2: Color Space Profile
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Primary Color Space Profile", style = Typography.labelSmall, color = EnergeticYellow)
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // RGB option
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (!exportIsCmyk) Color(0xFF1B3B2B) else Color(0xFF131317))
+                                        .border(BorderStroke(if (!exportIsCmyk) 1.5.dp else 1.dp, if (!exportIsCmyk) Color(0xFF00FF66) else HighslateOutline), RoundedCornerShape(8.dp))
+                                        .clickable { exportIsCmyk = false }
+                                        .padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text("RGB Profile", style = Typography.bodyMedium, color = if (!exportIsCmyk) Color(0xFF00FF66) else TextPrimary, fontWeight = FontWeight.Bold)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("Screen & Digital", style = Typography.labelSmall, color = TextSecondary, fontSize = 9.sp)
+                                }
+                                
+                                // CMYK option
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (exportIsCmyk) Color(0xFF1B3B2B) else Color(0xFF131317))
+                                        .border(BorderStroke(if (exportIsCmyk) 1.5.dp else 1.dp, if (exportIsCmyk) Color(0xFF00FF66) else HighslateOutline), RoundedCornerShape(8.dp))
+                                        .clickable { exportIsCmyk = true }
+                                        .padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text("CMYK Proofing", style = Typography.bodyMedium, color = if (exportIsCmyk) Color(0xFF00FF66) else TextPrimary, fontWeight = FontWeight.Bold)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("Offset Ink Printing", style = Typography.labelSmall, color = TextSecondary, fontSize = 9.sp)
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showExportSettingsDialog = false
+                            executeArtworkExport(exportMultiplier, exportIsCmyk)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66))
+                    ) {
+                        Text("Export Canvas", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showExportSettingsDialog = false }) {
+                        Text("Cancel", style = Typography.labelSmall, color = TextSecondary)
+                    }
+                },
+                containerColor = SlatePanel
+            )
+        }
+
+        // Vector Shape addition overlay
+        if (showAddShapeDialog) {
+            val onSpawnShape = { name: String, type: LayerType, defaultColor: Color, w: Float, h: Float, isBezier: Boolean ->
+                val defaultControl = if (isBezier) Offset(w / 2f, 0f) else Offset.Zero
+                val brushPoints = if (isBezier) listOf(defaultControl) else emptyList()
+                val newL = StudioLayer(
+                    name = name,
+                    type = type,
+                    positionX = if (isBezier) 300f else 350f,
+                    positionY = if (isBezier) 400f else 450f,
+                    width = w,
+                    height = h,
+                    baseColor = defaultColor,
+                    brushPoints = brushPoints,
+                    textContent = if (type == LayerType.TEXT) "DOUBLE TAP TO EDIT" else ""
+                )
+                undoStack.add(layers)
+                redoStack.clear()
+                layers = listOf(newL) + layers
+                selectedLayerId = newL.id
+                showAddShapeDialog = false
+            }
+
+            AlertDialog(
+                onDismissRequest = { showAddShapeDialog = false },
+                title = { Text("Spawn Studio Primitive", style = Typography.titleLarge, color = TextPrimary) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Add vector primitives ready to stack effects on.", style = Typography.bodyMedium, color = TextSecondary)
+                        
+                        // Row 1: Circle & Square
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onSpawnShape("Vector Circle", LayerType.VECTOR_CIRCLE, Color(0xFF4CAF50), 180f, 180f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Circle", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                            Button(onClick = { onSpawnShape("Vector Square", LayerType.VECTOR_RECT, Color(0xFF9C27B0), 200f, 200f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Square", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                        }
+                        // Row 2: Star & Triangle
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onSpawnShape("Vector Star", LayerType.VECTOR_STAR, Color(0xFF29B6F6), 180f, 180f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Star", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                            Button(onClick = { onSpawnShape("Vector Triangle", LayerType.VECTOR_TRIANGLE, Color(0xFFFFB300), 180f, 180f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Triangle", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                        }
+                        // Row 3: Pentagon & Hexagon
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onSpawnShape("Vector Pentagon", LayerType.VECTOR_PENTAGON, Color(0xFFE91E63), 180f, 180f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Pentagon", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                            Button(onClick = { onSpawnShape("Vector Hexagon", LayerType.VECTOR_HEXAGON, Color(0xFFE53935), 180f, 180f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Hexagon", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                        }
+                        // Row 4: Oval & Line
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onSpawnShape("Vector Oval", LayerType.VECTOR_OVAL, Color(0xFF4CAF50), 240f, 160f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Oval", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                            Button(onClick = { onSpawnShape("Vector Line", LayerType.VECTOR_LINE, Color.White, 250f, 250f, false) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MidSlate)) {
+                                Text("Line", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                        }
+                        // Row 5: Bezier Curve
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { onSpawnShape("Bezier Curve", LayerType.VECTOR_BEZIER, Color(0xFFFF5722), 200f, 150f, true) },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
+                            ) {
+                                Text("Bezier Curve", color = DarkOnyx, fontWeight = FontWeight.Bold, style = Typography.labelSmall)
+                            }
+                        }
+                        // Row 6: Freehand Ink
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { onSpawnShape("Freehand Drawing", LayerType.FREEHAND_DRAWING, Color.White, 400f, 400f, false) },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate)
+                            ) {
+                                Text("Freehand Drawing Canvas Layer", color = TextPrimary, style = Typography.labelSmall)
+                            }
+                        }
+                        // Row 7: Import Picture
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { imagePickerLauncher.launch("image/*") },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
+                            ) {
+                                Text("Import Picture from Device", color = DarkOnyx, fontWeight = FontWeight.Bold, style = Typography.labelSmall)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showAddShapeDialog = false }) {
+                        Text("Cancel", color = IndustrialAmber)
+                    }
+                },
+                containerColor = SlatePanel
+            )
+        }
+
+
+    }
+    }
+}
+
+// Helpers to compute rendering effects output representation dynamically in canvas
+fun getBlurRadius(layer: StudioLayer): Float {
+    val blurEff = layer.effects.firstOrNull { it is StudioEffect.GaussianBlur } as? StudioEffect.GaussianBlur
+    if (blurEff != null) {
+        return (blurEff.parameters["Radius"]?.value ?: 0f) * (blurEff.parameters["Intensity"]?.value ?: 1f)
+    }
+    val psBlur = layer.effects.firstOrNull {
+        it is StudioEffect.PhotoshopEffect && (it.effectType == "GaussianBlur" || it.effectType == "MotionBlur" || it.effectType == "LensBlur")
+    } as? StudioEffect.PhotoshopEffect
+    if (psBlur != null) {
+        val radius = psBlur.parameters["Radius"]?.value ?: psBlur.parameters["Distance"]?.value ?: 12f
+        val intensity = psBlur.parameters["Intensity"]?.value ?: 0.8f
+        return radius * intensity * 0.5f
+    }
+    return 0f
+}
+
+fun getGlowIntensity(layer: StudioLayer): Float {
+    val glowEff = layer.effects.firstOrNull { it is StudioEffect.InnerGlow } as? StudioEffect.InnerGlow
+    if (glowEff != null) {
+        return (glowEff.parameters["Choke"]?.value ?: 0f) * (glowEff.parameters["Opacity"]?.value ?: 1f)
+    }
+    val psGlow = layer.effects.firstOrNull {
+        it is StudioEffect.PhotoshopEffect && (it.effectType == "InnerGlow" || it.effectType == "OuterGlow" || it.effectType == "DropShadow" || it.effectType == "InnerShadow")
+    } as? StudioEffect.PhotoshopEffect
+    if (psGlow != null) {
+        val chokeOrSize = psGlow.parameters["Choke"]?.value ?: psGlow.parameters["Size"]?.value ?: psGlow.parameters["Spread"]?.value ?: 15f
+        val opacity = psGlow.parameters["Opacity"]?.value ?: 0.65f
+        return chokeOrSize * opacity * 0.5f
+    }
+    return 0f
+}
+
+fun getHueShiftMultiplier(layer: StudioLayer): Float {
+    val hueEff = layer.effects.firstOrNull { it is StudioEffect.ColorBalance } as? StudioEffect.ColorBalance
+    if (hueEff != null) {
+        return hueEff.parameters["HueShift"]?.value ?: 0f
+    }
+    val psHue = layer.effects.firstOrNull {
+        it is StudioEffect.PhotoshopEffect && (it.effectType == "ColorOverlay" || it.effectType == "CameraRaw")
+    } as? StudioEffect.PhotoshopEffect
+    if (psHue != null) {
+        return psHue.parameters["HueShift"]?.value ?: 0f
+    }
+    return 0f
+}
+
+private val hsvBufferLocal = object : ThreadLocal<FloatArray>() {
+    override fun initialValue() = FloatArray(3)
+}
+private val rgbBufferLocal = object : ThreadLocal<FloatArray>() {
+    override fun initialValue() = FloatArray(3)
+}
+
+private fun hsvToRgbBuffer(h: Float, s: Float, v: Float, dest: FloatArray) {
+    val c = v * s
+    val x = c * (1f - Math.abs((h / 60f) % 2f - 1f))
+    val m = v - c
+
+    var r1 = 0f
+    var g1 = 0f
+    var b1 = 0f
+
+    val normH = (h % 360f + 360f) % 360f
+
+    when {
+        normH >= 0f && normH < 60f -> { r1 = c; g1 = x; b1 = 0f }
+        normH >= 60f && normH < 120f -> { r1 = x; g1 = c; b1 = 0f }
+        normH >= 120f && normH < 180f -> { r1 = 0f; g1 = c; b1 = x }
+        normH >= 180f && normH < 240f -> { r1 = 0f; g1 = x; b1 = c }
+        normH >= 240f && normH < 300f -> { r1 = x; g1 = 0f; b1 = c }
+        normH >= 300f && normH <= 360f -> { r1 = c; g1 = 0f; b1 = x }
+    }
+
+    dest[0] = (r1 + m).coerceIn(0f, 1f)
+    dest[1] = (g1 + m).coerceIn(0f, 1f)
+    dest[2] = (b1 + m).coerceIn(0f, 1f)
+}
+
+private fun rgbToHsv(r: Float, g: Float, b: Float, hsv: FloatArray) {
+    val max = maxOf(r, maxOf(g, b))
+    val min = minOf(r, minOf(g, b))
+    val delta = max - min
+
+    var h = 0f
+    val s = if (max == 0f) 0f else delta / max
+    val v = max
+
+    if (delta > 0f) {
+        h = when (max) {
+            r -> ((g - b) / delta) % 6f
+            g -> ((b - r) / delta) + 2f
+            else -> ((r - g) / delta) + 4f
+        }
+        h *= 60f
+        if (h < 0f) h += 360f
+    }
+    hsv[0] = h
+    hsv[1] = s
+    hsv[2] = v
+}
+
+private fun hsvToRgb(h: Float, s: Float, v: Float): FloatArray {
+    val c = v * s
+    val x = c * (1f - Math.abs((h / 60f) % 2f - 1f))
+    val m = v - c
+
+    var r1 = 0f
+    var g1 = 0f
+    var b1 = 0f
+
+    val normH = (h % 360f + 360f) % 360f
+
+    when {
+        normH >= 0f && normH < 60f -> { r1 = c; g1 = x; b1 = 0f }
+        normH >= 60f && normH < 120f -> { r1 = x; g1 = c; b1 = 0f }
+        normH >= 120f && normH < 180f -> { r1 = 0f; g1 = c; b1 = x }
+        normH >= 180f && normH < 240f -> { r1 = 0f; g1 = x; b1 = c }
+        normH >= 240f && normH < 300f -> { r1 = x; g1 = 0f; b1 = c }
+        normH >= 300f && normH <= 360f -> { r1 = c; g1 = 0f; b1 = x }
+    }
+
+    return floatArrayOf(
+        (r1 + m).coerceIn(0f, 1f),
+        (g1 + m).coerceIn(0f, 1f),
+        (b1 + m).coerceIn(0f, 1f)
+    )
+}@Composable
+fun GradientPickerPanel(
+    selectedLayer: StudioLayer?,
+    onUpdateLayer: ((StudioLayer) -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    val gradOverlay = remember(selectedLayer) {
+        selectedLayer?.effects?.find { it is StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? StudioEffect.PhotoshopEffect
+    }
+
+    if (selectedLayer == null || onUpdateLayer == null || gradOverlay == null) {
+        Box(
+            modifier = modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "Select any visual layer to apply gradients!",
+                style = Typography.labelSmall,
+                color = Color.LightGray,
+                textAlign = TextAlign.Center
+            )
+        }
+        return
+    }
+
+    val goPreset = gradOverlay.parameters["Preset"]?.value ?: 0f
+    val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
+    val goScale = gradOverlay.parameters["Scale"]?.value ?: 100f
+    val goOpacity = gradOverlay.parameters["Opacity"]?.value ?: 1.0f
+    val gradientTypeOrdinal = (gradOverlay.parameters["GradientType"]?.value ?: 0f).toInt().coerceIn(0, 6)
+
+    var selectedStopIndex by remember { mutableStateOf(0) }
+
+    val updateParam = { key: String, newVal: Float ->
+        val updatedGo = gradOverlay.updateParameter(key, newVal)
+        val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) updatedGo else it }
+        onUpdateLayer(selectedLayer.copy(effects = nextEffects))
+    }
+
+    // Interactive local states for buttery smooth 60fps slider drags (resolves all lagging issues)
+    var localAngle by remember(goAngle) { mutableStateOf(goAngle) }
+    var localScale by remember(goScale) { mutableStateOf(goScale) }
+    var localOpacity by remember(goOpacity) { mutableStateOf(goOpacity) }
+
+    val isCustomMode = goPreset.toInt() == 7
+    val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+    val activeStopIndex = selectedStopIndex.coerceAtMost(stopCount - 1)
+
+    // Assemble modern list of custom colors
+    val customColorsList = mutableListOf<androidx.compose.ui.graphics.Color>()
+    for (idx in 0 until stopCount) {
+        val rKey = "CustomStop_${idx}_R"
+        val gKey = "CustomStop_${idx}_G"
+        val bKey = "CustomStop_${idx}_B"
+        val r = gradOverlay.parameters[rKey]?.value ?: when(idx) {
+            0 -> gradOverlay.parameters["CustomStart_R"]?.value ?: 1.0f
+            1 -> gradOverlay.parameters["CustomEnd_R"]?.value ?: 0.0f
+            2 -> 0.0f
+            3 -> 1.0f
+            4 -> 1.0f
+            else -> 0.5f
+        }
+        val g = gradOverlay.parameters[gKey]?.value ?: when(idx) {
+            0 -> gradOverlay.parameters["CustomStart_G"]?.value ?: 0.0f
+            1 -> gradOverlay.parameters["CustomEnd_G"]?.value ?: 0.0f
+            2 -> 1.0f
+            3 -> 1.0f
+            4 -> 0.5f
+            else -> 0.0f
+        }
+        val b = gradOverlay.parameters[bKey]?.value ?: when(idx) {
+            0 -> gradOverlay.parameters["CustomStart_B"]?.value ?: 0.0f
+            1 -> gradOverlay.parameters["CustomEnd_B"]?.value ?: 1.0f
+            2 -> 0.0f
+            3 -> 0.0f
+            4 -> 0.0f
+            else -> 1.0f
+        }
+        customColorsList.add(Color(r, g, b))
+    }
+
+    val previewColors = if (isCustomMode) {
+        customColorsList
+    } else {
+        gradientPresets[goPreset.toInt().coerceIn(0, gradientPresets.size - 1)]
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 4.dp)
+            .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // --- High-Contrast Dual-Tab Switcher for Preset Library vs Custom Maker ---
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(32.dp)
+                .background(Color(0xFF0F0F14), RoundedCornerShape(8.dp))
+                .padding(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (!isCustomMode) MidSlate else Color.Transparent)
+                    .clickable { 
+                        updateParam("Preset", 0f) 
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Preset Library",
+                    style = Typography.labelSmall.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 10.sp,
+                        color = if (!isCustomMode) IndustrialAmber else Color.LightGray
+                    )
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1.1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isCustomMode) MidSlate else Color.Transparent)
+                    .clickable { 
+                        updateParam("Preset", 7f) 
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Custom Stops 🎨",
+                    style = Typography.labelSmall.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 10.sp,
+                        color = if (isCustomMode) IndustrialAmber else Color.LightGray
+                    )
+                )
+            }
+        }
+
+        // --- 1. Gradient Style selection row ---
+        Text(
+            text = "Gradient Pattern",
+            style = Typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+            color = Color.LightGray
+        )
+        androidx.compose.foundation.lazy.LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(36.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val patterns = listOf(
+                "Linear 📐" to 0f,
+                "Radial 🎯" to 1f,
+                "Sweep 🧭" to 2f,
+                "Reflected 🪞" to 3f,
+                "Concentric 🛞" to 4f,
+                "Diamond 💎" to 5f,
+                "Reflected Rad 🌟" to 6f
+            )
+            items(patterns.size) { i ->
+                val (label, valFloat) = patterns[i]
+                val isSelected = gradientTypeOrdinal == valFloat.toInt()
+                Box(
+                    modifier = Modifier
+                        .height(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isSelected) IndustrialAmber else Color(0x15FFFFFF))
+                        .border(
+                            1.dp,
+                            if (isSelected) IndustrialAmber else Color(0x22FFFFFF),
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable { updateParam("GradientType", valFloat) }
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        style = Typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            color = if (isSelected) Color(0xFF131317) else Color.White
+                        )
+                    )
+                }
+            }
+        }
+
+        // --- 2. Interactive Multi-Stop Slider Track ---
+        Text(
+            text = if (isCustomMode) "Click on any color block to select & edit its color!" else "Click any end node to edit this preset color!",
+            style = Typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.SemiBold),
+            color = IndustrialAmber
+        )
+
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .background(Color(0xFF0F0F14), RoundedCornerShape(10.dp))
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            val totalWidth = maxWidth
+            
+            // Background Live Gradient bar representation of selected pattern
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(16.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .border(0.5.dp, Color(0x33FFFFFF), RoundedCornerShape(4.dp))
+            ) {
+                val brush = when (gradientTypeOrdinal) {
+                    1, 6 -> androidx.compose.ui.graphics.Brush.radialGradient(
+                        colors = previewColors,
+                        center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f),
+                        radius = (size.width / 2f).coerceAtLeast(1f)
+                    )
+                    2 -> androidx.compose.ui.graphics.Brush.sweepGradient(
+                        colors = previewColors,
+                        center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                    )
+                    3 -> {
+                        val reflectedColors = previewColors.reversed() + previewColors.drop(1)
+                        androidx.compose.ui.graphics.Brush.horizontalGradient(colors = reflectedColors)
+                    }
+                    else -> androidx.compose.ui.graphics.Brush.horizontalGradient(colors = previewColors)
+                }
+                drawRect(brush = brush)
+            }
+
+            // Distribute handles along the track
+            val handlesCount = if (isCustomMode) stopCount else previewColors.size
+            for (idx in 0 until handlesCount) {
+                val fraction = idx.toFloat() / (handlesCount - 1).coerceAtLeast(1)
+                val stopCol = if (isCustomMode) {
+                    customColorsList[idx]
+                } else {
+                    previewColors[idx.coerceIn(0, previewColors.size - 1)]
+                }
+                val isEditingThisStop = isCustomMode && idx == activeStopIndex
+                val offsetDp = (totalWidth - 28.dp) * fraction
+
+                Box(
+                    modifier = Modifier
+                        .offset(x = offsetDp)
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFF161622))
+                        .border(
+                            1.dp,
+                            if (isEditingThisStop) IndustrialAmber else Color(0x33FFFFFF),
+                            RoundedCornerShape(6.dp)
+                        )
+                        .padding(2.dp)
+                        .clickable {
+                            if (!isCustomMode) {
+                                // Automatically clone preset colors to custom stops & switch mode!
+                                var nextOverlay = gradOverlay.updateParameter("Preset", 7f) as StudioEffect.PhotoshopEffect
+                                nextOverlay = nextOverlay.updateParameter("CustomStopCount", previewColors.size.toFloat()) as StudioEffect.PhotoshopEffect
+                                for (i in previewColors.indices) {
+                                    val col = previewColors[i]
+                                    nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_R", col.red) as StudioEffect.PhotoshopEffect
+                                    nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_G", col.green) as StudioEffect.PhotoshopEffect
+                                    nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_B", col.blue) as StudioEffect.PhotoshopEffect
+                                }
+                                selectedStopIndex = idx
+                                val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) nextOverlay else it }
+                                onUpdateLayer(selectedLayer.copy(effects = nextEffects))
+                            } else {
+                                selectedStopIndex = idx
+                            }
+                        }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(stopCol)
+                            .border(
+                                BorderStroke(
+                                    if (isEditingThisStop) 2.dp else 0.5.dp,
+                                    if (isEditingThisStop) IndustrialAmber else Color.White
+                                ),
+                                RoundedCornerShape(4.dp)
+                            )
+                    ) {
+                        Text(
+                            text = (idx + 1).toString(),
+                            style = Typography.labelSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 9.sp,
+                                color = if (stopCol.red * 0.299 + stopCol.green * 0.587 + stopCol.blue * 0.114 > 0.5) Color.Black else Color.White
+                            ),
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- Tab 1 Content: PRESET LIBRARY patterns ---
+        if (!isCustomMode) {
+            Text(
+                text = "Preset Library Shortcuts",
+                style = Typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                color = Color.LightGray
+            )
+            androidx.compose.foundation.lazy.LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(38.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items(gradientPresets.size) { index ->
+                    val colors = gradientPresets[index]
+                    val isSelected = index == goPreset.toInt()
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(15.dp))
+                            .background(
+                                brush = androidx.compose.ui.graphics.Brush.linearGradient(colors = colors)
+                            )
+                            .border(
+                                BorderStroke(
+                                    if (isSelected) 2.5.dp else 1.dp,
+                                    if (isSelected) IndustrialAmber else Color(0x33FFFFFF)
+                                ),
+                                RoundedCornerShape(15.dp)
+                            )
+                            .clickable {
+                                updateParam("Preset", index.toFloat())
+                            }
+                    )
+                }
+            }
+        }
+
+        // --- Tab 2 Content: CUSTOM STOPS DESIGNER ---
+        if (isCustomMode) {
+            // Number of Stops Selection Row
+            Row(
+                modifier = Modifier.fillMaxWidth().height(30.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Stops:", style = Typography.labelSmall.copy(fontSize = 9.sp), color = Color.LightGray, modifier = Modifier.width(36.dp))
+                for (sc in 2..6) {
+                    val isCurrentCount = sc == stopCount
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(24.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (isCurrentCount) IndustrialAmber else Color(0x1FFFFFFF))
+                            .border(0.5.dp, if (isCurrentCount) IndustrialAmber else Color(0x33FFFFFF), RoundedCornerShape(4.dp))
+                            .clickable { updateParam("CustomStopCount", sc.toFloat()) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "$sc Way",
+                            style = Typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 9.sp,
+                                color = if (isCurrentCount) Color(0xFF131317) else Color.White
+                            )
+                        )
+                    }
+                }
+            }
+
+            val rKey = "CustomStop_${activeStopIndex}_R"
+            val gKey = "CustomStop_${activeStopIndex}_G"
+            val bKey = "CustomStop_${activeStopIndex}_B"
+            
+            val activeColor = customColorsList[activeStopIndex]
+
+            val activeHsv = remember(activeColor) {
+                val hsvArr = FloatArray(3)
+                android.graphics.Color.RGBToHSV(
+                    (activeColor.red * 255f).toInt(),
+                    (activeColor.green * 255f).toInt(),
+                    (activeColor.blue * 255f).toInt(),
+                    hsvArr
+                )
+                hsvArr
+            }
+
+            val activeHue = activeHsv[0]
+            val activeSat = activeHsv[1]
+            val activeVal = activeHsv[2]
+
+            val updateStopColorRGB = { rVal: Float, gVal: Float, bVal: Float ->
+                var nextOverlay = gradOverlay.updateParameter("CustomStop_${activeStopIndex}_R", rVal) as StudioEffect.PhotoshopEffect
+                nextOverlay = nextOverlay.updateParameter("CustomStop_${activeStopIndex}_G", gVal) as StudioEffect.PhotoshopEffect
+                nextOverlay = nextOverlay.updateParameter("CustomStop_${activeStopIndex}_B", bVal) as StudioEffect.PhotoshopEffect
+                
+                if (activeStopIndex == 0) {
+                    nextOverlay = nextOverlay.updateParameter("CustomStart_R", rVal) as StudioEffect.PhotoshopEffect
+                    nextOverlay = nextOverlay.updateParameter("CustomStart_G", gVal) as StudioEffect.PhotoshopEffect
+                    nextOverlay = nextOverlay.updateParameter("CustomStart_B", bVal) as StudioEffect.PhotoshopEffect
+                } else if (activeStopIndex == 1) {
+                    nextOverlay = nextOverlay.updateParameter("CustomEnd_R", rVal) as StudioEffect.PhotoshopEffect
+                    nextOverlay = nextOverlay.updateParameter("CustomEnd_G", gVal) as StudioEffect.PhotoshopEffect
+                    nextOverlay = nextOverlay.updateParameter("CustomEnd_B", bVal) as StudioEffect.PhotoshopEffect
+                }
+                
+                val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) nextOverlay else it }
+                onUpdateLayer(selectedLayer.copy(effects = nextEffects))
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                var wheelSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+                
+                val updateColorFromOffset = { offset: androidx.compose.ui.geometry.Offset ->
+                    val w = wheelSize.width.toFloat()
+                    val h = wheelSize.height.toFloat()
+                    if (w > 0f && h > 0f) {
+                        val cx = w / 2f
+                        val cy = h / 2f
+                        val dx = offset.x - cx
+                        val dy = offset.y - cy
+                        val distance = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                        val maxRadius = w / 2f
+                        
+                        var hue = Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                        if (hue < 0f) hue += 360f
+                        
+                        val sat = (distance / maxRadius).coerceIn(0f, 1f)
+                        
+                        val rgb = android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, activeVal))
+                        updateStopColorRGB(
+                            android.graphics.Color.red(rgb) / 255f,
+                            android.graphics.Color.green(rgb) / 255f,
+                            android.graphics.Color.blue(rgb) / 255f
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(126.dp)
+                        .background(Color(0xFF0F0F14), CircleShape)
+                        .clip(CircleShape)
+                        .border(1.dp, Color(0x22FFFFFF), CircleShape)
+                        .onSizeChanged { wheelSize = it }
+                        .pointerInput(activeStopIndex, activeVal) {
+                            detectTapGestures { offset ->
+                                updateColorFromOffset(offset)
+                            }
+                        }
+                        .pointerInput(activeStopIndex, activeVal) {
+                            detectDragGestures { change, _ ->
+                                change.consume()
+                                updateColorFromOffset(change.position)
+                            }
+                        }
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawCircle(
+                            brush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                                colors = listOf(
+                                    Color.Red, Color.Magenta, Color.Blue, Color.Cyan, Color.Green, Color.Yellow, Color.Red
+                                )
+                            )
+                        )
+                        drawCircle(
+                            brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                colors = listOf(Color.White, Color.Transparent),
+                                radius = size.width / 2f
+                            )
+                        )
+                    }
+
+                    if (wheelSize.width > 0 && wheelSize.height > 0) {
+                        val w = wheelSize.width.toFloat()
+                        val h = wheelSize.height.toFloat()
+                        val cx = w / 2f
+                        val cy = h / 2f
+                        val angleScale = Math.toRadians(activeHue.toDouble())
+                        val radiusPct = activeSat * (w / 2f)
+                        val rxPx = cx + (radiusPct * Math.cos(angleScale)).toFloat()
+                        val ryPx = cy + (radiusPct * Math.sin(angleScale)).toFloat()
+                        
+                        val density = androidx.compose.ui.platform.LocalDensity.current
+                        val rxDp = with(density) { rxPx.toDp() }
+                        val ryDp = with(density) { ryPx.toDp() }
+
+                        Box(
+                            modifier = Modifier
+                                .absoluteOffset(x = rxDp - 8.dp, y = ryDp - 8.dp)
+                                .size(16.dp)
+                                .background(Color.White, CircleShape)
+                                .border(2.dp, Color.Black, CircleShape)
+                        )
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Quick Swatches",
+                        style = Typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                        color = Color.LightGray
+                    )
+
+                    val swatches = listOf(
+                        Color(0xFFE53935), Color(0xFFFB8C00), Color(0xFFFFB300), 
+                        Color(0xFF7CB342), Color(0xFF00ACC1), Color(0xFF1E88E5), 
+                        Color(0xFF8E24AA), Color(0xFFFFFFFF), Color(0xFF888888), 
+                        Color(0xFF000000)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        swatches.take(5).forEach { color ->
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(color)
+                                    .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        updateStopColorRGB(color.red, color.green, color.blue)
+                                    }
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        swatches.drop(5).forEach { color ->
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(color)
+                                    .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        updateStopColorRGB(color.red, color.green, color.blue)
+                                    }
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Lightness / Shade",
+                        style = Typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Medium),
+                        color = Color.LightGray
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        var bLocal by remember(activeVal) { mutableStateOf(activeVal) }
+                        Slider(
+                            value = bLocal,
+                            onValueChange = {
+                                bLocal = it
+                                val rgb = android.graphics.Color.HSVToColor(floatArrayOf(activeHue, activeSat, it))
+                                updateStopColorRGB(
+                                    android.graphics.Color.red(rgb) / 255f,
+                                    android.graphics.Color.green(rgb) / 255f,
+                                    android.graphics.Color.blue(rgb) / 255f
+                                )
+                            },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(
+                                activeTrackColor = IndustrialAmber,
+                                thumbColor = IndustrialAmber
+                            ),
+                            modifier = Modifier.weight(1f).height(16.dp)
+                        )
+                        Text(
+                            text = "${(bLocal * 100).toInt()}%",
+                            style = Typography.labelSmall.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        // Sliders section for Angle, Scale and Opacity Blend
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            // Angle Slider
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Angle",
+                    style = Typography.labelSmall.copy(fontSize = 9.sp),
+                    color = Color.LightGray,
+                    modifier = Modifier.width(36.dp)
+                )
+                Slider(
+                    value = localAngle,
+                    onValueChange = { 
+                        localAngle = it
+                        updateParam("Angle", it) 
+                    },
+                    valueRange = -180f..180f,
+                    colors = SliderDefaults.colors(
+                        activeTrackColor = IndustrialAmber,
+                        thumbColor = IndustrialAmber
+                    ),
+                    modifier = Modifier.weight(1f).height(18.dp)
+                )
+                Text(
+                    text = "${localAngle.toInt()}°",
+                    style = Typography.labelSmall.copy(fontSize = 8.sp),
+                    color = Color.White,
+                    modifier = Modifier.width(28.dp),
+                    textAlign = TextAlign.End
+                )
+            }
+
+            // Scale Slider
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Scale",
+                    style = Typography.labelSmall.copy(fontSize = 9.sp),
+                    color = Color.LightGray,
+                    modifier = Modifier.width(36.dp)
+                )
+                Slider(
+                    value = localScale,
+                    onValueChange = { 
+                        localScale = it
+                        updateParam("Scale", it) 
+                    },
+                    valueRange = 10f..150f,
+                    colors = SliderDefaults.colors(
+                        activeTrackColor = IndustrialAmber,
+                        thumbColor = IndustrialAmber
+                    ),
+                    modifier = Modifier.weight(1f).height(18.dp)
+                )
+                Text(
+                    text = "${localScale.toInt()}%",
+                    style = Typography.labelSmall.copy(fontSize = 8.sp),
+                    color = Color.White,
+                    modifier = Modifier.width(28.dp),
+                    textAlign = TextAlign.End
+                )
+            }
+
+            // Opacity Slider
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Blend",
+                    style = Typography.labelSmall.copy(fontSize = 9.sp),
+                    color = Color.LightGray,
+                    modifier = Modifier.width(36.dp)
+                )
+                Slider(
+                    value = localOpacity,
+                    onValueChange = { 
+                        localOpacity = it
+                        updateParam("Opacity", it) 
+                    },
+                    valueRange = 0f..1f,
+                    colors = SliderDefaults.colors(
+                        activeTrackColor = IndustrialAmber,
+                        thumbColor = IndustrialAmber
+                    ),
+                    modifier = Modifier.weight(1f).height(18.dp)
+                )
+                Text(
+                    text = "${(localOpacity * 100).toInt()}%",
+                    style = Typography.labelSmall.copy(fontSize = 8.sp),
+                    color = Color.White,
+                    modifier = Modifier.width(28.dp),
+                    textAlign = TextAlign.End
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun HsvColorPickerPanel(
+    currentColor: Color,
+    currentOpacity: Float,
+    onColorChanged: (Color) -> Unit,
+    modifier: Modifier = Modifier,
+    selectedLayer: StudioLayer? = null,
+    onUpdateLayer: ((StudioLayer) -> Unit)? = null
+) {
+    var fillMode by remember { mutableStateOf("Solid") } // "Transparent", "Solid", "Gradient", "Media"
+
+    LaunchedEffect(selectedLayer) {
+        if (selectedLayer != null) {
+            val hasGrid = selectedLayer.effects.any { it is StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" }
+            if (hasGrid) {
+                fillMode = "Gradient"
+            } else if (selectedLayer.baseColor == Color.Transparent) {
+                fillMode = "Transparent"
+            } else {
+                fillMode = "Solid"
+            }
+        }
+    }
+    
+    // Safely convert current RGB color to HSV components on changes to avoid crashes on non-sRGB colorspaces
+    val hsv = remember(currentColor) {
+        val arr = FloatArray(3)
+        try {
+            val srgbColor = try {
+                currentColor.convert(androidx.compose.ui.graphics.colorspace.ColorSpaces.Srgb)
+            } catch (e: Exception) {
+                currentColor
+            }
+            val r = (srgbColor.red * 255f).toInt().coerceIn(0, 255)
+            val g = (srgbColor.green * 255f).toInt().coerceIn(0, 255)
+            val b = (srgbColor.blue * 255f).toInt().coerceIn(0, 255)
+            android.graphics.Color.RGBToHSV(r, g, b, arr)
+        } catch (e: Exception) {
+            arr[0] = 0f
+            arr[1] = 0f
+            arr[2] = 0f
+        }
+        arr
+    }
+    val hue = hsv[0].coerceIn(0f, 360f)
+    val saturation = hsv[1].coerceIn(0f, 1f)
+    val value = hsv[2].coerceIn(0f, 1f)
+    val opacity = currentOpacity.coerceIn(0f, 1f)
+
+    // Save custom swatches locally
+    val customSwatches = remember {
+        mutableStateListOf(
+            Color(0xFFFFB300), Color(0xFF29B6F6), Color(0xFF4CAF50), Color(0xFFE91E63),
+            Color.White, Color.Black, Color(0xFFE53935), Color(0xFF9C27B0)
+        )
+    }
+    
+    var showPaletteDropdown by remember { mutableStateOf(false) }
+
+    // Hex expression builder and opacity percent representation wrapped safely
+    val hexCode = remember(currentColor) {
+        try {
+            val srgbColor = try {
+                currentColor.convert(androidx.compose.ui.graphics.colorspace.ColorSpaces.Srgb)
+            } catch (e: Exception) {
+                currentColor
+            }
+            val r = (srgbColor.red * 255f).toInt().coerceIn(0, 255)
+            val g = (srgbColor.green * 255f).toInt().coerceIn(0, 255)
+            val b = (srgbColor.blue * 255f).toInt().coerceIn(0, 255)
+            String.format("#%02X%02X%02X", r, g, b)
+        } catch (e: Exception) {
+            "#000000"
+        }
+    }
+    val opacityPercent = (opacity * 100).toInt()
+
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+            .padding(6.dp)
+    ) {
+        // 1. Top 4-tab fill mode bar (Transparent, Solid, Gradient, Media)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(30.dp)
+                .background(Color(0xFF0F0F14), RoundedCornerShape(6.dp))
+                .padding(2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val tabs = listOf(
+                "Transparent" to Icons.Default.Block,
+                "Solid" to Icons.Default.FormatColorFill,
+                "Gradient" to Icons.Default.Gradient,
+                "Media" to Icons.Default.Image
+            )
+            tabs.forEach { (mode, icon) ->
+                val isSelected = fillMode == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (isSelected) MidSlate else Color.Transparent)
+                        .clickable {
+                            fillMode = mode
+                            if (mode == "Transparent") {
+                                onColorChanged(Color.Transparent)
+                                if (selectedLayer != null && onUpdateLayer != null) {
+                                    val nextEffects = selectedLayer.effects.filter { !(it is StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay") }
+                                    onUpdateLayer(selectedLayer.copy(effects = nextEffects, baseColor = Color.Transparent))
+                                }
+                            } else if (mode == "Solid") {
+                                val sCol = Color.hsv(hue.coerceIn(0f, 360f), saturation.coerceIn(0f, 1f), value.coerceIn(0f, 1f), 1.0f)
+                                onColorChanged(sCol)
+                                if (selectedLayer != null && onUpdateLayer != null) {
+                                    val nextEffects = selectedLayer.effects.filter { !(it is StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay") }
+                                    onUpdateLayer(selectedLayer.copy(effects = nextEffects, baseColor = sCol))
+                                }
+                            } else if (mode == "Gradient") {
+                                if (selectedLayer != null && onUpdateLayer != null) {
+                                    val hasGrid = selectedLayer.effects.any { it is StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" }
+                                    if (!hasGrid) {
+                                        val newGrad = PhotoshopEffectTemplates.create(effectType = "GradientOverlay")
+                                        onUpdateLayer(selectedLayer.copy(effects = selectedLayer.effects + newGrad))
+                                    }
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = mode,
+                        tint = if (isSelected) IndustrialAmber else Color(0x99FFFFFF),
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+
+        // Split center area container
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            if (showPaletteDropdown) {
+                // Swatches dropdown grid
+                Column(
+                    modifier = Modifier
+                        .weight(1.5f)
+                        .fillMaxHeight()
+                        .background(Color(0xFF060608), RoundedCornerShape(6.dp))
+                        .padding(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Custom Swatches", style = MaterialTheme.typography.labelSmall, color = IndustrialAmber, fontSize = 10.sp)
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White,
+                            modifier = Modifier.size(12.dp).clickable { showPaletteDropdown = false }
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(4),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.fillMaxWidth().weight(1f)
+                    ) {
+                        items(customSwatches.size) { idx ->
+                            val sCol = customSwatches[idx]
+                            Box(
+                                modifier = Modifier
+                                    .aspectRatio(1f)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(sCol)
+                                    .border(
+                                        BorderStroke(
+                                            if (currentColor == sCol) 2.dp else 0.5.dp,
+                                            if (currentColor == sCol) IndustrialAmber else Color(0x33FFFFFF)
+                                        ),
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .clickable { onColorChanged(sCol) }
+                            )
+                        }
+                    }
+                }
+            } else if (fillMode == "Gradient") {
+                GradientPickerPanel(
+                    selectedLayer = selectedLayer,
+                    onUpdateLayer = onUpdateLayer,
+                    modifier = Modifier.weight(1.5f).fillMaxHeight()
+                )
+            } else {
+                // S/V pad on left and Hue ring on right
+                Row(
+                    modifier = Modifier
+                        .weight(1.5f)
+                        .fillMaxHeight(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Saturation/Value Pad
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(6.dp))
+                            .border(BorderStroke(0.5.dp, Color(0xFF4C5575)), RoundedCornerShape(6.dp))
+                    ) {
+                        // Safe extraction of constraints to prevent NaN / Infinity on unmeasured bounds
+                        val cMaxW = if (constraints.maxWidth == androidx.compose.ui.unit.Constraints.Infinity) 400 else constraints.maxWidth
+                        val cMaxH = if (constraints.maxHeight == androidx.compose.ui.unit.Constraints.Infinity) 400 else constraints.maxHeight
+                        val padWidth = cMaxW.toFloat().coerceAtLeast(1f)
+                        val padHeight = cMaxH.toFloat().coerceAtLeast(1f)
+
+                        val handleTouch = { touchOffset: Offset ->
+                            val s = (touchOffset.x / padWidth).coerceIn(0f, 1f)
+                            val v = (1f - (touchOffset.y / padHeight)).coerceIn(0f, 1f)
+                            onColorChanged(Color.hsv(hue.coerceIn(0f, 360f), s, v, opacity.coerceIn(0f, 1f)))
+                        }
+
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInput(hue) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        handleTouch(down.position)
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            val anyPressed = event.changes.any { it.pressed }
+                                            if (!anyPressed) break
+                                            val pointer = event.changes.firstOrNull()
+                                            if (pointer != null) {
+                                                pointer.consume()
+                                                handleTouch(pointer.position)
+                                            }
+                                        }
+                                    }
+                                }
+                        ) {
+                            val baseHueColor = Color.hsv(hue.coerceIn(0f, 360f), 1f, 1f)
+                            drawRect(
+                                brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                    colors = listOf(Color.White, baseHueColor)
+                                )
+                            )
+                            drawRect(
+                                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    colors = listOf(Color.Transparent, Color.Black)
+                                )
+                            )
+
+                            // Slider indicator thumb
+                            val thumbX = saturation * size.width
+                            val thumbY = (1f - value) * size.height
+                            
+                            drawCircle(
+                                color = Color.Black,
+                                radius = 7f,
+                                center = Offset(thumbX, thumbY),
+                                style = Stroke(width = 3f)
+                            )
+                            drawCircle(
+                                color = Color.White,
+                                radius = 7f,
+                                center = Offset(thumbX, thumbY),
+                                style = Stroke(width = 1.5f)
+                            )
+                        }
+                    }
+
+                    // Hue ring circle with angular coordinate updates
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // Safe extraction of constraints to prevent NaN / Infinity on unmeasured bounds
+                        val cMaxW = if (constraints.maxWidth == androidx.compose.ui.unit.Constraints.Infinity) 300 else constraints.maxWidth
+                        val cMaxH = if (constraints.maxHeight == androidx.compose.ui.unit.Constraints.Infinity) 300 else constraints.maxHeight
+                        val sizePx = minOf(cMaxW, cMaxH).toFloat().coerceAtLeast(1f)
+                        val center = Offset(sizePx / 2f, sizePx / 2f)
+                        val strokeWidth = 12f
+                        val outerRadius = (sizePx - strokeWidth * 2.2f) / 2f
+
+                        val handleRingTouch = { touchOffset: Offset ->
+                            val dx = touchOffset.x - center.x
+                            val dy = touchOffset.y - center.y
+                            val angleRad = Math.atan2(dy.toDouble(), dx.toDouble())
+                            var angleDeg = Math.toDegrees(angleRad).toFloat()
+                            if (angleDeg.isNaN()) {
+                                angleDeg = 0f
+                            }
+                            if (angleDeg < 0f) {
+                                angleDeg += 360f
+                            }
+                            val nextHue = (angleDeg % 360f).coerceIn(0f, 360f)
+                            onColorChanged(Color.hsv(nextHue, saturation, value, opacity.coerceIn(0f, 1f)))
+                        }
+
+                        Canvas(
+                            modifier = Modifier
+                                .size((sizePx / androidx.compose.ui.platform.LocalDensity.current.density).dp)
+                                .pointerInput(saturation, value) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        handleRingTouch(down.position)
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            val anyPressed = event.changes.any { it.pressed }
+                                            if (!anyPressed) break
+                                            val pointer = event.changes.firstOrNull()
+                                            if (pointer != null) {
+                                                pointer.consume()
+                                                handleRingTouch(pointer.position)
+                                            }
+                                        }
+                                    }
+                                }
+                        ) {
+                            val hueColors = listOf(
+                                Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red
+                            )
+                            drawCircle(
+                                brush = androidx.compose.ui.graphics.Brush.sweepGradient(colors = hueColors),
+                                radius = outerRadius,
+                                style = Stroke(width = strokeWidth)
+                             )
+
+                            // Ring central core preview backer
+                            drawCircle(
+                                color = Color(0xFF0E111A),
+                                radius = outerRadius - strokeWidth * 0.9f
+                            )
+
+                            // Rotational indicator dot
+                            val angleRad = Math.toRadians(hue.toDouble()).toFloat()
+                            val tX = center.x + outerRadius * kotlin.math.cos(angleRad)
+                            val tY = center.y + outerRadius * kotlin.math.sin(angleRad)
+                            
+                            drawCircle(
+                                color = Color.Black,
+                                radius = 6f,
+                                center = Offset(tX, tY)
+                            )
+                            drawCircle(
+                                color = IndustrialAmber,
+                                radius = 4f,
+                                center = Offset(tX, tY)
+                            )
+                        }
+
+                        // Central real-time status label
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(4.dp)
+                        ) {
+                            Text(
+                                text = hexCode,
+                                style = Typography.labelSmall.copy(fontSize = 9.sp),
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                            Text(
+                                text = "($opacityPercent%)",
+                                style = Typography.labelSmall.copy(fontSize = 8.sp),
+                                color = IndustrialAmber,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.width(4.dp))
+
+            // 3. Right Vertical Utility Bar
+            Column(
+                modifier = Modifier
+                    .width(36.dp)
+                    .fillMaxHeight()
+                    .background(Color(0xFF0F0F14), RoundedCornerShape(6.dp))
+                    .padding(vertical = 4.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                
+                IconButton(
+                    onClick = {
+                        android.widget.Toast.makeText(context, "Eyedropper interactive mode active. Tap on any layer to sample color.", android.widget.Toast.LENGTH_LONG).show()
+                    },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Colorize,
+                        contentDescription = "Eyedropper",
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = {
+                        if (!customSwatches.contains(currentColor)) {
+                            customSwatches.add(0, currentColor)
+                            android.widget.Toast.makeText(context, "Color added to custom palette swatches!", android.widget.Toast.LENGTH_SHORT).show()
+                        } else {
+                            android.widget.Toast.makeText(context, "Already saved to swatches.", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentPaste,
+                        contentDescription = "Add Swatch",
+                        tint = IndustrialAmber,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = { showPaletteDropdown = !showPaletteDropdown },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Palette,
+                        contentDescription = "Swatches Palette",
+                        tint = if (showPaletteDropdown) IndustrialAmber else Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+fun getLayerEffectiveColor(layer: StudioLayer, layerOpacity: Float): Color {
+    val srgbColor = try {
+        layer.baseColor.convert(androidx.compose.ui.graphics.colorspace.ColorSpaces.Srgb)
+    } catch (e: Exception) {
+        layer.baseColor
+    }
+    var r = srgbColor.red
+    var g = srgbColor.green
+    var b = srgbColor.blue
+    val a = layerOpacity * layer.opacity
+
+    for (effect in layer.effects) {
+        if (!effect.isEnabled) continue
+        when (effect) {
+            is StudioEffect.ColorBalance -> {
+                val hueShift = effect.parameters["HueShift"]?.value ?: 0f
+                val brightness = effect.parameters["Brightness"]?.value ?: 1.0f
+                val saturation = effect.parameters["Saturation"]?.value ?: 1.0f
+
+                val hsv = hsvBufferLocal.get()
+                rgbToHsv(r, g, b, hsv)
+                hsv[0] = (hsv[0] + hueShift) % 360f
+                if (hsv[0] < 0) hsv[0] += 360f
+                hsv[1] = (hsv[1] * saturation).coerceIn(0f, 1f)
+                hsv[2] = (hsv[2] * brightness).coerceIn(0f, 1f)
+
+                val rgb = rgbBufferLocal.get()
+                hsvToRgbBuffer(hsv[0], hsv[1], hsv[2], rgb)
+                r = rgb[0]
+                g = rgb[1]
+                b = rgb[2]
+            }
+            is StudioEffect.Invert -> {
+                r = 1.0f - r
+                g = 1.0f - g
+                b = 1.0f - b
+            }
+            is StudioEffect.Threshold -> {
+                val threshold = effect.parameters["Threshold"]?.value ?: 0.5f
+                val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                val binary = if (luma >= threshold) 1.0f else 0.0f
+                r = binary
+                g = binary
+                b = binary
+            }
+            is StudioEffect.Posterize -> {
+                val levels = effect.parameters["Levels"]?.value ?: 4f
+                val steps = maxOf(2f, levels) - 1f
+                r = Math.round(r * steps).toFloat() / steps
+                g = Math.round(g * steps).toFloat() / steps
+                b = Math.round(b * steps).toFloat() / steps
+            }
+            is StudioEffect.PhotoshopEffect -> {
+                when (effect.effectType) {
+                    "ColorOverlay" -> {
+                        val hueShift = effect.parameters["HueShift"]?.value ?: 0f
+                        val opacity = effect.parameters["Opacity"]?.value ?: 1.0f
+                        val hsv = hsvBufferLocal.get()
+                        rgbToHsv(r, g, b, hsv)
+                        hsv[0] = (hsv[0] + hueShift) % 360f
+                        if (hsv[0] < 0) hsv[0] += 360f
+                        val rgb = rgbBufferLocal.get()
+                        hsvToRgbBuffer(hsv[0], hsv[1], hsv[2], rgb)
+                        r = r * (1f - opacity) + rgb[0] * opacity
+                        g = g * (1f - opacity) + rgb[1] * opacity
+                        b = b * (1f - opacity) + rgb[2] * opacity
+                    }
+                    "CameraRaw" -> {
+                        val exposure = effect.parameters["Exposure"]?.value ?: 0f
+                        val contrast = effect.parameters["Contrast"]?.value ?: 0f
+                        val clarity = effect.parameters["Clarity"]?.value ?: 0f
+                        val vibrance = effect.parameters["Vibrance"]?.value ?: 0f
+
+                        val factor = Math.pow(2.0, exposure.toDouble()).toFloat()
+                        r = (r * factor).coerceIn(0f, 1f)
+                        g = (g * factor).coerceIn(0f, 1f)
+                        b = (b * factor).coerceIn(0f, 1f)
+
+                        val cFactor = (contrast + 100f) / 100f
+                        r = ((r - 0.5f) * cFactor + 0.5f).coerceIn(0f, 1f)
+                        g = ((g - 0.5f) * cFactor + 0.5f).coerceIn(0f, 1f)
+                        b = ((b - 0.5f) * cFactor + 0.5f).coerceIn(0f, 1f)
+
+                        if (vibrance != 0f) {
+                            val vFactor = (vibrance + 100f) / 100f
+                            val hsv = hsvBufferLocal.get()
+                            rgbToHsv(r, g, b, hsv)
+                            hsv[1] = (hsv[1] * vFactor).coerceIn(0f, 1f)
+                            val rgb = rgbBufferLocal.get()
+                            hsvToRgbBuffer(hsv[0], hsv[1], hsv[2], rgb)
+                            r = rgb[0]
+                            g = rgb[1]
+                            b = rgb[2]
+                        }
+                    }
+                    "Solarize" -> {
+                        val threshold = effect.parameters["Threshold"]?.value ?: 0.5f
+                        val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                        if (luma > threshold) {
+                            r = 1.0f - r
+                            g = 1.0f - g
+                            b = 1.0f - b
+                        }
+                    }
+                    "ColorGrading" -> {
+                        val presetVal = effect.parameters["Preset"]?.value?.toInt() ?: 0
+                        val intensity = effect.parameters["Intensity"]?.value ?: 1.0f
+
+                        var targetR = r
+                        var targetG = g
+                        var targetB = b
+
+                        // Evaluate presets
+                        when (presetVal) {
+                            0 -> { // Cinematic Warmth
+                                targetR = (r * 1.15f + 0.05f).coerceIn(0f, 1f)
+                                targetG = (g * 1.05f).coerceIn(0f, 1f)
+                                targetB = (b * 0.90f - 0.02f).coerceIn(0f, 1f)
+                            }
+                            1 -> { // Cyberpunk Teal & Orange
+                                val avg = (r + g + b) / 3f
+                                if (avg > 0.5f) {
+                                    targetR = (r * 1.2f).coerceIn(0f, 1f)
+                                    targetG = (g * 0.8f).coerceIn(0f, 1f)
+                                    targetB = (b * 1.1f).coerceIn(0f, 1f)
+                                } else {
+                                    targetR = (r * 0.7f).coerceIn(0f, 1f)
+                                    targetG = (g * 1.15f).coerceIn(0f, 1f)
+                                    targetB = (b * 1.2f).coerceIn(0f, 1f)
+                                }
+                            }
+                            2 -> { // Mono Contrast
+                                val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                                val cValue = if (luma < 0.5f) {
+                                    (luma * 0.8f).coerceIn(0f, 1f)
+                                } else {
+                                    (luma * 1.2f).coerceIn(0f, 1f)
+                                }
+                                targetR = cValue
+                                targetG = cValue
+                                targetB = cValue
+                            }
+                            3 -> { // Cold Frost
+                                targetR = (r * 0.85f).coerceIn(0f, 1f)
+                                targetG = (g * 1.02f).coerceIn(0f, 1f)
+                                targetB = (b * 1.25f + 0.05f).coerceIn(0f, 1f)
+                            }
+                            4 -> { // Dreamy Pastel
+                                targetR = (r * 0.9f + 0.1f).coerceIn(0f, 1f)
+                                targetG = (g * 0.9f + 0.12f).coerceIn(0f, 1f)
+                                targetB = (b * 0.9f + 0.15f).coerceIn(0f, 1f)
+                            }
+                            5 -> { // Vintage Sepia
+                                val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                                targetR = (luma * 1.15f).coerceIn(0f, 1f)
+                                targetG = (luma * 1.02f).coerceIn(0f, 1f)
+                                targetB = (luma * 0.82f).coerceIn(0f, 1f)
+                            }
+                            6 -> { // Acid Neon
+                                targetR = (r * 1.2f + 0.05f).coerceIn(0f, 1f)
+                                targetG = (g * 1.3f + 0.08f).coerceIn(0f, 1f)
+                                targetB = (b * 0.7f).coerceIn(0f, 1f)
+                            }
+                        }
+
+                        r = r * (1f - intensity) + targetR * intensity
+                        g = g * (1f - intensity) + targetG * intensity
+                        b = b * (1f - intensity) + targetB * intensity
+
+                        // --- 1. Basic Tonal Adjustments ---
+                        val exposure = effect.parameters["Exposure"]?.value ?: 0f
+                        if (exposure != 0f) {
+                            val expFactor = Math.pow(2.0, exposure.toDouble()).toFloat()
+                            r = (r * expFactor).coerceIn(0f, 1f)
+                            g = (g * expFactor).coerceIn(0f, 1f)
+                            b = (b * expFactor).coerceIn(0f, 1f)
+                        }
+
+                        val contrast = effect.parameters["Contrast"]?.value ?: 0f
+                        if (contrast != 0f) {
+                            val cFactor = (contrast + 100f) / 100f
+                            r = ((r - 0.5f) * cFactor + 0.5f).coerceIn(0f, 1f)
+                            g = ((g - 0.5f) * cFactor + 0.5f).coerceIn(0f, 1f)
+                            b = ((b - 0.5f) * cFactor + 0.5f).coerceIn(0f, 1f)
+                        }
+
+                        val highlights = effect.parameters["Highlights"]?.value ?: 0f
+                        val shadows = effect.parameters["Shadows"]?.value ?: 0f
+                        if (highlights != 0f || shadows != 0f) {
+                            val luma = r * 0.299f + g * 0.587f + b * 0.114f
+                            val hlWeight = (luma * luma).coerceIn(0f, 1f)
+                            val shWeight = (1f - luma) * (1f - luma)
+                            val hlFactor = 1f + (highlights / 100f) * 0.35f
+                            val shFactor = 1f + (shadows / 100f) * 0.35f
+                            r = (r * (hlWeight * (hlFactor - 1f) + shWeight * (shFactor - 1f) + 1f)).coerceIn(0f, 1f)
+                            g = (g * (hlWeight * (hlFactor - 1f) + shWeight * (shFactor - 1f) + 1f)).coerceIn(0f, 1f)
+                            b = (b * (hlWeight * (hlFactor - 1f) + shWeight * (shFactor - 1f) + 1f)).coerceIn(0f, 1f)
+                        }
+
+                        val whites = effect.parameters["Whites"]?.value ?: 0f
+                        val blacks = effect.parameters["Blacks"]?.value ?: 0f
+                        if (whites != 0f || blacks != 0f) {
+                            val whiteShift = (whites / 100f) * 0.15f
+                            val blackShift = (blacks / 100f) * 0.15f
+                            r = (r + whiteShift + blackShift).coerceIn(0f, 1f)
+                            g = (g + whiteShift + blackShift).coerceIn(0f, 1f)
+                            b = (b + whiteShift + blackShift).coerceIn(0f, 1f)
+                        }
+
+                        // --- 2. Color & White Balance ---
+                        val temp = effect.parameters["Temperature"]?.value ?: 6500f
+                        if (temp != 6500f) {
+                            val tempOffset = (temp - 6500f) / 4500f
+                            if (tempOffset < 0f) {
+                                r = (r + tempOffset * 0.15f).coerceIn(0f, 1f)
+                                g = (g + tempOffset * 0.05f).coerceIn(0f, 1f)
+                                b = (b - tempOffset * 0.20f).coerceIn(0f, 1f)
+                            } else {
+                                r = (r + tempOffset * 0.20f).coerceIn(0f, 1f)
+                                g = (g + tempOffset * 0.08f).coerceIn(0f, 1f)
+                                b = (b - tempOffset * 0.15f).coerceIn(0f, 1f)
+                            }
+                        }
+
+                        val tintVal = effect.parameters["Tint"]?.value ?: 0f
+                        if (tintVal != 0f) {
+                            val tintFactor = tintVal / 100f
+                            if (tintFactor < 0f) {
+                                g = (g - tintFactor * 0.15f).coerceIn(0f, 1f)
+                                r = (r + tintFactor * 0.07f).coerceIn(0f, 1f)
+                                b = (b + tintFactor * 0.07f).coerceIn(0f, 1f)
+                            } else {
+                                r = (r + tintFactor * 0.12f).coerceIn(0f, 1f)
+                                b = (b + tintFactor * 0.12f).coerceIn(0f, 1f)
+                                g = (g - tintFactor * 0.15f).coerceIn(0f, 1f)
+                            }
+                        }
+
+                        val vibrance = effect.parameters["Vibrance"]?.value ?: 0f
+                        val lumaVal = r * 0.299f + g * 0.587f + b * 0.114f
+                        if (vibrance != 0f) {
+                            val mVal = maxOf(r, g, b)
+                            val minVal = minOf(r, g, b)
+                            val sat = if (mVal > 0f) (mVal - minVal) / mVal else 0f
+                            val vibAmount = (vibrance / 100f) * 0.5f
+                            val vibFactor = vibAmount * (1f - sat)
+                            r = (r + (r - lumaVal) * vibFactor).coerceIn(0f, 1f)
+                            g = (g + (g - lumaVal) * vibFactor).coerceIn(0f, 1f)
+                            b = (b + (b - lumaVal) * vibFactor).coerceIn(0f, 1f)
+                        }
+
+                        val saturation = effect.parameters["Saturation"]?.value ?: 0f
+                        if (saturation != 0f) {
+                            val satFactor = 1f + (saturation / 100f)
+                            r = (lumaVal + (r - lumaVal) * satFactor).coerceIn(0f, 1f)
+                            g = (lumaVal + (g - lumaVal) * satFactor).coerceIn(0f, 1f)
+                            b = (lumaVal + (b - lumaVal) * satFactor).coerceIn(0f, 1f)
+                        }
+
+                        // --- 3. Detail & Presence ---
+                        val clarity = effect.parameters["Clarity"]?.value ?: 0f
+                        if (clarity != 0f) {
+                            val curLuma = r * 0.299f + g * 0.587f + b * 0.114f
+                            val midToneWeight = (1f - 4f * (curLuma - 0.5f) * (curLuma - 0.5f)).coerceIn(0f, 1f)
+                            val clarityFactor = 1f + (clarity / 100f) * 0.3f
+                            r = (r + (r - 0.5f) * (clarityFactor - 1f) * midToneWeight).coerceIn(0f, 1f)
+                            g = (g + (g - 0.5f) * (clarityFactor - 1f) * midToneWeight).coerceIn(0f, 1f)
+                            b = (b + (b - 0.5f) * (clarityFactor - 1f) * midToneWeight).coerceIn(0f, 1f)
+                        }
+
+                        val texture = effect.parameters["Texture"]?.value ?: 0f
+                        if (texture != 0f) {
+                            val tFactor = 1f + (texture / 100f) * 0.15f
+                            r = (r * tFactor).coerceIn(0f, 1f)
+                            g = (g * tFactor).coerceIn(0f, 1f)
+                            b = (b * tFactor).coerceIn(0f, 1f)
+                        }
+
+                        val dehaze = effect.parameters["Dehaze"]?.value ?: 0f
+                        if (dehaze != 0f) {
+                            val dhFactor = dehaze / 100f
+                            if (dhFactor > 0f) {
+                                r = ((r - 0.08f * dhFactor) * (1f + 0.12f * dhFactor)).coerceIn(0f, 1f)
+                                g = ((g - 0.08f * dhFactor) * (1f + 0.12f * dhFactor)).coerceIn(0f, 1f)
+                                b = ((b - 0.08f * dhFactor) * (1f + 0.12f * dhFactor)).coerceIn(0f, 1f)
+                            } else {
+                                r = (r * (1f + dhFactor * 0.25f) - dhFactor * 0.25f).coerceIn(0f, 1f)
+                                g = (g * (1f + dhFactor * 0.25f) - dhFactor * 0.25f).coerceIn(0f, 1f)
+                                b = (b * (1f + dhFactor * 0.25f) - dhFactor * 0.25f).coerceIn(0f, 1f)
+                            }
+                        }
+
+                        // --- 4. The HSL / Color Mixer ---
+                        val maxV1 = maxOf(r, g, b)
+                        val minV1 = minOf(r, g, b)
+                        val delta1 = maxV1 - minV1
+                        var pixelH = 0f
+                        if (delta1 > 0.0001f) {
+                            pixelH = when (maxV1) {
+                                r -> ((g - b) / delta1) % 6f
+                                g -> ((b - r) / delta1) + 2f
+                                else -> ((r - g) / delta1) + 4f
+                            }
+                            pixelH *= 60f
+                            if (pixelH < 0f) pixelH += 360f
+                        }
+                        val pixelS = if (maxV1 > 0f) delta1 / maxV1 else 0f
+                        val pixelV = maxV1
+
+                        val getHueWeightLocal: (Float, Float) -> Float = { pH, cH ->
+                            var diff = Math.abs(pH - cH)
+                            if (diff > 180f) diff = 360f - diff
+                            (1f - (diff / 30f)).coerceIn(0f, 1f)
+                        }
+
+                        val wRed = maxOf(getHueWeightLocal(pixelH, 0f), getHueWeightLocal(pixelH, 360f))
+                        val wOrange = getHueWeightLocal(pixelH, 30f)
+                        val wYellow = getHueWeightLocal(pixelH, 60f)
+                        val wGreen = (1f - (Math.abs(pixelH - 120f) / 60f)).coerceIn(0f, 1f)
+                        val wAqua = getHueWeightLocal(pixelH, 180f)
+                        val wBlue = getHueWeightLocal(pixelH, 240f)
+                        val wPurple = getHueWeightLocal(pixelH, 285f)
+                        val wMagenta = getHueWeightLocal(pixelH, 330f)
+
+                        val rH = (effect.parameters["HSL_Red_Hue"]?.value ?: 0f) / 100f
+                        val rS = (effect.parameters["HSL_Red_Sat"]?.value ?: 0f) / 100f
+                        val rL = (effect.parameters["HSL_Red_Lum"]?.value ?: 0f) / 100f
+
+                        val oH = (effect.parameters["HSL_Orange_Hue"]?.value ?: 0f) / 100f
+                        val oS = (effect.parameters["HSL_Orange_Sat"]?.value ?: 0f) / 100f
+                        val oL = (effect.parameters["HSL_Orange_Lum"]?.value ?: 0f) / 100f
+
+                        val yH = (effect.parameters["HSL_Yellow_Hue"]?.value ?: 0f) / 100f
+                        val yS = (effect.parameters["HSL_Yellow_Sat"]?.value ?: 0f) / 100f
+                        val yL = (effect.parameters["HSL_Yellow_Lum"]?.value ?: 0f) / 100f
+
+                        val gH = (effect.parameters["HSL_Green_Hue"]?.value ?: 0f) / 100f
+                        val gS = (effect.parameters["HSL_Green_Sat"]?.value ?: 0f) / 100f
+                        val gL = (effect.parameters["HSL_Green_Lum"]?.value ?: 0f) / 100f
+
+                        val aH = (effect.parameters["HSL_Aqua_Hue"]?.value ?: 0f) / 100f
+                        val aS = (effect.parameters["HSL_Aqua_Sat"]?.value ?: 0f) / 100f
+                        val aL = (effect.parameters["HSL_Aqua_Lum"]?.value ?: 0f) / 100f
+
+                        val bH = (effect.parameters["HSL_Blue_Hue"]?.value ?: 0f) / 100f
+                        val bS = (effect.parameters["HSL_Blue_Sat"]?.value ?: 0f) / 100f
+                        val bL = (effect.parameters["HSL_Blue_Lum"]?.value ?: 0f) / 100f
+
+                        val pH = (effect.parameters["HSL_Purple_Hue"]?.value ?: 0f) / 100f
+                        val pS = (effect.parameters["HSL_Purple_Sat"]?.value ?: 0f) / 100f
+                        val pL = (effect.parameters["HSL_Purple_Lum"]?.value ?: 0f) / 100f
+
+                        val mH = (effect.parameters["HSL_Magenta_Hue"]?.value ?: 0f) / 100f
+                        val mS = (effect.parameters["HSL_Magenta_Sat"]?.value ?: 0f) / 100f
+                        val mL = (effect.parameters["HSL_Magenta_Lum"]?.value ?: 0f) / 100f
+
+                        val shiftH = (rH * wRed + oH * wOrange + yH * wYellow + gH * wGreen + aH * wAqua + bH * wBlue + pH * wPurple + mH * wMagenta) * 35f
+                        val shiftS = (rS * wRed + oS * wOrange + yS * wYellow + gS * wGreen + aS * wAqua + bS * wBlue + pS * wPurple + mS * wMagenta)
+                        val shiftL = (rL * wRed + oL * wOrange + yL * wYellow + gL * wGreen + aL * wAqua + bL * wBlue + pL * wPurple + mL * wMagenta)
+
+                        var finalH = pixelH + shiftH
+                        if (finalH < 0f) finalH += 360f
+                        if (finalH >= 360f) finalH -= 360f
+
+                        val finalS = (pixelS + shiftS).coerceIn(0f, 1f)
+                        val finalV = (pixelV + shiftL).coerceIn(0f, 1f)
+
+                        // Convert back to RGB
+                        val cVal = finalV * finalS
+                        val xVal = cVal * (1f - Math.abs((finalH / 60f) % 2f - 1f))
+                        val mShift = finalV - cVal
+
+                        val (r2, g2, b2) = when {
+                            finalH < 60f -> Triple(cVal, xVal, 0f)
+                            finalH < 120f -> Triple(xVal, cVal, 0f)
+                            finalH < 180f -> Triple(0f, cVal, xVal)
+                            finalH < 240f -> Triple(0f, xVal, cVal)
+                            finalH < 300f -> Triple(xVal, 0f, cVal)
+                            else -> Triple(cVal, 0f, xVal)
+                        }
+                        r = (r2 + mShift).coerceIn(0f, 1f)
+                        g = (g2 + mShift).coerceIn(0f, 1f)
+                        b = (b2 + mShift).coerceIn(0f, 1f)
+
+                        // --- 5. Vignetting & Grain ---
+                        val vignette = effect.parameters["Vignetting"]?.value ?: 0f
+                        if (vignette != 0f) {
+                            val vFactor = 1f + (vignette / 100f) * 0.12f
+                            r = (r * vFactor).coerceIn(0f, 1f)
+                            g = (g * vFactor).coerceIn(0f, 1f)
+                            b = (b * vFactor).coerceIn(0f, 1f)
+                        }
+                    }
+                }
+            }
+            else -> {}
+        }
+    }
+    return Color(
+        r.coerceIn(0f, 1f),
+        g.coerceIn(0f, 1f),
+        b.coerceIn(0f, 1f),
+        a.coerceIn(0f, 1f)
+    )
+}
+
+fun exportCanvasToBitmap(
+    canvasWidth: Float,
+    canvasHeight: Float,
+    layers: List<com.example.studio.model.StudioLayer>,
+    imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>,
+    targetWidth: Float = canvasWidth,
+    targetHeight: Float = canvasHeight,
+    isCmyk: Boolean = false
+): android.graphics.Bitmap {
+    val safeWidth = targetWidth.toInt().coerceIn(1, 8192)
+    val safeHeight = targetHeight.toInt().coerceIn(1, 8192)
+    
+    var scale = 1f
+    var bitmap: android.graphics.Bitmap? = null
+    while (scale >= 0.125f) {
+        try {
+            val w = (safeWidth * scale).toInt().coerceAtLeast(1)
+            val h = (safeHeight * scale).toInt().coerceAtLeast(1)
+            bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            break
+        } catch (oom: Throwable) {
+            scale /= 2f
+        }
+    }
+    
+    val finalBitmap = bitmap ?: throw OutOfMemoryError("Canvas resolution too high for the device memory.")
+    val canvas = android.graphics.Canvas(finalBitmap)
+    
+    val paintBg = android.graphics.Paint().apply {
+         color = android.graphics.Color.WHITE
+         style = android.graphics.Paint.Style.FILL
+    }
+    canvas.drawRect(0f, 0f, safeWidth * scale, safeHeight * scale, paintBg)
+    
+    val baseScaleX = targetWidth / canvasWidth
+    val baseScaleY = targetHeight / canvasHeight
+    canvas.scale(baseScaleX * scale, baseScaleY * scale)
+    
+    for (index in layers.indices.reversed()) {
+        val originalLayer = layers[index]
+        if (!originalLayer.isVisible) continue
+        
+        val effectiveColor = getLayerEffectiveColor(originalLayer, 1.0f)
+        val paint = android.graphics.Paint().apply {
+            color = effectiveColor.toArgb()
+            val hasStroke = originalLayer.strokeThickness > 0f && originalLayer.type !in listOf(
+                com.example.studio.model.LayerType.FREEHAND_DRAWING,
+                com.example.studio.model.LayerType.IMAGE_CARD,
+                com.example.studio.model.LayerType.TEXT
+            )
+            if (hasStroke) {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = originalLayer.strokeThickness
+            } else {
+                style = android.graphics.Paint.Style.FILL
+            }
+            isAntiAlias = true
+        }
+        
+        canvas.save()
+        canvas.translate(originalLayer.positionX, originalLayer.positionY)
+        
+        val centerX = originalLayer.width * originalLayer.pivotX
+        val centerY = originalLayer.height * originalLayer.pivotY
+        
+        val m = android.graphics.Matrix()
+        m.reset()
+        m.postTranslate(centerX, centerY)
+        
+        val sx = originalLayer.skewX
+        val sy = originalLayer.skewY
+        val px = originalLayer.perspX
+        val py = originalLayer.perspY
+        
+        if (sx != 0f || sy != 0f || px != 0f || py != 0f) {
+            val skewPersp = android.graphics.Matrix()
+            val vals = FloatArray(9)
+            skewPersp.getValues(vals)
+            vals[android.graphics.Matrix.MSKEW_X] = sx
+            vals[android.graphics.Matrix.MSKEW_Y] = sy
+            vals[android.graphics.Matrix.MPERSP_0] = px
+            vals[android.graphics.Matrix.MPERSP_1] = py
+            skewPersp.setValues(vals)
+            m.postConcat(skewPersp)
+        }
+        
+        m.postRotate(originalLayer.rotation)
+        m.postScale(originalLayer.scaleX, originalLayer.scaleY)
+        m.postTranslate(-centerX, -centerY)
+        canvas.concat(m)
+        
+        when (originalLayer.type) {
+            com.example.studio.model.LayerType.VECTOR_RECT -> {
+                if (originalLayer.cornerRadius > 0f) {
+                    canvas.drawRoundRect(0f, 0f, originalLayer.width, originalLayer.height, originalLayer.cornerRadius, originalLayer.cornerRadius, paint)
+                } else {
+                    canvas.drawRect(0f, 0f, originalLayer.width, originalLayer.height, paint)
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_TRIANGLE -> {
+                val path = android.graphics.Path().apply {
+                    val edges = if (originalLayer.polygonEdges in 3..25) originalLayer.polygonEdges else 3
+                    val cx = originalLayer.width / 2f
+                    val cy = originalLayer.height / 2f
+                    val rx = originalLayer.width / 2f
+                    val ry = originalLayer.height / 2f
+                    for (i in 0 until edges) {
+                        val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                        val x = (cx + rx * Math.cos(angle)).toFloat()
+                        val y = (cy + ry * Math.sin(angle)).toFloat()
+                        if (i == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                val paintToUse = if (originalLayer.cornerRadius > 0f) {
+                    android.graphics.Paint(paint).apply {
+                        pathEffect = android.graphics.CornerPathEffect(originalLayer.cornerRadius)
+                    }
+                } else paint
+                canvas.drawPath(path, paintToUse)
+            }
+            com.example.studio.model.LayerType.VECTOR_PENTAGON -> {
+                val path = android.graphics.Path().apply {
+                    val edges = if (originalLayer.polygonEdges in 3..25) originalLayer.polygonEdges else 5
+                    val cx = originalLayer.width / 2f
+                    val cy = originalLayer.height / 2f
+                    val rx = originalLayer.width / 2f
+                    val ry = originalLayer.height / 2f
+                    for (i in 0 until edges) {
+                        val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                        val x = (cx + rx * Math.cos(angle)).toFloat()
+                        val y = (cy + ry * Math.sin(angle)).toFloat()
+                        if (i == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                val paintToUse = if (originalLayer.cornerRadius > 0f) {
+                    android.graphics.Paint(paint).apply {
+                        pathEffect = android.graphics.CornerPathEffect(originalLayer.cornerRadius)
+                    }
+                } else paint
+                canvas.drawPath(path, paintToUse)
+            }
+            com.example.studio.model.LayerType.VECTOR_HEXAGON -> {
+                val path = android.graphics.Path().apply {
+                    val edges = if (originalLayer.polygonEdges in 3..25) originalLayer.polygonEdges else 6
+                    val cx = originalLayer.width / 2f
+                    val cy = originalLayer.height / 2f
+                    val rx = originalLayer.width / 2f
+                    val ry = originalLayer.height / 2f
+                    for (i in 0 until edges) {
+                        val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                        val x = (cx + rx * Math.cos(angle)).toFloat()
+                        val y = (cy + ry * Math.sin(angle)).toFloat()
+                        if (i == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                val paintToUse = if (originalLayer.cornerRadius > 0f) {
+                    android.graphics.Paint(paint).apply {
+                        pathEffect = android.graphics.CornerPathEffect(originalLayer.cornerRadius)
+                    }
+                } else paint
+                canvas.drawPath(path, paintToUse)
+            }
+            com.example.studio.model.LayerType.VECTOR_OVAL -> {
+                canvas.drawOval(0f, 0f, originalLayer.width, originalLayer.height, paint)
+            }
+            com.example.studio.model.LayerType.VECTOR_LINE -> {
+                val strokeW = if (paint.style == android.graphics.Paint.Style.STROKE) paint.strokeWidth else (if (originalLayer.strokeThickness > 0f) originalLayer.strokeThickness else 6f)
+                val linePaint = android.graphics.Paint(paint).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = strokeW
+                }
+                canvas.drawLine(0f, 0f, originalLayer.width, originalLayer.height, linePaint)
+            }
+            com.example.studio.model.LayerType.VECTOR_CIRCLE -> {
+                val radius = originalLayer.width / 2f
+                canvas.drawCircle(radius, originalLayer.height / 2f, radius, paint)
+            }
+            com.example.studio.model.LayerType.VECTOR_STAR -> {
+                val path = android.graphics.Path().apply {
+                    val cx = originalLayer.width / 2f
+                    val cy = originalLayer.height / 2f
+                    val rOuter = originalLayer.width / 2f
+                    val rInner = rOuter * originalLayer.starInnerRadiusRatio.coerceIn(0.01f, 0.99f)
+                    val pointsCount = if (originalLayer.polygonEdges >= 3) originalLayer.polygonEdges else 5
+                    var angle = Math.PI / 2.0 * 3.0
+                    val step = Math.PI / pointsCount
+
+                    moveTo(
+                        (cx + Math.cos(angle) * rOuter).toFloat(),
+                        (cy + Math.sin(angle) * rOuter).toFloat()
+                    )
+
+                    for (i in 0..(pointsCount * 2)) {
+                        val r = if (i % 2 == 0) rOuter else rInner
+                        lineTo(
+                            (cx + Math.cos(angle) * r).toFloat(),
+                            (cy + Math.sin(angle) * r).toFloat()
+                        )
+                        angle += step
+                    }
+                    close()
+                }
+                val paintToUse = if (originalLayer.cornerRadius > 0f) {
+                    android.graphics.Paint(paint).apply {
+                        pathEffect = android.graphics.CornerPathEffect(originalLayer.cornerRadius)
+                    }
+                } else paint
+                canvas.drawPath(path, paintToUse)
+            }
+            com.example.studio.model.LayerType.VECTOR_BEZIER -> {
+                val path = android.graphics.Path()
+                val start = androidx.compose.ui.geometry.Offset(0f, originalLayer.height)
+                val end = androidx.compose.ui.geometry.Offset(originalLayer.width, originalLayer.height)
+                val controlLocal = originalLayer.brushPoints.getOrNull(0) ?: androidx.compose.ui.geometry.Offset(originalLayer.width / 2f, 0f)
+
+                if (originalLayer.brushPoints.size > 1) {
+                    val startPt = originalLayer.brushPoints[0]
+                    path.moveTo(startPt.x, startPt.y)
+                    var i = 1
+                    while (i < originalLayer.brushPoints.size) {
+                        val ctrl = originalLayer.brushPoints.getOrNull(i) ?: break
+                        val endPt = originalLayer.brushPoints.getOrNull(i + 1) ?: ctrl
+                        path.quadTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
+                        i += 2
+                    }
+                } else {
+                    path.moveTo(start.x, start.y)
+                    path.quadTo(controlLocal.x, controlLocal.y, end.x, end.y)
+                }
+                
+                paint.color = effectiveColor.toArgb()
+                if (originalLayer.isAlphaLocked) {
+                    paint.style = android.graphics.Paint.Style.FILL
+                } else {
+                    paint.style = android.graphics.Paint.Style.STROKE
+                    paint.strokeWidth = 8f
+                    paint.strokeCap = android.graphics.Paint.Cap.ROUND
+                    paint.strokeJoin = android.graphics.Paint.Join.ROUND
+                }
+                canvas.drawPath(path, paint)
+            }
+            com.example.studio.model.LayerType.FREEHAND_DRAWING -> {
+                val saveCount = try {
+                    canvas.saveLayer(0f, 0f, canvas.width.toFloat(), canvas.height.toFloat(), null)
+                } catch (t: Throwable) {
+                    canvas.save()
+                }
+                try {
+                    if (originalLayer.brushPoints.isNotEmpty()) {
+                        val brushConfig = originalLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+                        val bSize = brushConfig?.parameters?.get("Size")?.value ?: 12f
+                        val bOpacity = brushConfig?.parameters?.get("Opacity")?.value ?: 1.0f
+                        val bSmoothing = (brushConfig?.parameters?.get("Smoothing")?.value ?: 1.0f) > 0.5f
+                        val bPreset = brushConfig?.parameters?.get("Preset")?.value?.toInt() ?: 0
+
+                        val strokes = parseFreehandStrokes(
+                            brushPoints = originalLayer.brushPoints,
+                            defaultColor = effectiveColor,
+                            defaultSize = bSize,
+                            defaultOpacity = bOpacity * originalLayer.opacity,
+                            defaultPreset = bPreset,
+                            defaultSmoothing = bSmoothing
+                        )
+
+                        for (stroke in strokes) {
+                            if (stroke.points.size > 1) {
+                                val paintBrush = android.graphics.Paint().apply {
+                                    color = stroke.color.toArgb()
+                                    strokeWidth = stroke.size
+                                    style = android.graphics.Paint.Style.STROKE
+                                    strokeCap = android.graphics.Paint.Cap.ROUND
+                                    strokeJoin = android.graphics.Paint.Join.ROUND
+                                    isAntiAlias = true
+                                    alpha = (stroke.opacity * 255).toInt().coerceIn(0, 255)
+                                    if (stroke.isEraser) {
+                                        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR)
+                                    }
+                                }
+
+                                val pathBrush = android.graphics.Path()
+                                pathBrush.moveTo(stroke.points[0].x, stroke.points[0].y)
+                                for (pIdx in 1 until stroke.points.size) {
+                                    pathBrush.lineTo(stroke.points[pIdx].x, stroke.points[pIdx].y)
+                                }
+                                canvas.drawPath(pathBrush, paintBrush)
+                            }
+                        }
+                    }
+                } catch (t: Throwable) {
+                    t.printStackTrace()
+                } finally {
+                    try {
+                        canvas.restoreToCount(saveCount)
+                    } catch (t: Throwable) {}
+                }
+            }
+            com.example.studio.model.LayerType.TEXT -> {
+                val text = if (originalLayer.textContent.isEmpty()) "DOUBLE TAP TO EDIT" else originalLayer.textContent
+                val typeface = try {
+                    if (!originalLayer.fontPath.isNullOrEmpty() && java.io.File(originalLayer.fontPath).exists()) {
+                        val baseTf = android.graphics.Typeface.createFromFile(originalLayer.fontPath)
+                        val style = if (originalLayer.fontIsBold && originalLayer.fontIsItalic) {
+                            android.graphics.Typeface.BOLD_ITALIC
+                        } else if (originalLayer.fontIsBold) {
+                            android.graphics.Typeface.BOLD
+                        } else if (originalLayer.fontIsItalic) {
+                            android.graphics.Typeface.ITALIC
+                        } else {
+                            android.graphics.Typeface.NORMAL
+                        }
+                        android.graphics.Typeface.create(baseTf, style)
+                    } else {
+                        val family = when (originalLayer.fontFamilyName) {
+                            "Monospace" -> android.graphics.Typeface.MONOSPACE
+                            "Serif" -> android.graphics.Typeface.SERIF
+                            "Sans-Serif" -> android.graphics.Typeface.SANS_SERIF
+                            else -> android.graphics.Typeface.DEFAULT
+                        }
+                        val style = if (originalLayer.fontIsBold && originalLayer.fontIsItalic) {
+                            android.graphics.Typeface.BOLD_ITALIC
+                        } else if (originalLayer.fontIsBold) {
+                            android.graphics.Typeface.BOLD
+                        } else if (originalLayer.fontIsItalic) {
+                            android.graphics.Typeface.ITALIC
+                        } else {
+                            android.graphics.Typeface.NORMAL
+                        }
+                        android.graphics.Typeface.create(family, style)
+                    }
+                } catch (e: Exception) {
+                    android.graphics.Typeface.DEFAULT
+                }
+                val textPaint = android.text.TextPaint().apply {
+                    color = effectiveColor.toArgb()
+                    textSize = originalLayer.fontSize
+                    isAntiAlias = true
+                    this.typeface = typeface
+                }
+                val align = when (originalLayer.fontAlign.lowercase()) {
+                    "left" -> android.text.Layout.Alignment.ALIGN_NORMAL
+                    "right" -> android.text.Layout.Alignment.ALIGN_OPPOSITE
+                    else -> android.text.Layout.Alignment.ALIGN_CENTER
+                }
+                val staticLayout = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    android.text.StaticLayout.Builder.obtain(text, 0, text.length, textPaint, maxOf(1, originalLayer.width.toInt()))
+                        .setAlignment(align)
+                        .setLineSpacing(0f, 1f)
+                        .setIncludePad(false)
+                        .build()
+                } else {
+                    @Suppress("DEPRECATION")
+                    android.text.StaticLayout(text, textPaint, maxOf(1, originalLayer.width.toInt()), align, 1f, 0f, false)
+                }
+                canvas.save()
+                val totalHeight = staticLayout.height
+                val startY = maxOf(0f, (originalLayer.height - totalHeight) / 2f)
+                canvas.translate(0f, startY)
+                staticLayout.draw(canvas)
+                canvas.restore()
+            }
+            com.example.studio.model.LayerType.IMAGE_CARD -> {
+                val loadedBitmap = imageBitmapCache[originalLayer.imageUri ?: ""]?.asAndroidBitmap()
+                if (loadedBitmap != null) {
+                    val destRect = android.graphics.Rect(0, 0, originalLayer.width.toInt(), originalLayer.height.toInt())
+                    val imagePaint = android.graphics.Paint().apply {
+                        isAntiAlias = true
+                        alpha = (originalLayer.opacity * 255).toInt().coerceIn(0, 255)
+                    }
+                    canvas.drawBitmap(loadedBitmap, null, destRect, imagePaint)
+                }
+            }
+            else -> {}
+        }
+        canvas.restore()
+    }
+    if (isCmyk) {
+        val w = finalBitmap.width
+        val h = finalBitmap.height
+        val pixels = IntArray(w * h)
+        finalBitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            val a = (color shr 24) and 0xff
+            val r = (color shr 16) and 0xff
+            val g = (color shr 8) and 0xff
+            val b = color and 0xff
+            
+            val rPrime = r / 255f
+            val gPrime = g / 255f
+            val bPrime = b / 255f
+            val k = 1f - maxOf(rPrime, maxOf(gPrime, bPrime))
+            
+            val c = if (k == 1f) 0f else (1f - rPrime - k) / (1f - k)
+            val mComponent = if (k == 1f) 0f else (1f - gPrime - k) / (1f - k)
+            val yComponent = if (k == 1f) 0f else (1f - bPrime - k) / (1f - k)
+            
+            // Re-map back to RGB space simulating printing press ink
+            val rSim = ((1f - c) * (1f - k) * 255f).toInt().coerceIn(0, 255)
+            val gSim = ((1f - mComponent) * (1f - k) * 255f).toInt().coerceIn(0, 255)
+            val bSim = ((1f - yComponent) * (1f - k) * 255f).toInt().coerceIn(0, 255)
+            
+            pixels[i] = (a shl 24) or (rSim shl 16) or (gSim shl 8) or bSim
+        }
+        finalBitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+    }
+    return finalBitmap
+}
+
+fun saveBitmapToGallery(context: android.content.Context, bitmap: android.graphics.Bitmap, filename: String): android.net.Uri? {
+    val resolver = context.contentResolver
+    val imageCollection = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+        android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    } else {
+        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    }
+    
+    val contentValues = android.content.ContentValues().apply {
+         put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "$filename.png")
+         put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+             put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/StudioCreative")
+             put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+         }
+    }
+    
+    val imageUri = resolver.insert(imageCollection, contentValues)
+    if (imageUri != null) {
+        try {
+            resolver.openOutputStream(imageUri).use { outputStream ->
+                if (outputStream != null) {
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, outputStream)
+                }
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                contentValues.clear()
+                contentValues.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(imageUri, contentValues, null, null)
+            }
+            return imageUri
+        } catch (e: Exception) {
+            resolver.delete(imageUri, null, null)
+        }
+    }
+    return null
+}
+
+
+// Draw auxiliary vector points for a perfect 5-pointed star path
+fun findStarPath(layer: StudioLayer): Path {
+    val path = Path()
+    val cx = layer.positionX + layer.width / 2f
+    val cy = layer.positionY + layer.height / 2f
+    val rOuter = layer.width / 2f
+    val rInner = rOuter * 0.4f
+    var angle = Math.PI / 2.0 * 3.0
+    val step = Math.PI / 5.0
+
+    path.moveTo(
+        (cx + Math.cos(angle) * rOuter).toFloat(),
+        (cy + Math.sin(angle) * rOuter).toFloat()
+    )
+
+    for (i in 0..10) {
+        val r = if (i % 2 == 0) rOuter else rInner
+        path.lineTo(
+            (cx + Math.cos(angle) * r).toFloat(),
+            (cy + Math.sin(angle) * r).toFloat()
+        )
+        angle += step
+    }
+    path.close()
+    return path
+}
+
+@Composable
+fun TopControlShelf(
+    activeTool: String,
+    onToolChange: (String) -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    layersPanelVisible: Boolean,
+    onToggleLayersPanel: () -> Unit,
+    bottomPanelVisible: Boolean,
+    onToggleBottomPanel: () -> Unit,
+    onExitWorkspace: () -> Unit,
+    onExportCanvas: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 8.dp, top = 8.dp, end = 8.dp)
+            .height(48.dp)
+            .background(SlatePanel, RoundedCornerShape(12.dp))
+            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        // Left Area: Back Button, Divider, and UNDO/REDO at the front!
+        Row(
+            modifier = Modifier.align(Alignment.CenterStart),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            IconButton(
+                onClick = onExitWorkspace,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Exit to Main Menu",
+                    tint = TextPrimary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(16.dp)
+                    .background(HighslateOutline)
+            )
+            IconButton(
+                onClick = onUndo,
+                enabled = canUndo,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Undo,
+                    contentDescription = "Undo step",
+                    tint = if (canUndo) TextPrimary else TextPrimary.copy(alpha = 0.25f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            IconButton(
+                onClick = onRedo,
+                enabled = canRedo,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Redo,
+                    contentDescription = "Redo step",
+                    tint = if (canRedo) TextPrimary else TextPrimary.copy(alpha = 0.25f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+
+        // Middle Area: Centered Layers and Parameters buttons with comfortable spacing
+        Row(
+            modifier = Modifier.align(Alignment.Center),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Layers Toggle Button with icon only
+            IconButton(
+                onClick = onToggleLayersPanel,
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (layersPanelVisible) IndustrialAmber.copy(0.18f) else Color.Transparent)
+                    .border(1.dp, if (layersPanelVisible) IndustrialAmber else HighslateOutline, RoundedCornerShape(6.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Layers,
+                    contentDescription = "Toggle Layers Drawer",
+                    tint = if (layersPanelVisible) IndustrialAmber else TextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            // Parameters Toggle Button with icon only
+            IconButton(
+                onClick = onToggleBottomPanel,
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (bottomPanelVisible) IndustrialAmber.copy(0.18f) else Color.Transparent)
+                    .border(1.dp, if (bottomPanelVisible) IndustrialAmber else HighslateOutline, RoundedCornerShape(6.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Tune,
+                    contentDescription = "Toggle Parameters Panel",
+                    tint = if (bottomPanelVisible) IndustrialAmber else TextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        // Right Area: Control panels and EXPORT DESIGN button (where undo/redo used to be)!
+        Row(
+            modifier = Modifier.align(Alignment.CenterEnd),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            // Export Design Button
+            Button(
+                onClick = onExportCanvas,
+                colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
+                shape = RoundedCornerShape(4.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier
+                    .height(32.dp)
+                    .testTag("canvas_export_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Download,
+                    contentDescription = "Export design",
+                    tint = DarkOnyx,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "EXPORT",
+                    style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                    color = DarkOnyx
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun LeftsideToolDock(
+    activeTool: String,
+    onSelectTool: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(64.dp)
+            .fillMaxHeight()
+            .padding(start = 8.dp, top = 8.dp, bottom = 8.dp)
+            .background(SlatePanel, RoundedCornerShape(16.dp))
+            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+            .padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        listOf(
+            Triple("Brush", Icons.Default.Brush, "Stylus drawing mode"),
+            Triple("Pen", Icons.Default.Gesture, "Manual Bézier Path Tool"),
+            Triple("Move", Icons.Default.OpenWith, "Move & transform"),
+            Triple("Grid", Icons.Default.GridOn, "Grid Calibration Tool"),
+            Triple("Ruler", Icons.Default.Straighten, "Ruler Calibration Tool"),
+            Triple("Shapes", Icons.Default.Category, "Spawn circles/squares"),
+            Triple("Text", Icons.Default.TextFields, "Add title typography"),
+            Triple("Visuals", Icons.Default.Palette, "Color modifiers")
+        ).forEach { (toolName, icon, description) ->
+            val isActive = activeTool == toolName
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelectTool(toolName) }
+                    .padding(vertical = 6.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isActive) IndustrialAmber else Color.Transparent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = description,
+                        tint = if (isActive) DarkOnyx else TextPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = toolName,
+                    style = Typography.labelSmall,
+                    fontSize = 9.sp,
+                    color = if (isActive) EnergeticYellow else TextSecondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun RightsideLayerDrawer(
+    layers: List<StudioLayer>,
+    selectedLayerId: String,
+    onSelectLayer: (String) -> Unit,
+    onChangeVisibility: (String) -> Unit,
+    onChangeAlphaLock: (String) -> Unit,
+    onChangeClippingMask: (String) -> Unit,
+    onLayerReorderUp: (Int) -> Unit,
+    onLayerReorderDown: (Int) -> Unit,
+    onAddLayer: () -> Unit,
+    onDuplicateLayer: (String) -> Unit,
+    onDeleteLayer: (String) -> Unit,
+    onBlendModeChange: (String, ZenithBlendMode) -> Unit,
+    onOpacityChange: (String, Float) -> Unit,
+    onTriggerRename: (String, String) -> Unit,
+    onCloseDrawer: () -> Unit
+) {
+    var expandedBlendList by remember { mutableStateOf(false) }
+    val selLayer = layers.find { it.id == selectedLayerId }
+
+    Column(
+        modifier = Modifier
+            .width(238.dp)
+            .fillMaxHeight()
+            .padding(end = 8.dp, top = 8.dp, bottom = 8.dp)
+            .background(SlatePanel, RoundedCornerShape(16.dp))
+            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+            .padding(12.dp)
+            .testTag("layers_panel")
+    ) {
+        // Drawer title & Quick adding actions
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Icon(Icons.Default.Layers, "Layers list icon", tint = IndustrialAmber, modifier = Modifier.size(16.dp))
+                Text("Layers (${layers.size})", style = Typography.titleLarge, fontSize = 13.sp, color = TextPrimary)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onAddLayer, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.Add, "Add Layer", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                }
+                if (selLayer != null) {
+                    IconButton(onClick = { onDuplicateLayer(selLayer.id) }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.ContentCopy, "Duplicate", tint = TextPrimary, modifier = Modifier.size(14.dp))
+                    }
+                    IconButton(onClick = { onDeleteLayer(selLayer.id) }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Delete, "Delete", tint = Color.Red, modifier = Modifier.size(14.dp))
+                    }
+                }
+                IconButton(onClick = onCloseDrawer, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.ChevronRight, "Collapse Drawer", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+
+        // Expanded Layer Settings: Opacity and Blending modes
+        if (selLayer != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MidSlate, RoundedCornerShape(6.dp))
+                    .padding(8.dp)
+                    .padding(bottom = 4.dp)
+            ) {
+                // Opacity slide bar
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Opacity", style = Typography.labelSmall, color = TextSecondary)
+                    Text("${(selLayer.opacity * 100).toInt()}%", style = Typography.labelSmall, color = EnergeticYellow)
+                }
+                Slider(
+                    value = selLayer.opacity,
+                    onValueChange = { onOpacityChange(selLayer.id, it) },
+                    valueRange = 0f..1f,
+                    colors = SliderDefaults.colors(
+                        activeTrackColor = IndustrialAmber,
+                        thumbColor = IndustrialAmber
+                    ),
+                    modifier = Modifier.height(24.dp)
+                )
+
+                // Blend Modes Dropdown
+                Spacer(Modifier.height(4.dp))
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = { expandedBlendList = true },
+                        modifier = Modifier.fillMaxWidth().height(32.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = SlatePanel),
+                        contentPadding = PaddingValues(horizontal = 8.dp),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Blend: ${selLayer.blendMode.displayName}", style = Typography.labelSmall, color = TextPrimary)
+                            Icon(Icons.Default.ArrowDropDown, "Expand", tint = TextPrimary, modifier = Modifier.size(12.dp))
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = expandedBlendList,
+                        onDismissRequest = { expandedBlendList = false },
+                        modifier = Modifier.background(MidSlate)
+                    ) {
+                        ZenithBlendMode.values().forEach { mode ->
+                            DropdownMenuItem(
+                                text = { Text(mode.displayName, color = TextPrimary, style = Typography.bodyMedium) },
+                                onClick = {
+                                    onBlendModeChange(selLayer.id, mode)
+                                    expandedBlendList = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Layers Scrollable Core Stack (Reversing direction for canvas-compliant top-layer priority)
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            itemsIndexed(items = layers, key = { index, item -> item.id }) { index, item ->
+                val isSelected = item.id == selectedLayerId
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = if (isSelected) 4.dp else 0.dp)
+                ) {
+                    if (isSelected) {
+                        // Offset stacked background shadow card for physical stacking visual elevation!
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .offset(x = 3.dp, y = 3.dp)
+                                .background(DarkOnyx, RoundedCornerShape(8.dp))
+                                .border(BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)), RoundedCornerShape(8.dp))
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = if (item.isClippingMask) 14.dp else 0.dp)
+                            .offset(x = if (isSelected) (-3).dp else 0.dp, y = if (isSelected) (-3).dp else 0.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isSelected) IndustrialAmber.copy(0.24f) else MidSlate)
+                            .border(BorderStroke(1.2.dp, if (isSelected) IndustrialAmber else HighslateOutline), RoundedCornerShape(8.dp))
+                            .clickable { onSelectLayer(item.id) }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                    if (item.isClippingMask) {
+                        Text(
+                            text = "↳",
+                            color = IndustrialAmber,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                    }
+
+                    // Styled preview thumbnail representing layer color characteristics beautifully
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(item.baseColor.copy(alpha = 0.85f))
+                            .border(0.5.dp, HighslateOutline, RoundedCornerShape(4.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val glyph = when (item.type) {
+                            LayerType.VECTOR_CIRCLE -> "○"
+                            LayerType.VECTOR_RECT -> "□"
+                            LayerType.VECTOR_STAR -> "★"
+                            LayerType.VECTOR_TRIANGLE -> "△"
+                            LayerType.VECTOR_PENTAGON -> "⬠"
+                            LayerType.VECTOR_HEXAGON -> "⬡"
+                            LayerType.VECTOR_OVAL -> "⬭"
+                            LayerType.VECTOR_LINE -> "╱"
+                            LayerType.VECTOR_BEZIER -> "∿"
+                            LayerType.TEXT -> "T"
+                            LayerType.FREEHAND_DRAWING -> "✎"
+                            LayerType.IMAGE_CARD -> "▨"
+                        }
+                        Text(
+                            text = glyph,
+                            color = if (item.baseColor == Color.White) Color.Black else Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(Modifier.width(8.dp))
+
+                    // Title info & Opacity
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = item.name,
+                            style = Typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextPrimary,
+                            maxLines = 1
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "${(item.opacity * 100).toInt()}% Opacity",
+                                style = Typography.labelSmall,
+                                fontSize = 8.sp,
+                                color = TextSecondary
+                            )
+                            if (item.isAlphaLocked) {
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = "[Alpha Locked]",
+                                    style = Typography.labelSmall,
+                                    fontSize = 8.sp,
+                                    color = EnergeticYellow
+                                )
+                            }
+                        }
+                    }
+
+                    // Interactive utilities directly inside the Layer Item
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        // Core Layer renaming pen
+                        IconButton(
+                            onClick = { onTriggerRename(item.id, item.name) },
+                            modifier = Modifier.size(20.dp)
+                        ) {
+                            Icon(Icons.Default.Edit, "Rename", tint = TextSecondary, modifier = Modifier.size(10.dp))
+                        }
+
+                        // Reorder buttons
+                        IconButton(onClick = { onLayerReorderUp(index) }, modifier = Modifier.size(20.dp)) {
+                            Icon(Icons.Default.ArrowDropUp, "Up", tint = TextPrimary, modifier = Modifier.size(15.dp))
+                        }
+                        IconButton(onClick = { onLayerReorderDown(index) }, modifier = Modifier.size(20.dp)) {
+                            Icon(Icons.Default.ArrowDropDown, "Down", tint = TextPrimary, modifier = Modifier.size(15.dp))
+                        }
+
+                        // Alpha-Lock selector action padlock
+                        IconButton(
+                            onClick = { onChangeAlphaLock(item.id) },
+                            modifier = Modifier.size(20.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (item.isAlphaLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                contentDescription = "Alpha Lock Toggle",
+                                tint = if (item.isAlphaLocked) EnergeticYellow else TextSecondary,
+                                modifier = Modifier.size(11.dp)
+                            )
+                        }
+
+                        // Clipping Mask toggle action
+                        IconButton(
+                            onClick = { onChangeClippingMask(item.id) },
+                            modifier = Modifier.size(20.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SubdirectoryArrowRight,
+                                contentDescription = "Clipping Mask Toggle",
+                                tint = if (item.isClippingMask) IndustrialAmber else TextSecondary,
+                                modifier = Modifier.size(11.dp)
+                            )
+                        }
+
+                        // Visibility Toggle eye
+                        IconButton(
+                            onClick = { onChangeVisibility(item.id) },
+                            modifier = Modifier.size(20.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (item.isVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = "Toggle visibility",
+                                tint = if (item.isVisible) TextPrimary else TextSecondary,
+                                modifier = Modifier.size(11.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            }
+        }
+    }
+}
+
+data class SliderValueEditConfig(
+    val title: String,
+    val currentValue: Float,
+    val valueRange: ClosedRange<Float>,
+    val isPercent: Boolean = false,
+    val isInt: Boolean = false,
+    val onConfirm: (Float) -> Unit
+)
+
+@Composable
+fun SliderValueEditDialog(
+    config: SliderValueEditConfig,
+    onDismiss: () -> Unit
+) {
+    var inputText by remember {
+        mutableStateOf(
+            if (config.isPercent) {
+                "${(config.currentValue * 100).toInt()}"
+            } else if (config.isInt) {
+                "${config.currentValue.toInt()}"
+            } else {
+                "${config.currentValue}"
+            }
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit ${config.title}", color = TextPrimary, style = Typography.titleMedium) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val minVal = if (config.isPercent) (config.valueRange.start * 100).toInt() else config.valueRange.start.toInt()
+                val maxVal = if (config.isPercent) (config.valueRange.endInclusive * 100).toInt() else config.valueRange.endInclusive.toInt()
+                Text(
+                    text = "Enter value between $minVal and $maxVal",
+                    color = TextSecondary,
+                    style = Typography.labelSmall
+                )
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = IndustrialAmber,
+                        unfocusedBorderColor = HighslateOutline,
+                        cursorColor = IndustrialAmber
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val typedVal = inputText.toFloatOrNull()
+                    if (typedVal != null) {
+                        val computedVal = if (config.isPercent) typedVal / 100f else typedVal
+                        val finalVal = computedVal.coerceIn(config.valueRange)
+                        config.onConfirm(finalVal)
+                    }
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
+            ) {
+                Text("APPLY", color = DarkOnyx, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = TextSecondary)
+            }
+        },
+        containerColor = SlatePanel,
+        shape = RoundedCornerShape(12.dp)
+    )
+}
+
+val LocalSliderValueEditTrigger = androidx.compose.runtime.compositionLocalOf<(SliderValueEditConfig) -> Unit> { {} }
+
+@Composable
+fun Modifier.clickableValueEdit(
+    title: String,
+    currentValue: Float,
+    valueRange: ClosedRange<Float>,
+    isPercent: Boolean = false,
+    isInt: Boolean = false,
+    onConfirm: (Float) -> Unit
+): Modifier {
+    val trigger = LocalSliderValueEditTrigger.current
+    return this.clickable {
+        trigger(
+            SliderValueEditConfig(
+                title = title,
+                currentValue = currentValue,
+                valueRange = valueRange,
+                isPercent = isPercent,
+                isInt = isInt,
+                onConfirm = onConfirm
+            )
+        )
+    }
+}
+
+@Composable
+fun BottomEffectPanel(
+    selectedLayer: StudioLayer?,
+    selectedEffectIndex: Int,
+    onSelectEffectIndex: (Int) -> Unit,
+    onAddEffect: (StudioEffect) -> Unit,
+    onUpdateEffectParam: (String, String, Float) -> Unit,
+    onRemoveEffect: (String) -> Unit,
+    onToggleEffectEnabled: (String) -> Unit,
+    onUpdateLayer: (StudioLayer) -> Unit,
+    onCloseBottomPanel: () -> Unit,
+    onOpenEffectsGallery: () -> Unit,
+    onOpenBrushesLibrary: () -> Unit = {},
+    activeTool: String,
+    brushSize: Float,
+    onBrushSizeChange: (Float) -> Unit,
+    brushOpacity: Float,
+    onBrushOpacityChange: (Float) -> Unit,
+    brushColor: Color,
+    onBrushColorChange: (Color) -> Unit,
+    brushSmoothing: Boolean,
+    onBrushSmoothingChange: (Boolean) -> Unit,
+    brushPresetIndex: Int,
+    onBrushPresetIndexChange: (Int) -> Unit,
+    fontSearchQuery: String = "",
+    onFontSearchQueryChange: (String) -> Unit = {},
+    selectedCategoryFilter: String = "All",
+    onSelectedCategoryFilterChange: (String) -> Unit = {},
+    onImportFontClick: () -> Unit = {},
+    onExportCanvas: () -> Unit,
+    gridEnabled: Boolean = false,
+    onGridEnabledChange: (Boolean) -> Unit = {},
+    rulerEnabled: Boolean = false,
+    onRulerEnabledChange: (Boolean) -> Unit = {},
+    rulerOrientation: String = "Horizontal",
+    onRulerOrientationChange: (String) -> Unit = {},
+    rulerPosition: Float = 300f,
+    onRulerPositionChange: (Float) -> Unit = {},
+    gridColumns: Int = 8,
+    onGridColumnsChange: (Int) -> Unit = {},
+    gridRows: Int = 8,
+    onGridRowsChange: (Int) -> Unit = {},
+    rulerAngle: Float = 0f,
+    onRulerAngleChange: (Float) -> Unit = {},
+    rulerLocked: Boolean = false,
+    onRulerLockedChange: (Boolean) -> Unit = {},
+    snapToRuler: Boolean = true,
+    onSnapToRulerChange: (Boolean) -> Unit = {}
+) {
+    var activeTabOfPanel by remember { mutableStateOf(0) } // 0: Transform, 1: Edit Shape, 2: Color, 3: Filters & FX Stack
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var activeValueEditConfig by remember { mutableStateOf<SliderValueEditConfig?>(null) }
+
+    val isBrushStudioActive = (activeTool == "Brush") || (selectedLayer?.type == LayerType.FREEHAND_DRAWING)
+
+    // Contextual values mapping: if a drawing layer is selected, reflect its state dynamically
+    val currentSize = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        config?.parameters?.get("Size")?.value ?: brushSize
+    } else {
+        brushSize
+    }
+
+    val currentOpacity = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        config?.parameters?.get("Opacity")?.value ?: brushOpacity
+    } else {
+        brushOpacity
+    }
+
+    val currentSmoothing = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        val valSmooth = config?.parameters?.get("Smoothing")?.value ?: 1.0f
+        valSmooth > 0.5f
+    } else {
+        brushSmoothing
+    }
+
+    val currentPreset = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        config?.parameters?.get("Preset")?.value?.toInt() ?: brushPresetIndex
+    } else {
+        brushPresetIndex
+    }
+
+    val currentColor = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        selectedLayer.baseColor
+    } else {
+        brushColor
+    }
+
+    val updateBrushParams = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color? ->
+        if (newSize != null) onBrushSizeChange(newSize)
+        if (newOpacity != null) onBrushOpacityChange(newOpacity)
+        if (newSmooth != null) onBrushSmoothingChange(newSmooth)
+        if (newPreset != null) onBrushPresetIndexChange(newPreset)
+        if (newColor != null) onBrushColorChange(newColor)
+
+        if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+            val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+            if (config != null) {
+                var updatedConfig = config
+                if (newSize != null) updatedConfig = updatedConfig.updateParameter("Size", newSize) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newOpacity != null) updatedConfig = updatedConfig.updateParameter("Opacity", newOpacity) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newSmooth != null) updatedConfig = updatedConfig.updateParameter("Smoothing", if (newSmooth) 1.0f else 0.0f) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newPreset != null) updatedConfig = updatedConfig.updateParameter("Preset", newPreset.toFloat()) as com.example.studio.model.StudioEffect.PhotoshopEffect
+
+                val updatedEffects = selectedLayer.effects.map { if (it.id == config.id) updatedConfig else it }
+                onUpdateLayer(
+                    selectedLayer.copy(
+                        baseColor = newColor ?: selectedLayer.baseColor,
+                        effects = updatedEffects
+                    )
+                )
+            } else {
+                onUpdateLayer(selectedLayer.copy(baseColor = newColor ?: selectedLayer.baseColor))
+            }
+        }
+    }
+
+    CompositionLocalProvider(LocalSliderValueEditTrigger provides { activeValueEditConfig = it }) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+            .height(260.dp)
+            .background(SlatePanel, RoundedCornerShape(16.dp))
+            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        LeftTelemetryAndStatsColumn(
+            activeTool = activeTool,
+            selectedLayer = selectedLayer,
+            gridEnabled = gridEnabled,
+            gridColumns = gridColumns,
+            gridRows = gridRows,
+            rulerEnabled = rulerEnabled,
+            rulerAngle = rulerAngle,
+            snapToRuler = snapToRuler,
+            isBrushStudioActive = isBrushStudioActive,
+            currentPreset = currentPreset,
+            currentSize = currentSize,
+            currentOpacity = currentOpacity,
+            activeTabOfPanel = activeTabOfPanel,
+            onActiveTabOfPanelChange = { activeTabOfPanel = it },
+            onCloseBottomPanel = onCloseBottomPanel
+        )
+
+        Spacer(Modifier.width(8.dp))
+
+        // PANEL RIGHT TAB VIEW
+        if (activeTool == "Grid") {
+            GridControlPane(
+                gridEnabled = gridEnabled,
+                onGridEnabledChange = onGridEnabledChange,
+                gridColumns = gridColumns,
+                onGridColumnsChange = onGridColumnsChange,
+                gridRows = gridRows,
+                onGridRowsChange = onGridRowsChange,
+                modifier = Modifier.weight(1f).fillMaxHeight()
+            )
+        } else if (activeTool == "Ruler") {
+            RulerControlPane(
+                rulerEnabled = rulerEnabled,
+                onRulerEnabledChange = onRulerEnabledChange,
+                rulerOrientation = rulerOrientation,
+                onRulerOrientationChange = onRulerOrientationChange,
+                rulerLocked = rulerLocked,
+                onRulerLockedChange = onRulerLockedChange,
+                snapToRuler = snapToRuler,
+                onSnapToRulerChange = onSnapToRulerChange,
+                rulerAngle = rulerAngle,
+                onRulerAngleChange = onRulerAngleChange,
+                rulerPosition = rulerPosition,
+                onRulerPositionChange = onRulerPositionChange,
+                modifier = Modifier.weight(1f).fillMaxHeight()
+            )
+        } else if (isBrushStudioActive) {
+            // Paint Brush Studio subpanels
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .horizontalScroll(androidx.compose.foundation.rememberScrollState())
+            ) {
+                // Preset Selector
+                Column(
+                    modifier = Modifier
+                        .width(220.dp)
+                        .fillMaxHeight()
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Brush Library", style = Typography.labelSmall, color = EnergeticYellow)
+                        IconButton(
+                            onClick = onOpenBrushesLibrary,
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.OpenInNew,
+                                contentDescription = "Open Library",
+                                tint = IndustrialAmber,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+
+                    // Highly striking, premium button to trigger the fullscreen brushes picker
+                    Button(
+                        onClick = onOpenBrushesLibrary,
+                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(28.dp)
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Brush,
+                                contentDescription = "Brush",
+                                tint = DarkOnyx,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text("BRUSHES (41) ⚡", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    val presets = listOf(
+                        Triple(0, "Solid Ink", "✎"),
+                        Triple(1, "Calligraphy", "✒"),
+                        Triple(2, "Neon Glow", "⚡"),
+                        Triple(3, "Airbrush", "☁"),
+                        Triple(4, "Felt Marker", "▮"),
+                        Triple(5, "Dotted Line", "⁏"),
+                        Triple(6, "Splatter Spray", "❖")
+                    )
+
+                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        items(presets.size) { index ->
+                            val p = presets[index]
+                            val isSel = currentPreset == p.first
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(30.dp)
+                                    .background(if (isSel) IndustrialAmber else SlatePanel, RoundedCornerShape(4.dp))
+                                    .clickable { updateBrushParams(null, null, null, p.first, null) }
+                                    .padding(horizontal = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(p.third, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 11.sp)
+                                    Text(p.second, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                // Stroke Precision & Sliders
+                Column(
+                    modifier = Modifier
+                        .width(270.dp)
+                        .fillMaxHeight()
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Stroke Precision", style = Typography.labelSmall, color = EnergeticYellow)
+                        // Dynamic live preview line of the selected brush format
+                        Canvas(
+                            modifier = Modifier
+                                .width(80.dp)
+                                .height(20.dp)
+                                .background(Color(0xFF0C0C0E), RoundedCornerShape(3.dp))
+                                .border(0.5.dp, HighslateOutline, RoundedCornerShape(3.dp))
+                        ) {
+                            val w = size.width
+                            val h = size.height
+                            val pts = listOf(
+                                Offset(w * 0.15f, h * 0.5f),
+                                Offset(w * 0.35f, h * 0.25f),
+                                Offset(w * 0.65f, h * 0.75f),
+                                Offset(w * 0.85f, h * 0.5f)
+                            )
+                            drawBrushStroke(
+                                points = pts,
+                                color = currentColor,
+                                size = currentSize * 0.45f,
+                                opacity = currentOpacity,
+                                presetIndex = currentPreset,
+                                smoothing = currentSmoothing,
+                                originX = 0f,
+                                originY = 0f,
+                                composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
+                            )
+                        }
+                    }
+
+                    // Size Slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Size", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                        Slider(
+                            value = currentSize,
+                            onValueChange = { updateBrushParams(it, null, null, null, null) },
+                            valueRange = 3f..120f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.weight(1f).height(28.dp)
+                        )
+                        Text("${currentSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Size", currentSize, 3f..120f, isInt = true) { updateBrushParams(it, null, null, null, null) }, textAlign = TextAlign.End)
+                    }
+
+                    // Opacity Slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Flow", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                        Slider(
+                            value = currentOpacity,
+                            onValueChange = { updateBrushParams(null, it, null, null, null) },
+                            valueRange = 0.05f..1.0f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.weight(1f).height(28.dp)
+                        )
+                        Text("${(currentOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Flow", currentOpacity, 0.05f..1.0f, isPercent = true) { updateBrushParams(null, it, null, null, null) }, textAlign = TextAlign.End)
+                    }
+
+                    // Smoothing button switch
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(32.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Bezier Curves", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                        Button(
+                            onClick = { updateBrushParams(null, null, !currentSmoothing, null, null) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (currentSmoothing) IndustrialAmber else MidSlate),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Text(if (currentSmoothing) "SMOOTH: ON" else "SMOOTH: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (currentSmoothing) DarkOnyx else TextPrimary)
+                        }
+                    }
+
+                    // Technical Alignment Grid Switch
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(32.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Technical Grid", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66))
+                        Button(
+                            onClick = { onGridEnabledChange(!gridEnabled) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (gridEnabled) Color(0xFF00FF66) else MidSlate),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Text(if (gridEnabled) "GRID: ON" else "GRID: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (gridEnabled) DarkOnyx else TextPrimary)
+                        }
+                    }
+
+                    // Ruler Alignment Switch & Orientation Horizontal/Vertical
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(32.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Ruler Alignment", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66))
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Button(
+                                onClick = { onRulerEnabledChange(!rulerEnabled) },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (rulerEnabled) Color(0xFF00FF66) else MidSlate),
+                                contentPadding = PaddingValues(horizontal = 6.dp),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.height(26.dp)
+                            ) {
+                                Text(if (rulerEnabled) "RULER: ON" else "RULER: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (rulerEnabled) DarkOnyx else TextPrimary)
+                             }
+                             if (rulerEnabled) {
+                                 Button(
+                                     onClick = { onRulerOrientationChange(if (rulerOrientation == "Horizontal") "Vertical" else "Horizontal") },
+                                     colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                                     contentPadding = PaddingValues(horizontal = 6.dp),
+                                     shape = RoundedCornerShape(4.dp),
+                                     modifier = Modifier.height(26.dp)
+                                 ) {
+                                     Text(if (rulerOrientation == "Horizontal") "HORIZ" else "VERT", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx)
+                                 }
+                             }
+                        }
+                    }
+
+                    if (rulerEnabled) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Ruler Pos", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                            Slider(
+                                value = rulerPosition,
+                                onValueChange = { onRulerPositionChange(it) },
+                                valueRange = 0f..2000f,
+                                colors = SliderDefaults.colors(activeTrackColor = Color(0xFF00FF66), thumbColor = Color(0xFF00FF66)),
+                                modifier = Modifier.weight(1f).height(28.dp)
+                            )
+                            Text("${rulerPosition.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                HsvColorPickerPanel(
+                    currentColor = currentColor,
+                    currentOpacity = currentOpacity,
+                    onColorChanged = { newColor ->
+                        updateBrushParams(null, null, null, null, newColor)
+                    },
+                    modifier = Modifier.width(360.dp)
+                )
+            }
+        } else if (selectedLayer != null) {
+            Row(modifier = Modifier.weight(1f)) {
+                if (activeTabOfPanel == 0) {
+                    // TAB 0: PROPERTIES EDITORS (Dimensional positions, perspective, skew)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        
+                        // Geometric position sliders
+                        Column(
+                            modifier = Modifier
+                                .width(290.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text("Dimensional Transforms", style = Typography.labelSmall, color = EnergeticYellow)
+                            
+                            // X slider
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Text("Pos-X", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  Slider(
+                                      value = selectedLayer.positionX,
+                                      onValueChange = { onUpdateLayer(selectedLayer.copy(positionX = it)) },
+                                      valueRange = -200f..1200f,
+                                      colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                      modifier = Modifier.weight(1f).height(28.dp)
+                                  )
+                                  Text("${selectedLayer.positionX.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Position X", selectedLayer.positionX, -200f..1200f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionX = it)) }, textAlign = TextAlign.End)
+                              }
+
+                              // Y slider
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Text("Pos-Y", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  Slider(
+                                      value = selectedLayer.positionY,
+                                      onValueChange = { onUpdateLayer(selectedLayer.copy(positionY = it)) },
+                                      valueRange = -200f..1400f,
+                                      colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                      modifier = Modifier.weight(1f).height(28.dp)
+                                  )
+                                  Text("${selectedLayer.positionY.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Position Y", selectedLayer.positionY, -200f..1400f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionY = it)) }, textAlign = TextAlign.End)
+                              }
+
+                              // Rotator slider
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Text("Rot", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  Slider(
+                                      value = selectedLayer.rotation,
+                                      onValueChange = { onUpdateLayer(selectedLayer.copy(rotation = it)) },
+                                      valueRange = -180f..180f,
+                                      colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                      modifier = Modifier.weight(1f).height(28.dp)
+                                  )
+                                  Text("${selectedLayer.rotation.toInt()}°", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Rotation", selectedLayer.rotation, -180f..180f, isInt = true) { onUpdateLayer(selectedLayer.copy(rotation = it)) }, textAlign = TextAlign.End)
+                              }
+
+                              // Width slider
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Text("SizeW", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  Slider(
+                                      value = selectedLayer.width,
+                                      onValueChange = { onUpdateLayer(selectedLayer.copy(width = it)) },
+                                      valueRange = 20f..800f,
+                                      colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                      modifier = Modifier.weight(1f).height(28.dp)
+                                  )
+                                  Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Width", selectedLayer.width, 20f..800f, isInt = true) { onUpdateLayer(selectedLayer.copy(width = it)) }, textAlign = TextAlign.End)
+                              }
+
+                              // Height slider
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Text("SizeH", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  Slider(
+                                      value = selectedLayer.height,
+                                      onValueChange = { onUpdateLayer(selectedLayer.copy(height = it)) },
+                                      valueRange = 20f..800f,
+                                      colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                      modifier = Modifier.weight(1f).height(28.dp)
+                                  )
+                                  Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Height", selectedLayer.height, 20f..800f, isInt = true) { onUpdateLayer(selectedLayer.copy(height = it)) }, textAlign = TextAlign.End)
+                              }
+
+                              // Pivot-X slider
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Text("PivotX", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  Slider(
+                                      value = selectedLayer.pivotX,
+                                      onValueChange = { onUpdateLayer(selectedLayer.copy(pivotX = it.coerceIn(0f, 1f))) },
+                                      valueRange = 0f..1f,
+                                      colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                      modifier = Modifier.weight(1f).height(28.dp)
+                                  )
+                                  Text(String.format("%.2f", selectedLayer.pivotX), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Pivot X", selectedLayer.pivotX, 0f..1f) { onUpdateLayer(selectedLayer.copy(pivotX = it)) }, textAlign = TextAlign.End)
+                              }
+
+                              // Pivot-Y slider
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                  Text("PivotY", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  Slider(
+                                      value = selectedLayer.pivotY,
+                                      onValueChange = { onUpdateLayer(selectedLayer.copy(pivotY = it.coerceIn(0f, 1f))) },
+                                      valueRange = 0f..1f,
+                                      colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                      modifier = Modifier.weight(1f).height(28.dp)
+                                  )
+                                  Text(String.format("%.2f", selectedLayer.pivotY), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Pivot Y", selectedLayer.pivotY, 0f..1f) { onUpdateLayer(selectedLayer.copy(pivotY = it)) }, textAlign = TextAlign.End)
+                              }
+
+                            Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
+                            Text("Pivot Alignment Presets", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    val rowPivots = listOf(
+                                        listOf(0.0f to 0.0f, 0.5f to 0.0f, 1.0f to 0.0f),
+                                        listOf(0.0f to 0.5f, 0.5f to 0.5f, 1.0f to 0.5f),
+                                        listOf(0.0f to 1.0f, 0.5f to 1.0f, 1.0f to 1.0f)
+                                    )
+                                    rowPivots.forEach { pairRow ->
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            pairRow.forEach { (px, py) ->
+                                                val isSelected = Math.abs(selectedLayer.pivotX - px) < 0.05f && Math.abs(selectedLayer.pivotY - py) < 0.05f
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(24.dp)
+                                                        .background(
+                                                            if (isSelected) EnergeticYellow else MidSlate,
+                                                            RoundedCornerShape(4.dp)
+                                                        )
+                                                        .clickable {
+                                                            onUpdateLayer(selectedLayer.copy(pivotX = px, pivotY = py))
+                                                        },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(6.dp)
+                                                            .background(
+                                                                if (isSelected) DarkOnyx else TextSecondary,
+                                                                RoundedCornerShape(12.dp)
+                                                            )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.width(2.dp))
+
+                        // Perspective & Skew Transforms column
+                        Column(
+                            modifier = Modifier
+                                .width(290.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("Perspective & Skew 3D", style = Typography.labelSmall, color = EnergeticYellow)
+
+                            // Skew-X slider
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Skew-X", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                Slider(
+                                    value = selectedLayer.skewX,
+                                    onValueChange = { onUpdateLayer(selectedLayer.copy(skewX = it)) },
+                                    valueRange = -1.5f..1.5f,
+                                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                    modifier = Modifier.weight(1f).height(28.dp)
+                                )
+                                Text(String.format("%.2f", selectedLayer.skewX), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
+                            }
+
+                            // Skew-Y slider
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Skew-Y", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                Slider(
+                                    value = selectedLayer.skewY,
+                                    onValueChange = { onUpdateLayer(selectedLayer.copy(skewY = it)) },
+                                    valueRange = -1.5f..1.5f,
+                                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                    modifier = Modifier.weight(1f).height(28.dp)
+                                )
+                                Text(String.format("%.2f", selectedLayer.skewY), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
+                            }
+
+                            // Persp-X slider
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("PerspX", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                Slider(
+                                    value = selectedLayer.perspX,
+                                    onValueChange = { onUpdateLayer(selectedLayer.copy(perspX = it)) },
+                                    valueRange = -0.005f..0.005f,
+                                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                    modifier = Modifier.weight(1f).height(28.dp)
+                                )
+                                Text(String.format("%.4f", selectedLayer.perspX), style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
+                            }
+
+                            // Persp-Y slider
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("PerspY", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                Slider(
+                                    value = selectedLayer.perspY,
+                                    onValueChange = { onUpdateLayer(selectedLayer.copy(perspY = it)) },
+                                    valueRange = -0.005f..0.005f,
+                                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                    modifier = Modifier.weight(1f).height(28.dp)
+                                )
+                                Text(String.format("%.4f", selectedLayer.perspY), style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
+                            }
+
+                            Spacer(Modifier.height(2.dp))
+
+                            // Reset Controls Row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Button(
+                                    onClick = { onUpdateLayer(selectedLayer.copy(skewX = 0f, skewY = 0f)) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                    contentPadding = PaddingValues(horizontal = 4.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.weight(1f).height(28.dp)
+                                ) {
+                                    Text("Reset Skew", style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary)
+                                }
+
+                                Button(
+                                    onClick = { onUpdateLayer(selectedLayer.copy(perspX = 0f, perspY = 0f)) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                    contentPadding = PaddingValues(horizontal = 4.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.weight(1f).height(28.dp)
+                                ) {
+                                    Text("Reset Persp", style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary)
+                                }
+
+                                Button(
+                                    onClick = { onUpdateLayer(selectedLayer.copy(skewX = 0f, skewY = 0f, perspX = 0f, perspY = 0f)) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                                    contentPadding = PaddingValues(horizontal = 4.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.weight(1.1f).height(28.dp)
+                                ) {
+                                    Text("Reset All", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                } else if (activeTabOfPanel == 1) {
+                    // TAB 1: EDIT SHAPE PARAMETRIC PANEL (Corner radius, polygon edges, star ratio, stroke thickness/fill)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (selectedLayer.type == LayerType.TEXT) {
+                            Column(
+                                modifier = Modifier
+                                    .width(340.dp)
+                                    .fillMaxHeight()
+                                    .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text("Typography Style & Font 🔠", style = Typography.labelSmall, color = EnergeticYellow)
+                                
+                                // Source text content
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Source Text Content", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                                    var txtInputBuf by remember(selectedLayer.id) { mutableStateOf(selectedLayer.textContent) }
+                                    OutlinedTextField(
+                                        value = txtInputBuf,
+                                        onValueChange = {
+                                            txtInputBuf = it
+                                            onUpdateLayer(selectedLayer.copy(textContent = it))
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                                        textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                                        singleLine = true,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = IndustrialAmber,
+                                            unfocusedBorderColor = HighslateOutline,
+                                            cursorColor = IndustrialAmber
+                                        )
+                                    )
+                                }
+                                
+                                Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
+                                // Font size slider
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Font Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                                        Text("${selectedLayer.fontSize.toInt()}sp", style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary, modifier = Modifier.clickableValueEdit("Font Size", selectedLayer.fontSize, 8f..150f, isInt = true) { onUpdateLayer(selectedLayer.copy(fontSize = it)) })
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        IconButton(
+                                            onClick = { onUpdateLayer(selectedLayer.copy(fontSize = maxOf(8f, selectedLayer.fontSize - 2f))) },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(Icons.Default.Remove, "Decrease", modifier = Modifier.size(16.dp), tint = TextSecondary)
+                                        }
+                                        Slider(
+                                            value = selectedLayer.fontSize,
+                                            onValueChange = { onUpdateLayer(selectedLayer.copy(fontSize = it)) },
+                                            valueRange = 8f..150f,
+                                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                            modifier = Modifier.weight(1f).height(32.dp)
+                                        )
+                                        IconButton(
+                                            onClick = { onUpdateLayer(selectedLayer.copy(fontSize = minOf(150f, selectedLayer.fontSize + 2f))) },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(Icons.Default.Add, "Increase", modifier = Modifier.size(16.dp), tint = TextSecondary)
+                                        }
+                                    }
+                                }
+
+                                Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
+                                // Style Formats: Bold, Italic, Alignment (Left, Center, Right)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text("Format Styles", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            // Bold
+                                            IconButton(
+                                                onClick = { onUpdateLayer(selectedLayer.copy(fontIsBold = !selectedLayer.fontIsBold)) },
+                                                modifier = Modifier
+                                                    .size(34.dp)
+                                                    .background(if (selectedLayer.fontIsBold) IndustrialAmber else MidSlate, RoundedCornerShape(4.dp))
+                                            ) {
+                                                Text("B", fontWeight = FontWeight.Bold, color = if (selectedLayer.fontIsBold) DarkOnyx else TextPrimary, fontSize = 12.sp)
+                                            }
+                                            // Italic
+                                            IconButton(
+                                                onClick = { onUpdateLayer(selectedLayer.copy(fontIsItalic = !selectedLayer.fontIsItalic)) },
+                                                modifier = Modifier
+                                                    .size(34.dp)
+                                                    .background(if (selectedLayer.fontIsItalic) IndustrialAmber else MidSlate, RoundedCornerShape(4.dp))
+                                            ) {
+                                                Text("I", style = androidx.compose.ui.text.TextStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic), color = if (selectedLayer.fontIsItalic) DarkOnyx else TextPrimary, fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp), horizontalAlignment = Alignment.End) {
+                                        Text("Alignment", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            val alignments = listOf("Left", "Center", "Right")
+                                            alignments.forEach { align ->
+                                                val isActive = selectedLayer.fontAlign.equals(align, ignoreCase = true)
+                                                IconButton(
+                                                    onClick = { onUpdateLayer(selectedLayer.copy(fontAlign = align)) },
+                                                    modifier = Modifier
+                                                        .height(34.dp)
+                                                        .widthIn(min = 40.dp)
+                                                        .background(if (isActive) IndustrialAmber else MidSlate, RoundedCornerShape(4.dp))
+                                                ) {
+                                                    Text(align.take(3), style = Typography.labelMedium, color = if (isActive) DarkOnyx else TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
+                                // FONT SELECTION SECTION
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Select Typography Font", style = Typography.labelSmall, fontSize = 10.sp, color = EnergeticYellow)
+                                    Button(
+                                        onClick = onImportFontClick,
+                                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                                        shape = RoundedCornerShape(4.dp),
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Add, "Import", modifier = Modifier.size(10.dp), tint = DarkOnyx)
+                                        Spacer(Modifier.width(2.dp))
+                                        Text("Import Font", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
+                                // Search typography fonts
+                                OutlinedTextField(
+                                    value = fontSearchQuery,
+                                    onValueChange = onFontSearchQueryChange,
+                                    modifier = Modifier.fillMaxWidth().height(42.dp),
+                                    placeholder = { Text("Search font family name...", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary) },
+                                    textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = IndustrialAmber,
+                                        unfocusedBorderColor = HighslateOutline,
+                                        cursorColor = IndustrialAmber
+                                    )
+                                )
+
+                                // Category selection horizontal filters
+                                val categories = listOf("All", "Sans-Serif", "Serif", "Monospace", "Display", "Script", "Handwritten")
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    categories.forEach { cat ->
+                                        val isSelected = selectedCategoryFilter == cat
+                                        Button(
+                                            onClick = { onSelectedCategoryFilterChange(cat) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = if (isSelected) IndustrialAmber else MidSlate),
+                                            shape = RoundedCornerShape(12.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp),
+                                            modifier = Modifier.height(24.dp)
+                                        ) {
+                                            Text(cat, style = Typography.labelSmall, fontSize = 9.sp, color = if (isSelected) DarkOnyx else TextPrimary)
+                                        }
+                                    }
+                                }
+
+                                // Merging built-in lists with imported storage ones
+                                val allFonts = listOf(
+                                    FontResource(name = "Roboto (Sans-serif)", category = "Sans-Serif", systemFamily = "sans-serif"),
+                                    FontResource(name = "Noto Serif (Serif)", category = "Serif", systemFamily = "serif"),
+                                    FontResource(name = "Roboto Mono (Monospace)", category = "Monospace", systemFamily = "monospace"),
+                                    FontResource(name = "Montserrat", category = "Sans-Serif", systemFamily = "sans-serif-condensed"),
+                                    FontResource(name = "Merriweather", category = "Serif", systemFamily = "serif"),
+                                    FontResource(name = "Playfair Display", category = "Display", systemFamily = "serif"),
+                                    FontResource(name = "Pacifico (Script)", category = "Script", systemFamily = "sans-serif"),
+                                    FontResource(name = "Dancing Script", category = "Script", systemFamily = "serif"),
+                                    FontResource(name = "Caveat (Handwritten)", category = "Handwritten", systemFamily = "sans-serif"),
+                                    FontResource(name = "Indie Flower", category = "Handwritten", systemFamily = "sans-serif")
+                                )
+                                
+                                // Dynamic query to list directory
+                                val importedFonts = try {
+                                    val fontsDir = java.io.File(context.filesDir, "fonts")
+                                    if (!fontsDir.exists()) fontsDir.mkdirs()
+                                    val files = fontsDir.listFiles { file ->
+                                        file.isFile && (file.extension.lowercase() == "ttf" || file.extension.lowercase() == "otf")
+                                    } ?: emptyArray()
+                                    files.map { file ->
+                                        val cleanName = file.nameWithoutExtension.replace("_", " ").replace("-", " ")
+                                        val category = if (cleanName.contains("script", ignoreCase = true)) {
+                                            "Script"
+                                        } else if (cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true)) {
+                                            "Handwritten"
+                                        } else if (cleanName.contains("mono", ignoreCase = true)) {
+                                            "Monospace"
+                                        } else if (cleanName.contains("serif", ignoreCase = true)) {
+                                            "Serif"
+                                        } else {
+                                            "Display"
+                                        }
+                                        FontResource(
+                                            name = cleanName,
+                                            category = category,
+                                            path = file.absolutePath,
+                                            isImported = true
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    emptyList()
+                                }
+
+                                val consolidatedFonts = allFonts + importedFonts
+                                val filteredFonts = consolidatedFonts.filter { font ->
+                                    val matchesQuery = font.name.contains(fontSearchQuery, ignoreCase = true)
+                                    val matchesCategory = selectedCategoryFilter == "All" || font.category == selectedCategoryFilter
+                                    matchesQuery && matchesCategory
+                                }
+
+                                if (filteredFonts.isEmpty()) {
+                                    Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                                } else {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        filteredFonts.forEach { font ->
+                                            val isSelected = if (font.isImported) {
+                                                selectedLayer.fontPath == font.path
+                                            } else {
+                                                selectedLayer.fontFamilyName == font.name && selectedLayer.fontPath == null
+                                            }
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .background(if (isSelected) IndustrialAmber.copy(alpha = 0.2f) else Color.Transparent, RoundedCornerShape(4.dp))
+                                                    .border(BorderStroke(0.5.dp, if (isSelected) IndustrialAmber else Color.Transparent), RoundedCornerShape(4.dp))
+                                                    .clickable {
+                                                        if (font.isImported) {
+                                                            onUpdateLayer(selectedLayer.copy(fontPath = font.path, fontFamilyName = font.name))
+                                                        } else {
+                                                            onUpdateLayer(selectedLayer.copy(fontPath = null, fontFamilyName = font.name))
+                                                        }
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(font.name, style = Typography.labelSmall, fontSize = 11.sp, color = TextPrimary, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                                    Text(
+                                                        text = if (font.isImported) "Imported • ${font.category}" else "System Font • ${font.category}",
+                                                        style = Typography.labelSmall,
+                                                        fontSize = 9.sp,
+                                                        color = TextSecondary
+                                                    )
+                                                }
+                                                if (isSelected) {
+                                                    Icon(Icons.Default.Check, "Selected", modifier = Modifier.size(14.dp), tint = IndustrialAmber)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            val isShapeLayer = selectedLayer.type in listOf(
+                                LayerType.VECTOR_RECT, LayerType.VECTOR_CIRCLE, LayerType.VECTOR_STAR,
+                                LayerType.VECTOR_TRIANGLE, LayerType.VECTOR_PENTAGON, LayerType.VECTOR_HEXAGON,
+                                LayerType.VECTOR_OVAL, LayerType.VECTOR_LINE, LayerType.VECTOR_BEZIER
+                            )
+                            if (isShapeLayer) {
+                                Column(
+                                    modifier = Modifier
+                                        .width(340.dp)
+                                        .fillMaxHeight()
+                                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text("Parametric Shape Editor 📐", style = Typography.labelSmall, color = EnergeticYellow)
+                                    
+                                    Text(
+                                        text = "Shape Type: ${selectedLayer.type.name.removePrefix("VECTOR_").replace("_", " ")}",
+                                        style = Typography.labelSmall,
+                                        fontSize = 11.sp,
+                                        color = MatteBlue,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    
+                                    Divider(color = HighslateOutline.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+                                    // 1. Dimensional Size Controls
+                                    Text("Dimensions & Scale", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+                                    
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Width", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
+                                        Slider(
+                                            value = selectedLayer.width,
+                                            onValueChange = {
+                                                val newW = it.coerceIn(10f, 1500f)
+                                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                                    onUpdateLayer(selectedLayer.copy(width = newW, height = newW))
+                                                } else {
+                                                    onUpdateLayer(selectedLayer.copy(width = newW))
+                                                }
+                                            },
+                                            valueRange = 10f..1200f,
+                                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                            modifier = Modifier.weight(1f).height(38.dp)
+                                        )
+                                        Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Shape Width", selectedLayer.width, 10f..1200f, isInt = true) { onUpdateLayer(selectedLayer.copy(width = it)) }, textAlign = TextAlign.End)
+                                    }
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Height", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
+                                        Slider(
+                                            value = selectedLayer.height,
+                                            onValueChange = {
+                                                val newH = it.coerceIn(10f, 1500f)
+                                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                                    onUpdateLayer(selectedLayer.copy(width = newH, height = newH))
+                                                } else {
+                                                    onUpdateLayer(selectedLayer.copy(height = newH))
+                                                }
+                                            },
+                                            valueRange = 10f..1200f,
+                                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                            modifier = Modifier.weight(1f).height(38.dp)
+                                        )
+                                        Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Shape Height", selectedLayer.height, 10f..1200f, isInt = true) { onUpdateLayer(selectedLayer.copy(height = it)) }, textAlign = TextAlign.End)
+                                    }
+
+                                    Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
+                                    // 2. Shape-Specific Structural Controls (Corner Radius, Sides/Edges, Star ratio)
+                                    val canHaveCornerRadius = selectedLayer.type in listOf(
+                                         LayerType.VECTOR_RECT, LayerType.VECTOR_TRIANGLE, LayerType.VECTOR_PENTAGON,
+                                         LayerType.VECTOR_HEXAGON, LayerType.VECTOR_STAR, LayerType.VECTOR_BEZIER
+                                     )
+                                     if (canHaveCornerRadius) {
+                                        Text("Corners Aesthetics", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text("Radius", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
+                                            Slider(
+                                                value = selectedLayer.cornerRadius,
+                                                onValueChange = { onUpdateLayer(selectedLayer.copy(cornerRadius = it)) },
+                                                valueRange = 0f..250f,
+                                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                                modifier = Modifier.weight(1f).height(38.dp)
+                                            )
+                                            Text("${selectedLayer.cornerRadius.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Shape Corner Radius", selectedLayer.cornerRadius, 0f..250f, isInt = true) { onUpdateLayer(selectedLayer.copy(cornerRadius = it)) }, textAlign = TextAlign.End)
+                                        }
+                                    }
+
+                                    val hasEdges = selectedLayer.type in listOf(LayerType.VECTOR_TRIANGLE, LayerType.VECTOR_PENTAGON, LayerType.VECTOR_HEXAGON, LayerType.VECTOR_STAR)
+                                    if (hasEdges) {
+                                        Text("Structural Edges & Points", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            val labelText = if (selectedLayer.type == LayerType.VECTOR_STAR) "Points" else "Sides"
+                                            Text(labelText, style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
+                                            val minEdges = 3
+                                            val maxEdges = 20
+                                            val activeEdges = if (selectedLayer.type == LayerType.VECTOR_TRIANGLE && selectedLayer.polygonEdges == 5) 3 else selectedLayer.polygonEdges
+                                            Slider(
+                                                value = activeEdges.toFloat(),
+                                                onValueChange = { onUpdateLayer(selectedLayer.copy(polygonEdges = it.toInt())) },
+                                                valueRange = minEdges.toFloat()..maxEdges.toFloat(),
+                                                steps = maxEdges - minEdges - 1,
+                                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                                modifier = Modifier.weight(1f).height(38.dp)
+                                            )
+                                            Text("${activeEdges}", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Edges / Points", activeEdges.toFloat(), 3f..20f, isInt = true) { onUpdateLayer(selectedLayer.copy(polygonEdges = it.toInt())) }, textAlign = TextAlign.End)
+                                        }
+                                    }
+
+                                    if (selectedLayer.type == LayerType.VECTOR_STAR) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text("Inner Ratio", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
+                                            Slider(
+                                                value = selectedLayer.starInnerRadiusRatio,
+                                                onValueChange = { onUpdateLayer(selectedLayer.copy(starInnerRadiusRatio = it)) },
+                                                valueRange = 0.05f..0.95f,
+                                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                                modifier = Modifier.weight(1f).height(38.dp)
+                                            )
+                                            Text(String.format("%.2f", selectedLayer.starInnerRadiusRatio), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Star Inner Ratio", selectedLayer.starInnerRadiusRatio, 0.05f..0.95f) { onUpdateLayer(selectedLayer.copy(starInnerRadiusRatio = it)) }, textAlign = TextAlign.End)
+                                        }
+                                    }
+
+                                    Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
+                                    // 3. Stroke / Fill Settings
+                                    Text("Rendering Mode", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val isFilled = selectedLayer.strokeThickness <= 0f
+                                        Button(
+                                            onClick = { onUpdateLayer(selectedLayer.copy(strokeThickness = -1f)) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = if (isFilled) IndustrialAmber else MidSlate),
+                                            contentPadding = PaddingValues(horizontal = 4.dp),
+                                            shape = RoundedCornerShape(4.dp),
+                                            modifier = Modifier.weight(1f).height(26.dp)
+                                        ) {
+                                            Text("Solid Fill", style = Typography.labelSmall, fontSize = 9.sp, color = if (isFilled) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                                        }
+                                        
+                                        Button(
+                                            onClick = { 
+                                                val currentStroke = if (selectedLayer.strokeThickness > 0f) selectedLayer.strokeThickness else 4f
+                                                onUpdateLayer(selectedLayer.copy(strokeThickness = currentStroke)) 
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = if (!isFilled) IndustrialAmber else MidSlate),
+                                            contentPadding = PaddingValues(horizontal = 4.dp),
+                                            shape = RoundedCornerShape(4.dp),
+                                            modifier = Modifier.weight(1f).height(26.dp)
+                                        ) {
+                                            Text("Outline Stroke", style = Typography.labelSmall, fontSize = 9.sp, color = if (!isFilled) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+
+                                    if (selectedLayer.strokeThickness > 0f) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text("Thickness", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
+                                            Slider(
+                                                value = selectedLayer.strokeThickness,
+                                                onValueChange = { onUpdateLayer(selectedLayer.copy(strokeThickness = it)) },
+                                                valueRange = 1f..60f,
+                                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                                                modifier = Modifier.weight(1f).height(38.dp)
+                                            )
+                                            Text("${selectedLayer.strokeThickness.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Stroke Thickness", selectedLayer.strokeThickness, 1f..60f, isInt = true) { onUpdateLayer(selectedLayer.copy(strokeThickness = it)) }, textAlign = TextAlign.End)
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Non-shape layers notice state
+                                Column(
+                                    modifier = Modifier
+                                        .width(340.dp)
+                                        .fillMaxHeight()
+                                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                        .padding(16.dp),
+                                    verticalArrangement = Arrangement.Center,
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text("📐", fontSize = 28.sp)
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = "Vector Shape Layer Required",
+                                        style = Typography.labelSmall,
+                                        color = EnergeticYellow,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = "Select a shape layer (Rectangle, Circle, Star, Polygon) from your layer stack to edit its radius, sides, inner ratio and outlines here.",
+                                        style = Typography.labelSmall,
+                                        fontSize = 9.sp,
+                                        color = TextSecondary,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else if (activeTabOfPanel == 2) {
+                    // TAB 2: COLOR DESIGNER PANEL (Rename Aesthetics -> Color)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .width(340.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("Color Designer 🎨", style = Typography.labelSmall, color = EnergeticYellow)
+
+                            HsvColorPickerPanel(
+                                currentColor = selectedLayer.baseColor,
+                                currentOpacity = selectedLayer.opacity,
+                                onColorChanged = { newColor ->
+                                    onUpdateLayer(selectedLayer.copy(baseColor = newColor))
+                                },
+                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                selectedLayer = selectedLayer,
+                                onUpdateLayer = onUpdateLayer
+                            )
+
+                            // Dynamic live text editor (displays ONLY if TEXT layer is selected)
+                            if (selectedLayer.type == LayerType.TEXT) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Source Text Content", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                                    var txtInputBuf by remember(selectedLayer.id) { mutableStateOf(selectedLayer.textContent) }
+                                    OutlinedTextField(
+                                        value = txtInputBuf,
+                                        onValueChange = {
+                                            txtInputBuf = it
+                                            onUpdateLayer(selectedLayer.copy(textContent = it))
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                                        textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                                        singleLine = true,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = IndustrialAmber,
+                                            unfocusedBorderColor = HighslateOutline,
+                                            cursorColor = IndustrialAmber
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else if (activeTabOfPanel == 3) {
+                    // TAB 2: FILTERS AND FX STACKING PANEL (Original visual non-destructive effects shader simulation)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .width(240.dp)
+                                .fillMaxHeight(),
+                            verticalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Stack FX (${selectedLayer.effects.size})", style = Typography.labelSmall, color = TextPrimary)
+                                
+                                Button(
+                                    onClick = onOpenEffectsGallery,
+                                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                                    shape = RoundedCornerShape(4.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(30.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, "Add", tint = DarkOnyx, modifier = Modifier.size(12.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Add Effect", style = Typography.labelSmall, fontSize = 10.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            LazyColumn(
+                                modifier = Modifier.weight(1f).padding(top = 4.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                itemsIndexed(items = selectedLayer.effects, key = { index, eff -> eff.id }) { index, eff ->
+                                    val isEffSelected = index == selectedEffectIndex
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (isEffSelected) IndustrialAmber.copy(0.12f) else MidSlate)
+                                            .border(BorderStroke(0.5.dp, if (isEffSelected) IndustrialAmber else HighslateOutline), RoundedCornerShape(4.dp))
+                                            .clickable { onSelectEffectIndex(index) }
+                                            .padding(6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            IconButton(
+                                                onClick = { onToggleEffectEnabled(eff.id) },
+                                                modifier = Modifier.size(24.dp).testTag("effect_toggle_visibility_${eff.id}")
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (eff.isEnabled) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                                    contentDescription = "Toggle Visibility of ${eff.name}",
+                                                    tint = if (eff.isEnabled) IndustrialAmber else TextSecondary,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                text = eff.name,
+                                                style = Typography.labelSmall.copy(
+                                                    textDecoration = if (eff.isEnabled) null else androidx.compose.ui.text.style.TextDecoration.LineThrough
+                                                ),
+                                                fontSize = 10.sp,
+                                                color = if (eff.isEnabled) TextPrimary else TextSecondary,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        IconButton(onClick = { onRemoveEffect(eff.id) }, modifier = Modifier.size(24.dp)) {
+                                            Icon(Icons.Default.Close, "Remove fx", tint = Color.Red, modifier = Modifier.size(12.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.width(2.dp))
+
+                        // Active live parameter adjust sliders
+                        val actEff = selectedLayer.effects.getOrNull(selectedEffectIndex)
+                        Column(
+                            modifier = Modifier
+                                .width(290.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                        ) {
+                            if (actEff != null) {
+                                Text("Modify Parameter: ${actEff.name}", style = Typography.labelSmall, color = EnergeticYellow)
+                                Spacer(Modifier.height(6.dp))
+                                
+                                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    val categories = if (actEff is com.example.studio.model.StudioEffect.PhotoshopEffect && actEff.effectType == "ColorGrading") {
+                                        listOf(
+                                            "LUT Presets" to listOf("Preset", "Intensity"),
+                                            "Basic Tonal Adjustments" to listOf("Exposure", "Contrast", "Highlights", "Shadows", "Whites", "Blacks"),
+                                            "Color & White Balance" to listOf("Temperature", "Tint", "Vibrance", "Saturation"),
+                                            "Detail & Presence" to listOf("Clarity", "Texture", "Sharpening", "SharpeningRadius", "SharpeningMasking", "Dehaze"),
+                                            "HSL: Red Channel" to listOf("HSL_Red_Hue", "HSL_Red_Sat", "HSL_Red_Lum"),
+                                            "HSL: Orange Channel" to listOf("HSL_Orange_Hue", "HSL_Orange_Sat", "HSL_Orange_Lum"),
+                                            "HSL: Yellow Channel" to listOf("HSL_Yellow_Hue", "HSL_Yellow_Sat", "HSL_Yellow_Lum"),
+                                            "HSL: Green Channel" to listOf("HSL_Green_Hue", "HSL_Green_Sat", "HSL_Green_Lum"),
+                                            "HSL: Aqua Channel" to listOf("HSL_Aqua_Hue", "HSL_Aqua_Sat", "HSL_Aqua_Lum"),
+                                            "HSL: Blue Channel" to listOf("HSL_Blue_Hue", "HSL_Blue_Sat", "HSL_Blue_Lum"),
+                                            "HSL: Purple Channel" to listOf("HSL_Purple_Hue", "HSL_Purple_Sat", "HSL_Purple_Lum"),
+                                            "HSL: Magenta Channel" to listOf("HSL_Magenta_Hue", "HSL_Magenta_Sat", "HSL_Magenta_Lum"),
+                                            "Technical Correction" to listOf("NoiseLuminance", "NoiseColor", "Vignetting", "Grain")
+                                        )
+                                    } else {
+                                        listOf("" to actEff.parameters.keys.toList())
+                                    }
+
+                                    categories.forEach { (catName, keys) ->
+                                        if (catName.isNotEmpty()) {
+                                            item {
+                                                Text(
+                                                    text = catName,
+                                                    style = Typography.labelSmall,
+                                                    color = EnergeticYellow,
+                                                    modifier = Modifier.padding(top = 10.dp, bottom = 6.dp)
+                                                )
+                                            }
+                                        }
+                                        keys.forEach { pName ->
+                                            val param = actEff.parameters[pName]
+                                            if (param != null) {
+                                                item {
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween
+                                                        ) {
+                                                            Text(param.name, style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary)
+                                                            val displayVal = if (actEff is com.example.studio.model.StudioEffect.PhotoshopEffect && actEff.effectType == "ColorGrading" && pName == "Preset") {
+                                                                val LUTs = listOf("Cinema Golden", "Teal & Orange", "Mono B&W", "Cold Frost", "Dreamy Pastel", "Vintage Sepia", "Acid Neon")
+                                                                LUTs.getOrNull(param.value.toInt()) ?: "Preset ${param.value.toInt()}"
+                                                            } else {
+                                                                "${"%.2f".format(param.value)} ${param.unit}".trim()
+                                                            }
+                                                            val trigger = LocalSliderValueEditTrigger.current
+                                                            Text(
+                                                                text = displayVal,
+                                                                style = Typography.labelSmall,
+                                                                fontSize = 10.sp,
+                                                                color = IndustrialAmber,
+                                                                modifier = Modifier.clickable {
+                                                                    trigger(
+                                                                        SliderValueEditConfig(
+                                                                            title = param.name,
+                                                                            currentValue = param.value,
+                                                                            valueRange = param.rangeMin..param.rangeMax,
+                                                                            isInt = param.unit.contains("px") || param.unit.contains("%") || (actEff is com.example.studio.model.StudioEffect.PhotoshopEffect && actEff.effectType == "ColorGrading" && pName == "Preset"),
+                                                                            onConfirm = { onUpdateEffectParam(actEff.id, pName, it) }
+                                                                        )
+                                                                    )
+                                                                }
+                                                            )
+                                                        }
+                                                        Slider(
+                                                            value = param.value,
+                                                            onValueChange = { onUpdateEffectParam(actEff.id, pName, it) },
+                                                            valueRange = param.rangeMin..param.rangeMax,
+                                                            colors = SliderDefaults.colors(
+                                                                activeTrackColor = IndustrialAmber,
+                                                                thumbColor = IndustrialAmber
+                                                            ),
+                                                            modifier = Modifier.height(28.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("Select or Add an Effect to Stack parameters non-destructively", style = Typography.labelSmall, textAlign = TextAlign.Center, color = TextSecondary)
+                                }
+                            }
+                        }
+                    }
+                } else if (activeTabOfPanel == 4) {
+                    BordersAndShadowsTabPanel(
+                        selectedLayer = selectedLayer,
+                        onAddEffect = onAddEffect,
+                        onUpdateEffectParam = onUpdateEffectParam
+                    )
+                }
+            }
+        } else {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Text("Select a layer from the panel to adjust stacking effects.", style = Typography.labelSmall, color = TextSecondary)
+            }
+        }
+    }
+    }
+
+    if (activeValueEditConfig != null) {
+        SliderValueEditDialog(
+            config = activeValueEditConfig!!,
+            onDismiss = { activeValueEditConfig = null }
+        )
+    }
+}
+
+// Technical multi-agent debate and blueprint overlay inside Zenith Studio
+@Composable
+fun ArchitectureHubOverlay(onClose: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = SlatePanel,
+        border = BorderStroke(1.5.dp, IndustrialAmber)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Psychology, "Multi-Agent Hub", tint = EnergeticYellow, modifier = Modifier.size(24.dp))
+                    Text("Zenith AI Multi-Agent Architecture Hub", style = Typography.headlineMedium, color = TextPrimary)
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, "Close overlay", tint = TextPrimary)
+                }
+            }
+
+            // Scrollable Content
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    Text(
+                        text = "1. EXPERT MULTI-AGENT SYNTHESIS DEBATE",
+                        style = Typography.titleLarge,
+                        color = IndustrialAmber,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                item {
+                    AgentSpeechCard(
+                        agentName = "Lead UX/UI Architect",
+                        agentRole = "Workspace Canvas Centricity Paradigm",
+                        speech = "To merge Ibis Paint X with Alight Motion, our primary challenge is balancing visual accessibility (avoiding toolbar clutter) with extremely fine-grained property adjustment. The Lösung is a collapsible right-side dock holding nested compositing layers alongside visibility, alpha-locking mechanisms, and custom blending drop-downs, keeping the workspace canvas entirely centered. Tool configurations are side-docked dynamically so that 90% of screen real estate is dedicated to direct canvas manipulation."
+                    )
+                }
+
+                item {
+                    AgentSpeechCard(
+                        agentName = "Core Graphics Developer (OpenGL ES / Vulkan / Native NDK)",
+                        agentRole = "Completely Non-Destructive Renderer Engine",
+                        speech = "We cannot afford double-buffer copies of high-res pixel targets on mobile devices inside standard memory. Thus, the engine is fully modeled as a modern Directed Acyclic Graph (DAG) state of custom fragment shaders. When an effect like Gaussian Blur or Inner Glow is stacked, we compile a merged dynamic shader pipeline dynamically. Using GPU Framebuffer Objects (FBOs) with native single-pass color blending and downsampled mipmaps, we perform live non-destructive blurring and hues/glows at zero CPU-to-GPU memory roundtrips."
+                    )
+                }
+
+                item {
+                    AgentSpeechCard(
+                        agentName = "Jetpack Compose specialist",
+                        agentRole = "Low-Latency UI & Gesture Processing",
+                        speech = "In Jetpack Compose, we implement low-latency renders by driving canvas drawing states with immutable SnapshotStateList structures. Draggestures translate positions and brush points directly through lightweight layout offsets without triggering complete screen recompositions. Native Compose custom draw Operations are aligned with low-latency hardware acceleration and harness Skia/Canvas BlendMode compositing directly at the GPU draw call boundary."
+                    )
+                }
+
+                item {
+                    Text(
+                        text = "2. ZENITH TECHNICAL ARCHITECTURE BLUEPRINT",
+                        style = Typography.titleLarge,
+                        color = IndustrialAmber,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF131317)),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("NON-DESTRUCTIVE LAYER COMPLEMENTS REPRESENTATION", style = Typography.labelSmall, color = EnergeticYellow)
+                            Text(
+                                text = "Every visual layer is structured in a clean immutable data model containing its geometric transformations (position, scale, rotation, opacity, blending mode) and stacked list of StudioEffect parameters. Rather than altering source bitmap pixels, the canvas DrawScope interprets the stacked parameters dynamically and synthesizes them at compile-free render states.",
+                                style = Typography.bodyMedium,
+                                color = TextPrimary
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    Text(
+                        text = "3. FEATURES IMPLEMENTATION ROADMAP",
+                        style = Typography.titleLarge,
+                        color = IndustrialAmber,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        RoadmapItem(stepName = "Completed Phase 1: Starter Workspace Layout", description = "Intuitive canvas workspace centering Ibis Paint drawers, stackable Alight parameter controls, and custom brush pen drawings.")
+                        RoadmapItem(stepName = "Pending Phase 2: Native C++ Shader Engine", description = "Unifies hardware-accelerated Vulkan pipeline with memory-safe FBO pooling loops.")
+                        RoadmapItem(stepName = "Pending Phase 3: Timeline & Easing Curves", description = "Adds cubic-bezier keyframing interpolation states ready for real-time mobile motion compositing.")
+                    }
+                }
+            }
+
+            // Close actions panel
+            Button(
+                onClick = onClose,
+                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Return to Studio Workspace", color = DarkOnyx, fontWeight = FontWeight.Bold, style = Typography.bodyLarge)
+            }
+        }
+    }
+}
+
+@Composable
+fun AgentSpeechCard(agentName: String, agentRole: String, speech: String) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MidSlate),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp)),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(agentName, style = Typography.bodyMedium, fontWeight = FontWeight.Bold, color = IndustrialAmber)
+                Text(agentRole, style = Typography.labelSmall, color = EnergeticYellow)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(speech, style = Typography.bodyMedium, color = TextPrimary)
+        }
+    }
+}
+
+@Composable
+fun RoadmapItem(stepName: String, description: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF131317), RoundedCornerShape(6.dp))
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .background(IndustrialAmber, RoundedCornerShape(6.dp))
+        )
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(stepName, style = Typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+            Text(description, style = Typography.bodyMedium, fontSize = 11.sp, color = TextSecondary)
+        }
+    }
+}
+
+@Composable
+fun PresetSilhouette(index: Int, isSelected: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .background(if (isSelected) IndustrialAmber.copy(0.08f) else MidSlate, RoundedCornerShape(8.dp))
+            .border(BorderStroke(1.dp, if (isSelected) IndustrialAmber.copy(0.6f) else HighslateOutline.copy(alpha = 0.4f)), RoundedCornerShape(8.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(28.dp)) {
+            val color = if (isSelected) IndustrialAmber else TextSecondary.copy(alpha = 0.7f)
+            val stroke = Stroke(
+                width = 1.5.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f), 0f)
+            )
+            val fillBrush = androidx.compose.ui.graphics.Brush.linearGradient(
+                colors = if (isSelected) listOf(IndustrialAmber.copy(alpha = 0.2f), EnergeticYellow.copy(alpha = 0.05f))
+                        else listOf(Color.Transparent, Color.Transparent)
+            )
+            
+            when (index) {
+                0 -> { // Instagram Portrait (4:5)
+                    val w = 16.dp.toPx()
+                    val h = 20.dp.toPx()
+                    val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
+                    drawRect(
+                        brush = fillBrush,
+                        topLeft = topLeft,
+                        size = Size(w, h)
+                    )
+                    drawRect(
+                        color = color,
+                        topLeft = topLeft,
+                        size = Size(w, h),
+                        style = stroke
+                    )
+                }
+                1 -> { // Instagram Story (9:16)
+                    val w = 12.dp.toPx()
+                    val h = 21.33.dp.toPx()
+                    val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
+                    drawRect(
+                        brush = fillBrush,
+                        topLeft = topLeft,
+                        size = Size(w, h)
+                    )
+                    drawRect(
+                        color = color,
+                        topLeft = topLeft,
+                        size = Size(w, h),
+                        style = stroke
+                    )
+                }
+                2 -> { // Square (1:1)
+                    val w = 18.dp.toPx()
+                    val h = 18.dp.toPx()
+                    val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
+                    drawRect(
+                        brush = fillBrush,
+                        topLeft = topLeft,
+                        size = Size(w, h)
+                    )
+                    drawRect(
+                        color = color,
+                        topLeft = topLeft,
+                        size = Size(w, h),
+                        style = stroke
+                    )
+                }
+                3 -> { // FHD Landscape (16:9)
+                    val w = 24.dp.toPx()
+                    val h = 13.5.dp.toPx()
+                    val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
+                    drawRect(
+                        brush = fillBrush,
+                        topLeft = topLeft,
+                        size = Size(w, h)
+                    )
+                    drawRect(
+                        color = color,
+                        topLeft = topLeft,
+                        size = Size(w, h),
+                        style = stroke
+                    )
+                }
+                4 -> { // Modern Poster (3:4)
+                    val w = 16.dp.toPx()
+                    val h = 21.33.dp.toPx()
+                    val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
+                    drawRect(
+                        brush = fillBrush,
+                        topLeft = topLeft,
+                        size = Size(w, h)
+                    )
+                    drawRect(
+                        color = color,
+                        topLeft = topLeft,
+                        size = Size(w, h),
+                        style = stroke
+                    )
+                }
+                else -> { // Custom size (crosshair dynamic target representation)
+                    drawLine(
+                        color = color,
+                        start = Offset(2.dp.toPx(), size.height / 2),
+                        end = Offset(size.width - 2.dp.toPx(), size.height / 2),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                    drawLine(
+                        color = color,
+                        start = Offset(size.width / 2, 2.dp.toPx()),
+                        end = Offset(size.width / 2, size.height - 2.dp.toPx()),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                    drawCircle(
+                        color = color,
+                        radius = 4.dp.toPx(),
+                        center = Offset(size.width / 2, size.height / 2),
+                        style = stroke
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CanvasSetupScreen(
+    canvasWidthInput: String,
+    canvasHeightInput: String,
+    selectedPresetIndex: Int,
+    onWidthChange: (String) -> Unit,
+    onHeightChange: (String) -> Unit,
+    onPresetSelect: (Int) -> Unit,
+    onInitialize: () -> Unit,
+    previousProjects: List<ProjectEntity>,
+    onLoadProject: (ProjectEntity) -> Unit,
+    onDeleteProject: (String) -> Unit,
+    onRenameProject: (ProjectEntity, String) -> Unit
+) {
+    var activeMenuTab by remember { mutableStateOf(0) } // 0 for Create Canvas, 1 for Previous Projects
+
+    val layerCounts = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
+    androidx.compose.runtime.LaunchedEffect(previousProjects) {
+        val newCounts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            previousProjects.mapNotNull { proj ->
+                if (!layerCounts.containsKey(proj.id)) {
+                    val count = try {
+                        val layerList = LayerSerializer.deserialize(proj.layersJson)
+                        layerList.size
+                    } catch (e: Exception) { 0 }
+                    proj.id to count
+                } else null
+            }
+        }
+        newCounts.forEach { (id, count) ->
+            layerCounts[id] = count
+        }
+    }
+
+    // States for manage dialogs inside lander
+    var projectToRename by remember { mutableStateOf<ProjectEntity?>(null) }
+    var renameValue by remember { mutableStateOf("") }
+    var projectToDeleteId by remember { mutableStateOf<String?>(null) }
+
+    // Aspect ratio locking states
+    var isRatioLocked by remember { mutableStateOf(false) }
+    var lockedRatio by remember { mutableStateOf(1080f / 1350f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkOnyx)
+            .drawBehind {
+                // Draw luxury engineering blueprint grid lines
+                val gridSize = 42.dp.toPx()
+                val baseLinePaint = Color(0xFF161922)
+                val accentLinePaint = Color(0xFF1E2230)
+                
+                // Horizontal lines
+                val stepSizeVal = gridSize.toInt().coerceAtLeast(10)
+                for (y in 0..size.height.toInt() step stepSizeVal) {
+                    drawLine(
+                        color = if (y % (stepSizeVal * 4) == 0) accentLinePaint else baseLinePaint,
+                        start = Offset(0f, y.toFloat()),
+                        end = Offset(size.width, y.toFloat()),
+                        strokeWidth = if (y % (stepSizeVal * 4) == 0) 1.5f else 0.8f
+                    )
+                }
+                // Vertical lines
+                for (x in 0..size.width.toInt() step stepSizeVal) {
+                    drawLine(
+                        color = if (x % (stepSizeVal * 4) == 0) accentLinePaint else baseLinePaint,
+                        start = Offset(x.toFloat(), 0f),
+                        end = Offset(x.toFloat(), size.height),
+                        strokeWidth = if (x % (stepSizeVal * 4) == 0) 1.5f else 0.8f
+                    )
+                }
+
+                // Smooth luxury glow points
+                drawCircle(
+                    color = IndustrialAmber.copy(alpha = 0.04f),
+                    radius = 350.dp.toPx(),
+                    center = Offset(0f, 0f)
+                )
+                drawCircle(
+                    color = Color.Cyan.copy(alpha = 0.02f),
+                    radius = 450.dp.toPx(),
+                    center = Offset(size.width, size.height)
+                )
+            }
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            // Elegant premium studio branding header card
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.6f)),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 20.dp, horizontal = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Logo Canvas Vector Representation
+                    Canvas(modifier = Modifier.size(52.dp).padding(bottom = 12.dp)) {
+                        val strokeZ = Stroke(width = 3.dp.toPx())
+                        val fillZ = Color(0xFFFFB300)
+                        val wireColor = Color(0x33FFB300)
+                        
+                        // Thin grid background circles for mechanical engineering vibe
+                        drawCircle(color = wireColor, radius = size.minDimension / 2f, style = Stroke(width = 1f))
+                        drawCircle(color = wireColor, radius = size.minDimension / 3f, style = Stroke(width = 1f))
+                        
+                        // Z vector path nodes
+                        val path = Path().apply {
+                            moveTo(size.width * 0.28f, size.height * 0.25f)
+                            lineTo(size.width * 0.72f, size.height * 0.25f)
+                            lineTo(size.width * 0.28f, size.height * 0.75f)
+                            lineTo(size.width * 0.72f, size.height * 0.75f)
+                        }
+                        drawPath(path = path, color = fillZ, style = strokeZ)
+                        
+                        // Floating control points
+                        drawCircle(color = Color.White, radius = 4f.dp.toPx(), center = Offset(size.width * 0.28f, size.height * 0.25f))
+                        drawCircle(color = Color.White, radius = 4f.dp.toPx(), center = Offset(size.width * 0.72f, size.height * 0.75f))
+                        drawCircle(color = IndustrialAmber, radius = 4f.dp.toPx(), center = Offset(size.width * 0.72f, size.height * 0.25f))
+                        drawCircle(color = IndustrialAmber, radius = 4f.dp.toPx(), center = Offset(size.width * 0.28f, size.height * 0.75f))
+                    }
+                    
+                    Text(
+                        text = "Z E N I T H",
+                        style = Typography.displaySmall.copy(
+                            fontWeight = FontWeight.W300,
+                            letterSpacing = 10.sp,
+                            color = EnergeticYellow
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "NEON VECTOR DESIGN SUITE",
+                        style = Typography.labelMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 3.sp,
+                            color = TextSecondary
+                        )
+                    )
+                    
+                    Spacer(modifier = Modifier.height(10.dp))
+                    
+                    // Small status badge
+                    Box(
+                        modifier = Modifier
+                            .background(IndustrialAmber.copy(0.1f), RoundedCornerShape(12.dp))
+                            .border(BorderStroke(1.dp, IndustrialAmber.copy(0.25f)), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(IndustrialAmber, RoundedCornerShape(3.dp))
+                            )
+                            Text(
+                                "GPU CORE v1.4 • HARDWARE ACCELERATED RENDERER",
+                                style = Typography.labelSmall.copy(
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = IndustrialAmber
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Dual Tab Panel for clean Workspace separation
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(SlatePanel, RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf("Create Canvas", "Previous Projects").forEachIndexed { tabIdx, tabTitle ->
+                    val isTabSelected = activeMenuTab == tabIdx
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isTabSelected) IndustrialAmber else Color.Transparent)
+                            .clickable { activeMenuTab = tabIdx }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (tabIdx == 0) Icons.Default.AddCircleOutline else Icons.Default.FolderSpecial,
+                                contentDescription = null,
+                                tint = if (isTabSelected) DarkOnyx else TextSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = tabTitle,
+                                style = Typography.bodyMedium,
+                                fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isTabSelected) DarkOnyx else TextSecondary
+                            )
+                            if (tabIdx == 1 && previousProjects.isNotEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .background(if (isTabSelected) DarkOnyx else IndustrialAmber, RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = previousProjects.size.toString(),
+                                        style = Typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isTabSelected) IndustrialAmber else DarkOnyx
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (activeMenuTab == 0) {
+                // Setup Details Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                    border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "CANVAS PRESETS",
+                                style = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Touch below to choose a viewport size",
+                                style = Typography.labelSmall,
+                                color = TextSecondary.copy(alpha = 0.7f)
+                            )
+                        }
+
+                        // Presets Grid Layout - 2 columns
+                        val presets = listOf(
+                            Triple("Instagram Portrait (4:5)", "1080 x 1350 px", "Recommended for portrait content"),
+                            Triple("Instagram Story (9:16)", "1080 x 1920 px", "Full immersive vertical layout"),
+                            Triple("Square Grid (1:1)", "1080 x 1080 px", "Standard social grid post"),
+                            Triple("FHD Landscape (16:9)", "1920 x 1080 px", "Standard presentation landscape"),
+                            Triple("Modern Poster (3:4)", "1200 x 1600 px", "Premium physical printing proportion"),
+                            Triple("Custom Dimensions", "Custom pixels", "Fully custom pixel resolution")
+                        )
+
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            presets.chunked(2).forEach { rowPair ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    rowPair.forEach { preset ->
+                                        val index = presets.indexOf(preset)
+                                        val isSelected = selectedPresetIndex == index
+                                        
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(bottom = if (isSelected) 4.dp else 0.dp, end = if (isSelected) 4.dp else 0.dp)
+                                        ) {
+                                            if (isSelected) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .matchParentSize()
+                                                        .offset(x = 4.dp, y = 4.dp)
+                                                        .background(SlatePanel.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                                        .border(BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.2f)), RoundedCornerShape(12.dp))
+                                                )
+                                            }
+                                            Card(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .offset(x = if (isSelected) (-2).dp else 0.dp, y = if (isSelected) (-2).dp else 0.dp)
+                                                    .clickable {
+                                                        onPresetSelect(index)
+                                                        val nextRatio = when (index) {
+                                                            0 -> 1080f / 1350f
+                                                            1 -> 1080f / 1920f
+                                                            2 -> 1f
+                                                            3 -> 1920f / 1080f
+                                                            4 -> 1200f / 1600f
+                                                            else -> {
+                                                                val wFloat = canvasWidthInput.toFloatOrNull() ?: 1080f
+                                                                val hFloat = canvasHeightInput.toFloatOrNull() ?: 1350f
+                                                                if (hFloat > 0f) wFloat / hFloat else 1f
+                                                            }
+                                                        }
+                                                        lockedRatio = nextRatio
+                                                    },
+                                                shape = RoundedCornerShape(12.dp),
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = if (isSelected) MidSlate.copy(alpha = 0.65f) else SlatePanel.copy(alpha = 0.3f)
+                                                ),
+                                                border = BorderStroke(
+                                                    1.2.dp,
+                                                    if (isSelected) IndustrialAmber else HighslateOutline.copy(alpha = 0.3f)
+                                                )
+                                            ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(10.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                // Dynamic silhouetted preview box
+                                                PresetSilhouette(index = index, isSelected = isSelected)
+                                                
+                                                Column(
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = preset.first.substringBefore(" ("),
+                                                        style = Typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontSize = 12.sp),
+                                                        color = if (isSelected) TextPrimary else TextSecondary,
+                                                        textAlign = TextAlign.Center,
+                                                        maxLines = 1
+                                                    )
+                                                    Text(
+                                                        text = preset.second,
+                                                        style = Typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 10.sp),
+                                                        color = if (isSelected) EnergeticYellow else TextSecondary.copy(alpha = 0.6f),
+                                                        textAlign = TextAlign.Center
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Divider helper
+                        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(HighslateOutline.copy(alpha = 0.5f)))
+
+                        // Width & Height Pixels Inputs with Aspect Link Button
+                        Text(
+                            text = "DIMENSION CONFIGURATION (PX)",
+                            style = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Width",
+                                    style = Typography.labelMedium,
+                                    color = TextSecondary,
+                                    modifier = Modifier.padding(bottom = 4.dp)
+                                )
+                                OutlinedTextField(
+                                    value = canvasWidthInput,
+                                    onValueChange = { newVal ->
+                                        onWidthChange(newVal)
+                                        if (isRatioLocked) {
+                                            val wFloat = newVal.toFloatOrNull()
+                                            if (wFloat != null) {
+                                                val calcH = (wFloat / lockedRatio).toInt().coerceIn(100, 8000)
+                                                onHeightChange(calcH.toString())
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().testTag("canvas_width_input"),
+                                    textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                                    singleLine = true,
+                                    suffix = { Text("px", color = TextSecondary, fontSize = 11.sp) },
+                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                    ),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = IndustrialAmber,
+                                        unfocusedBorderColor = HighslateOutline,
+                                        cursorColor = IndustrialAmber,
+                                        focusedContainerColor = MidSlate.copy(0.3f),
+                                        unfocusedContainerColor = Color.Transparent
+                                    )
+                                )
+                            }
+
+                            // Dynamic aspect lock toggling link button
+                            IconButton(
+                                onClick = {
+                                    isRatioLocked = !isRatioLocked
+                                    if (isRatioLocked) {
+                                        val w = canvasWidthInput.toFloatOrNull() ?: 1080f
+                                        val h = canvasHeightInput.toFloatOrNull() ?: 1350f
+                                        lockedRatio = if (h > 0f) w / h else 1f
+                                    }
+                                },
+                                modifier = Modifier
+                                    .padding(top = 22.dp)
+                                    .size(42.dp)
+                                    .background(if (isRatioLocked) IndustrialAmber.copy(0.12f) else MidSlate.copy(0.3f), RoundedCornerShape(10.dp))
+                                    .border(BorderStroke(1.dp, if (isRatioLocked) IndustrialAmber else HighslateOutline.copy(0.5f)), RoundedCornerShape(10.dp))
+                            ) {
+                                Icon(
+                                    imageVector = if (isRatioLocked) Icons.Default.Link else Icons.Default.LinkOff,
+                                    contentDescription = "Lock Ratio Limit",
+                                    tint = if (isRatioLocked) IndustrialAmber else TextSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Height",
+                                    style = Typography.labelMedium,
+                                    color = TextSecondary,
+                                    modifier = Modifier.padding(bottom = 4.dp)
+                                )
+                                OutlinedTextField(
+                                    value = canvasHeightInput,
+                                    onValueChange = { newVal ->
+                                        onHeightChange(newVal)
+                                        if (isRatioLocked) {
+                                            val hFloat = newVal.toFloatOrNull()
+                                            if (hFloat != null) {
+                                                val calcW = (hFloat * lockedRatio).toInt().coerceIn(100, 8000)
+                                                onWidthChange(calcW.toString())
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth().testTag("canvas_height_input"),
+                                    textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                                    singleLine = true,
+                                    suffix = { Text("px", color = TextSecondary, fontSize = 11.sp) },
+                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                    ),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = IndustrialAmber,
+                                        unfocusedBorderColor = HighslateOutline,
+                                        cursorColor = IndustrialAmber,
+                                        focusedContainerColor = MidSlate.copy(0.3f),
+                                        unfocusedContainerColor = Color.Transparent
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Validation info bounds
+                val wVal = canvasWidthInput.toIntOrNull()
+                val hVal = canvasHeightInput.toIntOrNull()
+                val isInputValid = wVal != null && hVal != null && wVal in 100..8000 && hVal in 100..8000
+
+                if (!isInputValid) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF33161A), RoundedCornerShape(8.dp))
+                            .border(BorderStroke(1.dp, Color.Red.copy(0.3f)), RoundedCornerShape(8.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = "Warning: Dimensions must be active integers between 100px and 8000px limit.",
+                            style = Typography.labelSmall,
+                            color = Color(0xFFFF8A80),
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+
+                // Start Workspace CTA Button
+                Button(
+                    onClick = onInitialize,
+                    enabled = isInputValid,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .testTag("initialize_workspace_button"),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = IndustrialAmber,
+                        disabledContainerColor = MidSlate
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Palette,
+                            contentDescription = null,
+                            tint = if (isInputValid) DarkOnyx else TextSecondary
+                        )
+                        Text(
+                            text = "INITIALIZE CREATIVE CANVAS",
+                            color = if (isInputValid) DarkOnyx else TextSecondary,
+                            style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            } else {
+                // Recent Projects Tab
+                if (previousProjects.isEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                        border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(36.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // High fidelity abstract blueprint drawing in Compose Canvas
+                            Canvas(modifier = Modifier.size(100.dp)) {
+                                val gold = IndustrialAmber
+                                val gray = TextSecondary.copy(alpha = 0.4f)
+                                val stroke = Stroke(width = 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f))
+                                
+                                // Draw layout bounding box
+                                drawRect(
+                                    color = gold.copy(0.2f),
+                                    topLeft = Offset(10.dp.toPx(), 15.dp.toPx()),
+                                    size = Size(80.dp.toPx(), 70.dp.toPx()),
+                                    style = stroke
+                                )
+                                
+                                // Draw ruler guide alignment markers
+                                drawLine(color = gold.copy(0.5f), start = Offset(10.dp.toPx(), 50.dp.toPx()), end = Offset(90.dp.toPx(), 50.dp.toPx()), strokeWidth = 1f.dp.toPx())
+                                drawLine(color = gold.copy(0.5f), start = Offset(50.dp.toPx(), 15.dp.toPx()), end = Offset(50.dp.toPx(), 85.dp.toPx()), strokeWidth = 1f.dp.toPx())
+                                
+                                // Bezier control nodes representing active vector layers
+                                drawCircle(color = gold, radius = 5.dp.toPx(), center = Offset(30.dp.toPx(), 50.dp.toPx()))
+                                drawCircle(color = Color.Cyan, radius = 5.dp.toPx(), center = Offset(70.dp.toPx(), 50.dp.toPx()))
+                                
+                                val curvePath = Path().apply {
+                                    moveTo(15.dp.toPx(), 65.dp.toPx())
+                                    quadraticTo(
+                                        50.dp.toPx(), 20.dp.toPx(),
+                                        85.dp.toPx(), 65.dp.toPx()
+                                    )
+                                }
+                                drawPath(path = curvePath, color = Color.White.copy(alpha = 0.6f), style = Stroke(width = 2.dp.toPx()))
+                            }
+                            
+                            Text(
+                                text = "Your Creative Vault is Empty",
+                                style = Typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Every vector masterpiece you compose inside the editor will automatically persist safely in local storage as a quick-resume draft.",
+                                style = Typography.bodyMedium,
+                                color = TextSecondary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 24.dp)
+                            )
+                            Button(
+                                onClick = { activeMenuTab = 0 },
+                                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.padding(top = 8.dp)
+                            ) {
+                                Icon(Icons.Default.AddCircleOutline, null, tint = DarkOnyx, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("New Design Canvas", color = DarkOnyx, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "SAVED GRAPHICS ARCHIVE",
+                                style = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "${previousProjects.size} Designs Stored",
+                                style = Typography.labelSmall,
+                                color = IndustrialAmber,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Highly visible explanation about the direct export feature on home screen
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(IndustrialAmber.copy(0.12f), RoundedCornerShape(8.dp))
+                                .border(0.5.dp, IndustrialAmber.copy(0.4f), RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Instant Export Info",
+                                    tint = EnergeticYellow,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Tip: Tap the bright yellow Download icon on any project's card below to instantly export it as a PNG image to your Gallery!",
+                                    style = Typography.labelSmall.copy(fontSize = 10.sp),
+                                    color = TextPrimary
+                                )
+                            }
+                        }
+
+                        previousProjects.forEach { proj ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 6.dp, end = 6.dp)
+                            ) {
+                                // Background offset shadow card for stacked physical aesthetics
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .offset(x = 6.dp, y = 6.dp)
+                                        .background(SlatePanel.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+                                        .border(BorderStroke(1.2.dp, HighslateOutline.copy(alpha = 0.25f)), RoundedCornerShape(16.dp))
+                                )
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .border(BorderStroke(1.2.dp, HighslateOutline.copy(alpha = 0.6f)), RoundedCornerShape(16.dp))
+                                        .clickable { onLoadProject(proj) },
+                                    colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.8f)),
+                                    shape = RoundedCornerShape(16.dp)
+                                ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    // Left Section: Elegant circular initials avatar & meta text specs
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                    ) {
+                                        val isPortrait = proj.height > proj.width
+                                        val isLandscape = proj.width > proj.height
+                                        val count = layerCounts[proj.id] ?: 0
+
+                                        // Glowing initial initials avatar
+                                        val initials = proj.name.take(2).uppercase()
+                                        Box(
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .background(
+                                                    brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                                                        colors = listOf(
+                                                            IndustrialAmber.copy(0.12f),
+                                                            EnergeticYellow.copy(0.04f)
+                                                        )
+                                                    ),
+                                                    shape = RoundedCornerShape(10.dp)
+                                                )
+                                                .border(BorderStroke(1.dp, IndustrialAmber.copy(0.3f)), RoundedCornerShape(10.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = initials,
+                                                style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp),
+                                                color = EnergeticYellow
+                                            )
+                                        }
+
+                                        Column {
+                                            Text(
+                                                text = proj.name,
+                                                style = Typography.bodyMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = TextPrimary
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            val dateStr = java.text.SimpleDateFormat(
+                                                "MMM dd, HH:mm",
+                                                java.util.Locale.getDefault()
+                                            ).format(java.util.Date(proj.timestamp))
+                                            
+                                            // Badges row
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(MidSlate.copy(0.5f), RoundedCornerShape(4.dp))
+                                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "${proj.width.toInt()}×${proj.height.toInt()} px",
+                                                        style = Typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                                    )
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(IndustrialAmber.copy(0.1f), RoundedCornerShape(4.dp))
+                                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "$count layers",
+                                                        style = Typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold, color = IndustrialAmber)
+                                                    )
+                                                }
+                                                Text(
+                                                    text = dateStr,
+                                                    style = Typography.labelSmall.copy(fontSize = 9.sp),
+                                                    color = TextSecondary
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Right Section: Action icon toolbar
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        // Direct Instant Export Button on Home Screen Card
+                                        val homeContext = androidx.compose.ui.platform.LocalContext.current
+                                        val homeScope = androidx.compose.runtime.rememberCoroutineScope()
+                                        IconButton(
+                                            onClick = {
+                                                android.widget.Toast.makeText(homeContext, "Preparing background PNG export...", android.widget.Toast.LENGTH_SHORT).show()
+                                                homeScope.launch {
+                                                    try {
+                                                        val decodedLayers = withContext(Dispatchers.Default) {
+                                                            LayerSerializer.deserialize(proj.layersJson)
+                                                        }
+                                                        
+                                                        val exportedBitmap = withContext(Dispatchers.Default) {
+                                                            exportCanvasToBitmap(
+                                                                canvasWidth = proj.width,
+                                                                canvasHeight = proj.height,
+                                                                layers = decodedLayers,
+                                                                imageBitmapCache = emptyMap()
+                                                            )
+                                                        }
+                                                        
+                                                        val filename = proj.name + "_Direct_" + System.currentTimeMillis()
+                                                        val uri = withContext(Dispatchers.IO) {
+                                                            saveBitmapToGallery(homeContext, exportedBitmap, filename)
+                                                        }
+                                                        
+                                                        if (uri != null) {
+                                                            android.widget.Toast.makeText(homeContext, "Exported '${proj.name}' successfully to Gallery!", android.widget.Toast.LENGTH_LONG).show()
+                                                        } else {
+                                                            android.widget.Toast.makeText(homeContext, "Export failed. Please verify storage state.", android.widget.Toast.LENGTH_LONG).show()
+                                                        }
+                                                    } catch (e: Throwable) {
+                                                        android.widget.Toast.makeText(homeContext, "Export error: ${e.localizedMessage ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Download,
+                                                contentDescription = "Direct Instant Export",
+                                                tint = EnergeticYellow,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                projectToRename = proj
+                                                renameValue = proj.name
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DriveFileRenameOutline,
+                                                contentDescription = "Rename Project",
+                                                tint = EnergeticYellow,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                projectToDeleteId = proj.id
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteForever,
+                                                contentDescription = "Delete Project",
+                                                tint = Color.Red.copy(0.8f),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Rename project alert dialog inside landing screen
+    if (projectToRename != null) {
+        AlertDialog(
+            onDismissRequest = { projectToRename = null },
+            title = { Text("Rename Design Masterpiece", color = TextPrimary, style = Typography.titleMedium) },
+            text = {
+                OutlinedTextField(
+                    value = renameValue,
+                    onValueChange = { renameValue = it },
+                    label = { Text("New Design Title", style = Typography.bodyMedium) },
+                    textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = IndustrialAmber,
+                        focusedLabelColor = IndustrialAmber,
+                        cursorColor = IndustrialAmber,
+                        unfocusedBorderColor = HighslateOutline,
+                        unfocusedLabelColor = TextSecondary
+                    ),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val proj = projectToRename
+                        if (proj != null && renameValue.isNotBlank()) {
+                            onRenameProject(proj, renameValue.trim())
+                        }
+                        projectToRename = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
+                ) {
+                    Text("RENAME", color = DarkOnyx, fontWeight = FontWeight.Bold, style = Typography.bodyMedium)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { projectToRename = null }) {
+                    Text("CANCEL", color = TextSecondary, style = Typography.bodyMedium)
+                }
+            },
+            containerColor = SlatePanel,
+            shape = RoundedCornerShape(12.dp)
+        )
+    }
+
+    // Delete project alert dialog inside landing screen
+    if (projectToDeleteId != null) {
+        val deleteId = projectToDeleteId!!
+        AlertDialog(
+            onDismissRequest = { projectToDeleteId = null },
+            title = { Text("Delete Design Masterpiece?", color = TextPrimary, style = Typography.titleMedium) },
+            text = { Text("This will permanently remove this project and all its vector layers configuration from local storage. This action cannot be undone.", color = TextSecondary, style = Typography.bodyMedium) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteProject(deleteId)
+                        projectToDeleteId = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text("DELETE PERMANENTLY", color = Color.White, fontWeight = FontWeight.Bold, style = Typography.bodyMedium)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { projectToDeleteId = null }) {
+                    Text("CANCEL", color = TextSecondary, style = Typography.bodyMedium)
+                }
+            },
+            containerColor = SlatePanel,
+            shape = RoundedCornerShape(12.dp)
+        )
+    }
+}
+
+private fun getEffectDescription(effectType: String): String {
+    return when (effectType) {
+        // Layer Styles
+        "DropShadow" -> "Adds a soft, customizable gradient depth shadow projecting behind layer boundaries."
+        "InnerShadow" -> "Casts a smooth shadow along the interior edges, nesting the object inside the canvas."
+        "OuterGlow" -> "Radiates a vibrant surrounding halo of colorful energy outward from layer boundaries."
+        "InnerGlow" -> "Generates a clean ambient light source radiating inward from the perimeter edges."
+        "BevelEmboss" -> "Applies 3D lighting highlights and edge contours to simulate chiseled depths."
+        "Satin" -> "Generates beautiful glass-like wavy internal shading with metallic or silky qualities."
+        "ColorOverlay" -> "Fills layer shapes with a solid color transition and opacity masking layers."
+        "GradientOverlay" -> "Paints a highly customized linear or radial multi-stop directional color gradient."
+        "PatternOverlay" -> "Fills layer contents with a repeating tile texture overlay model."
+        "Stroke" -> "Traces the structural borders with a highly sharp primary outline stroke."
+
+        // Core Filters
+        "GaussianBlur" -> "Smoothly blurs pixel details using a standard non-destructive Gaussian bell curve distribution."
+        "MotionBlur" -> "Simulates dynamic camera motion blur along adjustable directions and distances."
+        "RadialBlur" -> "Casts spinning rotation or zoom blurs projecting from the center outwards."
+        "LensBlur" -> "Simulates high-end professional camera aperture bokeh depth of field effects."
+        "Pinch" -> "Displaces pixel coordinates inward or outward around a centered pinching node."
+        "Ripple" -> "Applies organic undulating wavefront ripples along the layer boundaries."
+        "Spherize" -> "Wraps the physical layout onto a spherical projection dome to add curved perspective."
+        "Twirl" -> "Twists pixel coordinates in a localized spiral vortex around the layer's center."
+        "Wave" -> "Deforms the geometry using clean continuous sine or cosine waves."
+        "ZigZag" -> "Generates rigid, highly geometric zigzag noise offsets radiating from the center."
+        "AddNoise" -> "Overlays a vintage film and digital sensor granular noise texture model."
+        "Despeckle" -> "Traces and cleans localized speckle noise to smooth the digital output."
+        "DustScratches" -> "Traces small foreign dots and scratches and blends them using neighborhood values."
+        "Median" -> "Replaces pixel intensities with mid-range neighborhood values to reduce fine noise."
+        "ColorHalftone" -> "Mimics classic printed retro halftone dots on separate CMYK color channels."
+        "Crystallize" -> "Clumps adjacent pixels into gorgeous solid crystal polygonal shapes."
+        "Mosaic" -> "Bridges classic pixelation square tiles often used for censoring or abstract art."
+        "Pointillize" -> "Breaks down shapes into beautiful separate colored pointillism dots."
+        "Clouds" -> "Procedurally generates dynamic gaseous noise clouds like natural smoke elements."
+        "LensFlare" -> "Simulates cinematic vintage glass aperture element lens reflections and center hot spots."
+        "LightingEffects" -> "Casts spotlights and directional bulbs onto the canvas layer."
+        "UnsharpMask" -> "Boosts extreme border contrasts to recover lost edge details and crispness."
+        "SmartSharpen" -> "Utilizes advanced detection algorithms to intelligently sharpen edge detail while ignoring flat regions."
+        "HighPass" -> "Isolates and extracts high-frequency structural lines and edge detail."
+        "FindEdges" -> "Traces the structural outline edges to construct highly organic neon-like line drawings."
+        "Emboss" -> "Transforms shapes into standard raised or stamped paper contours."
+        "OilPaint" -> "Applies thick virtual oil paint brush stroke textures across flat color transitions."
+        "Solarize" -> "Partially inverts dark and bright values based on an adjustable luminance threshold."
+        "Wind" -> "Applies high-speed directional kinetic wind noise streaks looking like particle storms."
+
+        // Filter Gallery
+        "Artistic" -> "Mimics traditional painting formats like colored pencils, fresco, poster edges, and dry brush."
+        "BrushStrokes" -> "Applies specific virtual painting brushes like spatter, crosshatch, and sumi-e ink."
+        "Sketch" -> "Converts artwork to stylized pencil sketch, bas-relief, charcoal, or photocopy."
+        "Texture" -> "Embeds rich structural surfaces like stained glass, craquelure, patchwork, or canvas."
+
+        // Advanced & AI Engines
+        "Liquify" -> "Launches high-performance interactive pixel pushing, puckering, bloating, and warping brushes."
+        "CameraRaw" -> "Brings professional color grading dials including exposure, contrast, clarity, and vibrance."
+        "NeuralFilters" -> "Leverages machine learning processors to perform skin smoothing and facial adjust tweaks."
+        else -> "Photoshop non-destructive filter engine."
+    }
+}
+
+@Composable
+fun EffectsGalleryOverlay(
+    onClose: () -> Unit,
+    onAddEffect: (StudioEffect) -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf("Layer Styles (fx)") }
+
+    val categories = listOf("Layer Styles (fx)", "Core Filters", "Filter Gallery", "Advanced & AI Engines")
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = SlatePanel,
+            border = BorderStroke(1.5.dp, HighslateOutline),
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.9f)
+        ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Header Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF131317))
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Palette,
+                                contentDescription = "Photoshop fx",
+                                tint = IndustrialAmber,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Photoshop Effects & Styling Gallery",
+                                    style = Typography.titleMedium,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Browse, search, and apply non-destructive Layer Styles & image Filters.",
+                                    style = Typography.labelSmall,
+                                    color = TextSecondary,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                        IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, "Close Gallery", tint = TextSecondary)
+                        }
+                    }
+
+                    // Work Area (Search + Tab side + main gallery)
+                    Row(modifier = Modifier.weight(1f)) {
+                        // Left sidebar: Categories
+                        Column(
+                            modifier = Modifier
+                                .width(180.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFF131317))
+                                .border(BorderStroke(0.5.dp, HighslateOutline))
+                                .padding(vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "CATEGORIES",
+                                style = Typography.labelSmall,
+                                color = TextSecondary,
+                                fontSize = 9.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                fontWeight = FontWeight.Bold
+                            )
+                            categories.forEach { cat ->
+                                val isSelected = cat == selectedCategory
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { selectedCategory = cat }
+                                        .background(if (isSelected) IndustrialAmber.copy(0.12f) else Color.Transparent)
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = when (cat) {
+                                            "Layer Styles (fx)" -> Icons.Default.Layers
+                                            "Core Filters" -> Icons.Default.Brush
+                                            "Filter Gallery" -> Icons.Default.Palette
+                                            else -> Icons.Default.Bolt
+                                        },
+                                        contentDescription = cat,
+                                        tint = if (isSelected) IndustrialAmber else TextSecondary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = cat,
+                                        style = Typography.labelSmall,
+                                        color = if (isSelected) IndustrialAmber else TextSecondary,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+
+                        // Right side list containing the search and list
+                        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                            // Search bar
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp),
+                                leadingIcon = {
+                                    Icon(Icons.Default.Search, "Search", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                },
+                                placeholder = {
+                                    Text("Search 40+ native Photoshop effects...", style = Typography.labelSmall, color = TextSecondary)
+                                },
+                                singleLine = true,
+                                textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = IndustrialAmber,
+                                    unfocusedBorderColor = HighslateOutline,
+                                    cursorColor = IndustrialAmber
+                                )
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+
+                            // List of effects
+                            val rawList = PhotoshopEffectTemplates.ALL_TYPES_BY_CATEGORY[selectedCategory] ?: emptyList()
+                            val sortedAndFiltered = rawList.map { effType ->
+                                PhotoshopEffectTemplates.create(effectType = effType) as StudioEffect.PhotoshopEffect
+                            }.filter {
+                                searchQuery.isBlank() || it.name.contains(searchQuery, ignoreCase = true) || it.effectType.contains(searchQuery, ignoreCase = true)
+                            }
+
+                            if (sortedAndFiltered.isEmpty()) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "No matching effects found.\nTry searching another keyword.",
+                                        style = Typography.labelSmall,
+                                        color = TextSecondary,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            } else {
+                                LazyColumn(
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    itemsIndexed(sortedAndFiltered) { _, eff ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(MidSlate)
+                                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    onAddEffect(eff)
+                                                    onClose()
+                                                }
+                                                .padding(12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(modifier = Modifier.weight(1f)) {
+                                                // Decorative thumbnail container/icon
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(36.dp)
+                                                        .background(Color(0xFF131317), RoundedCornerShape(6.dp))
+                                                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(6.dp)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = if (eff.category.contains("Styles")) "fx" else "F",
+                                                        style = Typography.labelSmall,
+                                                        color = IndustrialAmber,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                                Spacer(Modifier.width(12.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = eff.name,
+                                                        style = Typography.bodyMedium,
+                                                        color = TextPrimary,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Text(
+                                                        text = getEffectDescription(eff.effectType),
+                                                        style = Typography.labelSmall,
+                                                        color = TextSecondary,
+                                                        fontSize = 10.sp
+                                                    )
+                                                    Spacer(Modifier.height(4.dp))
+                                                    // Display sliders parameters as light grey pills
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        eff.parameters.keys.forEach { term ->
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .background(Color(0xFF131317), RoundedCornerShape(3.dp))
+                                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = term,
+                                                                    style = Typography.labelSmall,
+                                                                    fontSize = 8.sp,
+                                                                    color = TextSecondary
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Spacer(Modifier.width(8.dp))
+                                            Button(
+                                                onClick = {
+                                                    onAddEffect(eff)
+                                                    onClose()
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                                border = BorderStroke(0.5.dp, IndustrialAmber),
+                                                shape = RoundedCornerShape(4.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                                modifier = Modifier.height(26.dp)
+                                            ) {
+                                                Text(
+                                                    text = "Apply",
+                                                    style = Typography.labelSmall,
+                                                    fontSize = 9.sp,
+                                                    color = IndustrialAmber,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
+    points: List<androidx.compose.ui.geometry.Offset>,
+    color: androidx.compose.ui.graphics.Color,
+    size: Float,
+    opacity: Float,
+    presetIndex: Int,
+    smoothing: Boolean,
+    originX: Float = 0f,
+    originY: Float = 0f,
+    composeBlendMode: androidx.compose.ui.graphics.BlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+    pathCache: android.util.SparseArray<androidx.compose.ui.graphics.Path>? = null,
+    pathPointsCountCache: android.util.SparseIntArray? = null,
+    cacheKey: Int? = null
+) {
+    if (points.isEmpty()) return
+    
+    val currentPointsSize = points.size
+    if (cacheKey != null && pathCache != null && pathPointsCountCache != null) {
+        val cachedSize = pathPointsCountCache.get(cacheKey, -1)
+        if (cachedSize != currentPointsSize) {
+            pathCache.remove(cacheKey)
+            pathCache.remove(cacheKey + 1000000)
+            pathPointsCountCache.put(cacheKey, currentPointsSize)
+        }
+    }
+
+    // Split points list on Offset.Unspecified or NaN into separate sub-strokes to prevent connecting line bugs
+    val subStrokes = mutableListOf<List<androidx.compose.ui.geometry.Offset>>()
+    var currentSub = mutableListOf<androidx.compose.ui.geometry.Offset>()
+    for (pt in points) {
+        if (pt == androidx.compose.ui.geometry.Offset.Unspecified || pt.x.isNaN() || pt.y.isNaN()) {
+            if (currentSub.isNotEmpty()) {
+                subStrokes.add(currentSub)
+                currentSub = mutableListOf()
+            }
+        } else {
+            currentSub.add(pt)
+        }
+    }
+    if (currentSub.isNotEmpty()) {
+        subStrokes.add(currentSub)
+    }
+
+    if (subStrokes.isEmpty()) return
+    
+    val smoothedPath = if (smoothing) {
+        val cached = if (cacheKey != null) pathCache?.get(cacheKey + 1000000) else null
+        if (cached != null) {
+            cached
+        } else {
+            val path = androidx.compose.ui.graphics.Path()
+            for (subPoints in subStrokes) {
+                if (subPoints.isEmpty()) continue
+                path.moveTo(subPoints[0].x - originX, subPoints[0].y - originY)
+                if (subPoints.size > 1) {
+                    for (i in 1 until subPoints.size - 1) {
+                        val p0 = subPoints[i - 1]
+                        val p1 = subPoints[i]
+                        val p2 = subPoints[i + 1]
+                        val mid1X = (p0.x + p1.x) / 2f
+                        val mid1Y = (p0.y + p1.y) / 2f
+                        val mid2X = (p1.x + p2.x) / 2f
+                        val mid2Y = (p1.y + p2.y) / 2f
+                        path.lineTo(mid1X - originX, mid1Y - originY)
+                        path.quadraticTo(p1.x - originX, p1.y - originY, mid2X - originX, mid2Y - originY)
+                    }
+                    path.lineTo(subPoints.last().x - originX, subPoints.last().y - originY)
+                } else {
+                    path.lineTo(subPoints[0].x - originX + 0.1f, subPoints[0].y - originY)
+                }
+            }
+            if (cacheKey != null) pathCache?.put(cacheKey + 1000000, path)
+            path
+        }
+    } else {
+        val cached = if (cacheKey != null) pathCache?.get(cacheKey) else null
+        if (cached != null) {
+            cached
+        } else {
+            val path = androidx.compose.ui.graphics.Path()
+            for (subPoints in subStrokes) {
+                if (subPoints.isEmpty()) continue
+                path.moveTo(subPoints[0].x - originX, subPoints[0].y - originY)
+                for (i in 1 until subPoints.size) {
+                    path.lineTo(subPoints[i].x - originX, subPoints[i].y - originY)
+                }
+            }
+            if (cacheKey != null) pathCache?.put(cacheKey, path)
+            path
+        }
+    }
+
+    val drawColor = color.copy(alpha = color.alpha * opacity)
+
+    when (presetIndex) {
+        1 -> { // Calligraphy / Calligraphy Wedge
+            for (offset in -2..2) {
+                val dx = offset * (size * 0.12f)
+                val dy = -offset * (size * 0.12f)
+                withTransform({
+                    translate(left = dx, top = dy)
+                }) {
+                    drawPath(
+                        path = smoothedPath,
+                        color = drawColor,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = size * 0.45f,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Square
+                        ),
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+        }
+        2 -> { // Neon Glow / Neon Light Aura
+            drawPath(
+                path = smoothedPath,
+                color = drawColor.copy(alpha = drawColor.alpha * 0.15f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size * 2.8f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+            drawPath(
+                path = smoothedPath,
+                color = drawColor.copy(alpha = drawColor.alpha * 0.40f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size * 1.6f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+            drawPath(
+                path = smoothedPath,
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = drawColor.alpha),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size * 0.6f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        3, 28 -> { // Airbrush / Soft Airbrush / Airbrush (Normal)
+            val steps = 5
+            for (step in 1..steps) {
+                val ratio = step.toFloat() / steps
+                val w = size * (1f + ratio * 1.4f)
+                val a = drawColor.alpha * (1f - ratio) * 0.25f
+                drawPath(
+                    path = smoothedPath,
+                    color = drawColor.copy(alpha = a),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = w,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                    ),
+                    blendMode = composeBlendMode
+                )
+            }
+        }
+        4 -> { // Felt Marker
+            drawPath(
+                path = smoothedPath,
+                color = drawColor.copy(alpha = drawColor.alpha * 0.65f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Butt,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Bevel
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        5 -> { // Dotted Line
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(size * 1.5f, size * 2.5f))
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        6 -> { // Splatter Spray / Spray Splatter
+            val random = java.util.Random(42)
+            for (subPoints in subStrokes) {
+                for (i in subPoints.indices step 4) {
+                    val p = subPoints[i]
+                    for (dot in 0..5) {
+                        val r = random.nextFloat() * size * 1.5f
+                        val angle = random.nextFloat() * 2f * Math.PI.toFloat()
+                        val dx = r * kotlin.math.cos(angle)
+                        val dy = r * kotlin.math.sin(angle)
+                        val dotSize = 0.8f + random.nextFloat() * 2.2f
+                        drawCircle(
+                            color = drawColor.copy(alpha = drawColor.alpha * 0.45f),
+                            radius = dotSize,
+                            center = androidx.compose.ui.geometry.Offset(p.x - originX + dx, p.y - originY + dy),
+                            blendMode = composeBlendMode
+                        )
+                    }
+                }
+            }
+        }
+        7 -> { // Glass Pen
+            // Core smooth stroke + a thin white transparent glare trace next to it representing light refraction
+            drawPath(
+                path = smoothedPath,
+                color = drawColor.copy(alpha = drawColor.alpha * 0.75f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+            withTransform({
+                translate(left = size * 0.12f, top = -size * 0.12f)
+            }) {
+                drawPath(
+                    path = smoothedPath,
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = drawColor.alpha * 0.35f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = size * 0.25f,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                    ),
+                    blendMode = composeBlendMode
+                )
+            }
+        }
+        8 -> { // Vector Dip Pen
+            // Highly tensioned tapering style
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size * 0.85f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        9 -> { // Vector Felt Tip Pen
+            // Uniform solid flat vector marker
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        10, 11, 12, 13 -> { // Pencils (Pencil 1, Pencil 2, Graphite, Rough)
+            val stippleSize = if (presetIndex == 13) 2.5f else 1.2f
+            val baseDensity = if (presetIndex == 12) 6 else 4
+            // Optimised textured drawing using dash stipple effect for high-performance sketching
+            drawPath(
+                path = smoothedPath,
+                color = drawColor.copy(alpha = drawColor.alpha * 0.5f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(stippleSize, stippleSize * 2f, stippleSize * 0.5f, stippleSize * 1.5f))
+                ),
+                blendMode = composeBlendMode
+            )
+            // A secondary offset stroke with lower alpha to simulate soft surrounding graphite powder
+            withTransform({ translate(left = stippleSize * 0.5f, top = -stippleSize * 0.3f) }) {
+                drawPath(
+                    path = smoothedPath,
+                    color = drawColor.copy(alpha = drawColor.alpha * 0.25f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = size * 1.15f,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(stippleSize * 0.7f, stippleSize * 3f))
+                    ),
+                    blendMode = composeBlendMode
+                )
+            }
+        }
+        14 -> { // Hard Japanese Pen (Smooth)
+            // Flex chiseled nib using square caps and high contrast
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Square,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Miter
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        15, 22, 24, 26, 35 -> { // Solved bleed styles (Soft Falcon Pen, Soft Mapping Pen, Soft Turnip, Soft School, Dip Bleed)
+            // Main solid line
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size * 0.85f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+            // Fuzzy spread bleeding path effect
+            drawPath(
+                path = smoothedPath,
+                color = drawColor.copy(alpha = drawColor.alpha * 0.28f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size * 1.35f,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(3f, 6f, 1f, 4f))
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        16, 23, 25, 27 -> { // Hard crisp inking styles (Hard Falcon Pen, Hard Mapping, Hard Turnip, Hard School)
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        17 -> { // Technical Pen
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Butt,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Miter
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        18 -> { // Ruling Pen (Twin plate metallic lines)
+            withTransform({ translate(left = -size * 0.24f, top = -size * 0.12f) }) {
+                drawPath(
+                    path = smoothedPath,
+                    color = drawColor,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = size * 0.28f,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                    ),
+                    blendMode = composeBlendMode
+                )
+            }
+            withTransform({ translate(left = size * 0.24f, top = size * 0.12f) }) {
+                drawPath(
+                    path = smoothedPath,
+                    color = drawColor,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = size * 0.28f,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                    ),
+                    blendMode = composeBlendMode
+                )
+            }
+        }
+        19, 20 -> { // Drawing / Ballpoint Pen
+            val penSize = if (presetIndex == 20) size * 0.25f else size * 0.85f
+            val dashPattern = if (presetIndex == 20) floatArrayOf(size * 5f, size * 0.7f) else null
+            
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = penSize,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                    pathEffect = if (dashPattern != null) androidx.compose.ui.graphics.PathEffect.dashPathEffect(dashPattern) else null
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        21 -> { // Texture Pen
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(1f, 3f, 4f, 2f))
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        29 -> { // Airbrush (Triangle)
+            // Triangular aura nozzle spray. Overlay three lines translated
+            val overlayAlphas = listOf(0.18f, 0.14f, 0.10f)
+            val offsets = listOf(-size * 0.15f, 0f, size * 0.15f)
+            for (step in 0..2) {
+                withTransform({ translate(left = offsets[step], top = -offsets[step] * 0.5f) }) {
+                    drawPath(
+                        path = smoothedPath,
+                        color = drawColor.copy(alpha = drawColor.alpha * overlayAlphas[step]),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = size * (1.2f + step * 0.4f),
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        ),
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+        }
+        30, 31, 32 -> { // Airbrush (Trapezoid 20%, 40%, 60%)
+            val trapezoidRatio = when (presetIndex) {
+                30 -> 0.20f
+                31 -> 0.40f
+                else -> 0.60f
+            }
+            val stepsVal = 4
+            for (i in 1..stepsVal) {
+                val ratio = i.toFloat() / stepsVal
+                val wWidth = size * (1f + ratio * (1f / trapezoidRatio))
+                val aAlpha = drawColor.alpha * (1f - ratio) * 0.32f
+                drawPath(
+                    path = smoothedPath,
+                    color = drawColor.copy(alpha = aAlpha),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = wWidth,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Square,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Bevel
+                    ),
+                    blendMode = composeBlendMode
+                )
+            }
+        }
+        33, 34 -> { // Airbrush (Particle & Particle L)
+            // Optimized scattered micro dots using structural step filter to prevent rendering delays during drag gestures
+            val random = java.util.Random(1234)
+            val dispersion = size * 1.5f
+            val maxSplats = if (presetIndex == 33) 4 else 2
+            val radiusVal = if (presetIndex == 34) 2.2f else 0.8f
+            
+            for (subPoints in subStrokes) {
+                for (idx in subPoints.indices step 4) {
+                    val p = subPoints[idx]
+                    for (dot in 0..maxSplats) {
+                        val r = random.nextFloat() * dispersion
+                        val angle = random.nextFloat() * 2f * Math.PI.toFloat()
+                        val dx = r * kotlin.math.cos(angle)
+                        val dy = r * kotlin.math.sin(angle)
+                        drawCircle(
+                            color = drawColor.copy(alpha = drawColor.alpha * (0.15f + random.nextFloat() * 0.25f)),
+                            radius = radiusVal + random.nextFloat() * 1.5f,
+                            center = androidx.compose.ui.geometry.Offset(p.x - originX + dx, p.y - originY + dy),
+                            blendMode = composeBlendMode
+                        )
+                    }
+                }
+            }
+        }
+        36, 37 -> { // Felt Tip Pen (Soft / Hard)
+            val markerAlpha = if (presetIndex == 36) 0.70f else 1.0f
+            val markCap = if (presetIndex == 36) androidx.compose.ui.graphics.StrokeCap.Round else androidx.compose.ui.graphics.StrokeCap.Square
+            drawPath(
+                path = smoothedPath,
+                color = drawColor.copy(alpha = drawColor.alpha * markerAlpha),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = markCap,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        38 -> { // Pen (Fade)
+            // Simulates tapered pressure fading at coordinate endpoints using step layout or opacity shift
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        39 -> { // Impasto Brush - Flat
+            // Thick painterly layered acrylic acrylic tracks
+            val parallelOffsets = listOf(-size * 0.16f, 0f, size * 0.16f)
+            val impastoAlphas = listOf(0.40f, 0.90f, 0.50f)
+            for (step in 0..2) {
+                withTransform({ translate(left = parallelOffsets[step], top = parallelOffsets[step] * 0.3f) }) {
+                    drawPath(
+                        path = smoothedPath,
+                        color = drawColor.copy(alpha = drawColor.alpha * impastoAlphas[step]),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = size * 0.45f,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Butt,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        ),
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+        }
+        40 -> { // Digital Pen
+            // Fully aliased pixel line
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Square,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Bevel
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+        else -> { // Solid Ink
+            drawPath(
+                path = smoothedPath,
+                color = drawColor,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = size,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                ),
+                blendMode = composeBlendMode
+            )
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTextLayerInternal(
+    layer: com.example.studio.model.StudioLayer,
+    opacityMultiplier: Float,
+    composeBlendMode: androidx.compose.ui.graphics.BlendMode,
+    blurRadius: Float = 0f
+) {
+    val text = if (layer.textContent.isEmpty()) "DOUBLE TAP TO EDIT" else layer.textContent
+    val typeface = try {
+        if (!layer.fontPath.isNullOrEmpty() && java.io.File(layer.fontPath).exists()) {
+            val baseTf = android.graphics.Typeface.createFromFile(layer.fontPath)
+            val style = if (layer.fontIsBold && layer.fontIsItalic) {
+                android.graphics.Typeface.BOLD_ITALIC
+            } else if (layer.fontIsBold) {
+                android.graphics.Typeface.BOLD
+            } else if (layer.fontIsItalic) {
+                android.graphics.Typeface.ITALIC
+            } else {
+                android.graphics.Typeface.NORMAL
+            }
+            android.graphics.Typeface.create(baseTf, style)
+        } else {
+            val family = when (layer.fontFamilyName) {
+                "Monospace" -> android.graphics.Typeface.MONOSPACE
+                "Serif" -> android.graphics.Typeface.SERIF
+                "Sans-Serif" -> android.graphics.Typeface.SANS_SERIF
+                else -> android.graphics.Typeface.DEFAULT
+            }
+            val style = if (layer.fontIsBold && layer.fontIsItalic) {
+                android.graphics.Typeface.BOLD_ITALIC
+            } else if (layer.fontIsBold) {
+                android.graphics.Typeface.BOLD
+            } else if (layer.fontIsItalic) {
+                android.graphics.Typeface.ITALIC
+            } else {
+                android.graphics.Typeface.NORMAL
+            }
+            android.graphics.Typeface.create(family, style)
+        }
+    } catch (e: Exception) {
+        android.graphics.Typeface.DEFAULT
+    }
+
+    val activeColor = layer.baseColor.copy(alpha = layer.opacity * opacityMultiplier)
+    val textPaint = android.text.TextPaint().apply {
+        color = activeColor.toArgb()
+        textSize = layer.fontSize
+        isAntiAlias = true
+        this.typeface = typeface
+        if (blurRadius > 0.1f) {
+            maskFilter = android.graphics.BlurMaskFilter(blurRadius, android.graphics.BlurMaskFilter.Blur.NORMAL)
+        }
+    }
+    val align = when (layer.fontAlign.lowercase()) {
+        "left" -> android.text.Layout.Alignment.ALIGN_NORMAL
+        "right" -> android.text.Layout.Alignment.ALIGN_OPPOSITE
+        else -> android.text.Layout.Alignment.ALIGN_CENTER
+    }
+    val staticLayout = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+        android.text.StaticLayout.Builder.obtain(text, 0, text.length, textPaint, maxOf(1, layer.width.toInt()))
+            .setAlignment(align)
+            .setLineSpacing(0f, 1f)
+            .setIncludePad(false)
+            .build()
+    } else {
+        @Suppress("DEPRECATION")
+        android.text.StaticLayout(text, textPaint, maxOf(1, layer.width.toInt()), align, 1f, 0f, false)
+    }
+    
+    drawContext.canvas.nativeCanvas.save()
+    val totalHeight = staticLayout.height
+    val startY = maxOf(0f, (layer.height - totalHeight) / 2f)
+    drawContext.canvas.nativeCanvas.translate(0f, startY)
+    staticLayout.draw(drawContext.canvas.nativeCanvas)
+    drawContext.canvas.nativeCanvas.restore()
+}
+
+data class FontResource(
+    val name: String,
+    val category: String,
+    val systemFamily: String? = null,
+    val path: String? = null,
+    val isImported: Boolean = false
+)
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPreviewPathWithCornerRadius(
+    path: androidx.compose.ui.graphics.Path,
+    color: androidx.compose.ui.graphics.Color,
+    cornerRadius: Float,
+    composeBlendMode: androidx.compose.ui.graphics.BlendMode,
+    style: androidx.compose.ui.graphics.drawscope.DrawStyle = androidx.compose.ui.graphics.drawscope.Fill
+) {
+    if (cornerRadius > 0f) {
+        val paint = androidx.compose.ui.graphics.Paint().apply {
+            this.color = color
+            this.style = if (style is androidx.compose.ui.graphics.drawscope.Stroke) {
+                androidx.compose.ui.graphics.PaintingStyle.Stroke
+            } else {
+                androidx.compose.ui.graphics.PaintingStyle.Fill
+            }
+            if (style is androidx.compose.ui.graphics.drawscope.Stroke) {
+                this.strokeWidth = style.width
+            }
+            this.blendMode = composeBlendMode
+            asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(cornerRadius)
+        }
+        drawContext.canvas.drawPath(path, paint)
+    } else {
+        drawPath(
+            path = path,
+            color = color,
+            style = style,
+            blendMode = composeBlendMode
+        )
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLayersLocal(
+    layer: com.example.studio.model.StudioLayer,
+    layerOpacity: Float,
+    selectedLayerId: String?,
+    pathCache: android.util.SparseArray<androidx.compose.ui.graphics.Path>,
+    pathPointsCountCache: android.util.SparseIntArray,
+    totalScale: Float,
+    dashEffect: androidx.compose.ui.graphics.PathEffect,
+    composeBlendMode: androidx.compose.ui.graphics.BlendMode,
+    imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>
+) {
+    val effectiveColor = getLayerEffectiveColor(layer, 1.0f)
+    var dropShadow: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var innerShadow: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var bordersShadows: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var outerGlow: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var innerGlow: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var bevelStyle: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var satinStyle: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var gradOverlay: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var patOverlay: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var strokeStyle: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+
+    var raBlur: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var moBlur: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var leBlur: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var noiseFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var dustScratch: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var medFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var halftoneFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var crysFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var mosFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var pointFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var cloudFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var flareFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var lightFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var unsharpFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var smartFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var highFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var findFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var embFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var oilFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var windFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+
+    var artFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var brushFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var sketchFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var texFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var neuralFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var brushConfig: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+
+    for (effect in layer.effects) {
+        if (!effect.isEnabled) continue
+        if (effect is com.example.studio.model.StudioEffect.PhotoshopEffect) {
+            when (effect.effectType) {
+                "DropShadow" -> dropShadow = effect
+                "InnerShadow" -> innerShadow = effect
+                "BordersAndShadows" -> bordersShadows = effect
+                "OuterGlow" -> outerGlow = effect
+                "InnerGlow" -> innerGlow = effect
+                "BevelEmboss" -> bevelStyle = effect
+                "Satin" -> satinStyle = effect
+                "GradientOverlay" -> gradOverlay = effect
+                "PatternOverlay" -> patOverlay = effect
+                "Stroke" -> strokeStyle = effect
+                "RadialBlur" -> raBlur = effect
+                "MotionBlur" -> moBlur = effect
+                "LensBlur" -> leBlur = effect
+                "AddNoise" -> noiseFil = effect
+                "DustScratches" -> dustScratch = effect
+                "Median" -> medFil = effect
+                "ColorHalftone" -> halftoneFil = effect
+                "Crystallize" -> crysFil = effect
+                "Mosaic" -> mosFil = effect
+                "Pointillize" -> pointFil = effect
+                "Clouds" -> cloudFil = effect
+                "LensFlare" -> flareFil = effect
+                "LightingEffects" -> lightFil = effect
+                "UnsharpMask" -> unsharpFil = effect
+                "SmartSharpen" -> smartFil = effect
+                "HighPass" -> highFil = effect
+                "FindEdges" -> findFil = effect
+                "Emboss" -> embFil = effect
+                "OilPaint" -> oilFil = effect
+                "Wind" -> windFil = effect
+                "Artistic" -> artFil = effect
+                "BrushStrokes" -> brushFil = effect
+                "Sketch" -> sketchFil = effect
+                "Texture" -> texFil = effect
+                "NeuralFilters" -> neuralFil = effect
+                "BrushConfig" -> brushConfig = effect
+            }
+        }
+    }
+
+    // Shape/Geometry drawing helper
+    val drawGeometry: (androidx.compose.ui.graphics.Color, Float, androidx.compose.ui.graphics.drawscope.DrawStyle) -> Unit = { finalColor, finalOpacity, fillStyle ->
+        val finalComposeColor = finalColor.copy(alpha = finalOpacity * layerOpacity)
+        val styleToUse = if (layer.strokeThickness > 0f && fillStyle is androidx.compose.ui.graphics.drawscope.Fill && layer.type !in listOf(com.example.studio.model.LayerType.FREEHAND_DRAWING, com.example.studio.model.LayerType.IMAGE_CARD, com.example.studio.model.LayerType.TEXT)) {
+            androidx.compose.ui.graphics.drawscope.Stroke(width = layer.strokeThickness)
+        } else {
+            fillStyle
+        }
+        when (layer.type) {
+            com.example.studio.model.LayerType.VECTOR_RECT -> {
+                if (layer.cornerRadius > 0f) {
+                    drawRoundRect(
+                        color = finalComposeColor,
+                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius),
+                        style = styleToUse,
+                        blendMode = composeBlendMode
+                    )
+                } else {
+                    drawRect(
+                        color = finalComposeColor,
+                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                        style = styleToUse,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_TRIANGLE -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 3
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        color = finalComposeColor
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        color = finalComposeColor,
+                        style = styleToUse,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_PENTAGON -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 5
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        color = finalComposeColor
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        color = finalComposeColor,
+                        style = styleToUse,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_HEXAGON -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 6
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        color = finalComposeColor
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        color = finalComposeColor,
+                        style = styleToUse,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_OVAL -> {
+                drawOval(
+                    color = finalComposeColor,
+                    topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                    size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                    style = styleToUse,
+                    blendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.VECTOR_LINE -> {
+                val strokeW = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) styleToUse.width else (if (layer.strokeThickness > 0f) layer.strokeThickness else 6f)
+                drawLine(
+                    color = finalComposeColor,
+                    start = androidx.compose.ui.geometry.Offset.Zero,
+                    end = androidx.compose.ui.geometry.Offset(layer.width, layer.height),
+                    strokeWidth = strokeW,
+                    blendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.VECTOR_BEZIER -> {
+                if (layer.brushPoints.isNotEmpty()) {
+                    val cacheKey = getLayerGeometryHash(layer)
+                    var path = pathCache.get(cacheKey)
+                    if (path == null) {
+                        path = androidx.compose.ui.graphics.Path().apply {
+                            val startPt = layer.brushPoints[0]
+                            moveTo(startPt.x, startPt.y)
+                            if (layer.brushPoints.size > 1) {
+                                var i = 1
+                                while (i < layer.brushPoints.size) {
+                                    val ctrl = layer.brushPoints.getOrNull(i) ?: break
+                                    val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
+                                    quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
+                                    i += 2
+                                }
+                            } else {
+                                lineTo(startPt.x + 0.1f, startPt.y)
+                            }
+                        }
+                        pathCache.put(cacheKey, path)
+                    }
+                    val shapeStyle = if (layer.isAlphaLocked) {
+                        styleToUse
+                    } else {
+                        val strokeW = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) styleToUse.width else (if (layer.strokeThickness > 0f) layer.strokeThickness else 8f)
+                        androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = strokeW,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        )
+                    }
+                    drawPath(
+                        path = path,
+                        color = finalComposeColor,
+                        style = shapeStyle,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_CIRCLE -> {
+                val radius = layer.width / 2f
+                val center = androidx.compose.ui.geometry.Offset(radius, layer.height / 2f)
+                drawCircle(
+                    color = finalComposeColor,
+                    radius = radius,
+                    center = center,
+                    style = styleToUse,
+                    blendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.VECTOR_STAR -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rOuter = layer.width / 2f
+                        val rInner = rOuter * layer.starInnerRadiusRatio.coerceIn(0.01f, 0.99f)
+                        val pointsCount = if (layer.polygonEdges >= 3) layer.polygonEdges else 5
+                        var angle = Math.PI / 2.0 * 3.0
+                        val step = Math.PI / pointsCount
+
+                        moveTo(
+                            (cx + Math.cos(angle) * rOuter).toFloat(),
+                            (cy + Math.sin(angle) * rOuter).toFloat()
+                        )
+
+                        for (i in 0..(pointsCount * 2)) {
+                            val r = if (i % 2 == 0) rOuter else rInner
+                            lineTo(
+                                (cx + Math.cos(angle) * r).toFloat(),
+                                (cy + Math.sin(angle) * r).toFloat()
+                            )
+                            angle += step
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        color = finalComposeColor
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        color = finalComposeColor,
+                        style = styleToUse,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.TEXT -> {
+                drawTextLayerInternal(
+                    layer = layer,
+                    opacityMultiplier = layerOpacity,
+                    composeBlendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.FREEHAND_DRAWING -> {
+                val canvas = drawContext.canvas
+                val paint = androidx.compose.ui.graphics.Paint()
+                val widthToUse = if (layer.width.isFinite() && layer.width > 0f) layer.width else 1000f
+                val heightToUse = if (layer.height.isFinite() && layer.height > 0f) layer.height else 1000f
+                val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, widthToUse, heightToUse)
+
+                var savedSuccessfully = false
+                try {
+                    canvas.saveLayer(bounds, paint)
+                    savedSuccessfully = true
+                } catch (t: Throwable) {
+                    try {
+                        canvas.save()
+                        savedSuccessfully = true
+                    } catch (t2: Throwable) {}
+                }
+
+                if (savedSuccessfully) {
+                    try {
+                        if (layer.brushPoints.isNotEmpty()) {
+                            val bSize = brushConfig?.parameters?.get("Size")?.value ?: 12f
+                            val bOpacity = brushConfig?.parameters?.get("Opacity")?.value ?: 1.0f
+                            val bSmoothing = (brushConfig?.parameters?.get("Smoothing")?.value ?: 1.0f) > 0.5f
+                            val bPreset = brushConfig?.parameters?.get("Preset")?.value?.toInt() ?: 0
+
+                            val strokes = parseFreehandStrokes(
+                                brushPoints = layer.brushPoints,
+                                defaultColor = finalComposeColor,
+                                defaultSize = bSize,
+                                defaultOpacity = bOpacity * layerOpacity,
+                                defaultPreset = bPreset,
+                                defaultSmoothing = bSmoothing
+                            )
+
+                            for (stroke in strokes) {
+                                if (stroke.points.isNotEmpty()) {
+                                    val strokeBlend = if (stroke.isEraser) androidx.compose.ui.graphics.BlendMode.Clear else composeBlendMode
+                                    drawBrushStroke(
+                                        points = stroke.points,
+                                        color = stroke.color,
+                                        size = stroke.size,
+                                        opacity = stroke.opacity,
+                                        presetIndex = stroke.presetIndex,
+                                        smoothing = stroke.smoothing,
+                                        originX = 0f,
+                                        originY = 0f,
+                                        composeBlendMode = strokeBlend,
+                                        pathCache = pathCache,
+                                        pathPointsCountCache = pathPointsCountCache,
+                                        cacheKey = layer.id.hashCode() + stroke.hashCode()
+                                    )
+                                }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        t.printStackTrace()
+                    } finally {
+                        try {
+                            canvas.restore()
+                        } catch (t: Throwable) {}
+                    }
+                }
+            }
+            com.example.studio.model.LayerType.IMAGE_CARD -> {
+                val uriStr = layer.imageUri
+                val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
+                if (loadedBitmap != null) {
+                    drawImage(
+                        image = loadedBitmap,
+                        dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                        alpha = finalOpacity * layerOpacity,
+                        blendMode = composeBlendMode
+                    )
+                } else {
+                    drawRect(
+                        color = finalComposeColor,
+                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                        style = fillStyle,
+                        blendMode = composeBlendMode
+                    )
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color(0xFFFFCC80).copy(alpha = finalOpacity * layerOpacity * 0.7f),
+                        radius = 35f,
+                        center = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f)
+                    )
+                }
+            }
+        }
+    }
+
+    // Shape/Geometry drawing helper with high-quality GPU BlurMaskFilter support
+    val drawGeometryWithBlur: (androidx.compose.ui.graphics.Color, Float, androidx.compose.ui.graphics.drawscope.DrawStyle, Float, android.graphics.BlurMaskFilter.Blur) -> Unit = { finalColor, finalOpacity, fillStyle, blurRadius, blurMode ->
+        val finalComposeColor = finalColor.copy(alpha = finalOpacity * layerOpacity)
+        val styleToUse = if (layer.strokeThickness > 0f && fillStyle is androidx.compose.ui.graphics.drawscope.Fill && layer.type !in listOf(com.example.studio.model.LayerType.FREEHAND_DRAWING, com.example.studio.model.LayerType.IMAGE_CARD, com.example.studio.model.LayerType.TEXT)) {
+            androidx.compose.ui.graphics.drawscope.Stroke(width = layer.strokeThickness)
+        } else {
+            fillStyle
+        }
+
+        if (blurRadius <= 0.2f) {
+            drawGeometry(finalColor, finalOpacity, fillStyle)
+        } else {
+            val paint = androidx.compose.ui.graphics.Paint().apply {
+                color = finalComposeColor
+                this.style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                    androidx.compose.ui.graphics.PaintingStyle.Stroke
+                } else {
+                    androidx.compose.ui.graphics.PaintingStyle.Fill
+                }
+                if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                    this.strokeWidth = styleToUse.width
+                }
+                this.blendMode = composeBlendMode
+                asFrameworkPaint().maskFilter = android.graphics.BlurMaskFilter(blurRadius, blurMode)
+            }
+
+            when (layer.type) {
+                com.example.studio.model.LayerType.VECTOR_RECT -> {
+                    if (layer.cornerRadius > 0f) {
+                        val rRect = androidx.compose.ui.geometry.RoundRect(
+                            rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius)
+                        )
+                        val path = androidx.compose.ui.graphics.Path().apply { addRoundRect(rRect) }
+                        drawContext.canvas.drawPath(path, paint)
+                    } else {
+                        drawContext.canvas.drawRect(
+                            rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
+                            paint = paint
+                        )
+                    }
+                }
+                com.example.studio.model.LayerType.VECTOR_TRIANGLE,
+                com.example.studio.model.LayerType.VECTOR_PENTAGON,
+                com.example.studio.model.LayerType.VECTOR_HEXAGON -> {
+                    val cacheKey = getLayerGeometryHash(layer)
+                    var path = pathCache.get(cacheKey)
+                    if (path == null) {
+                        path = androidx.compose.ui.graphics.Path().apply {
+                            val edges = if (layer.type == com.example.studio.model.LayerType.VECTOR_HEXAGON) {
+                                if (layer.polygonEdges in 3..25) layer.polygonEdges else 6
+                            } else if (layer.type == com.example.studio.model.LayerType.VECTOR_PENTAGON) {
+                                if (layer.polygonEdges in 3..25) layer.polygonEdges else 5
+                            } else {
+                                if (layer.polygonEdges in 3..25) layer.polygonEdges else 3
+                            }
+                            val cx = layer.width / 2f
+                            val cy = layer.height / 2f
+                            val rx = layer.width / 2f
+                            val ry = layer.height / 2f
+                            for (i in 0 until edges) {
+                                val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                                val x = (cx + rx * Math.cos(angle)).toFloat()
+                                val y = (cy + ry * Math.sin(angle)).toFloat()
+                                if (i == 0) moveTo(x, y) else lineTo(x, y)
+                            }
+                            close()
+                        }
+                        pathCache.put(cacheKey, path)
+                    }
+                    if (layer.cornerRadius > 0f) {
+                        paint.asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                }
+                com.example.studio.model.LayerType.VECTOR_OVAL -> {
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        addOval(androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height))
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                }
+                com.example.studio.model.LayerType.VECTOR_LINE -> {
+                    val px = layer.width
+                    val py = layer.height
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(0f, 0f)
+                        lineTo(px, py)
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                }
+                com.example.studio.model.LayerType.VECTOR_BEZIER -> {
+                    if (layer.brushPoints.isNotEmpty()) {
+                        val cacheKey = getLayerGeometryHash(layer)
+                        var path = pathCache.get(cacheKey)
+                        if (path == null) {
+                            path = androidx.compose.ui.graphics.Path().apply {
+                                val startPt = layer.brushPoints[0]
+                                moveTo(startPt.x, startPt.y)
+                                if (layer.brushPoints.size > 1) {
+                                    var i = 1
+                                    while (i < layer.brushPoints.size) {
+                                        val ctrl = layer.brushPoints.getOrNull(i) ?: break
+                                        val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
+                                        quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
+                                        i += 2
+                                    }
+                                } else {
+                                    lineTo(startPt.x + 0.1f, startPt.y)
+                                }
+                            }
+                            pathCache.put(cacheKey, path)
+                        }
+                        drawContext.canvas.drawPath(path, paint)
+                    }
+                }
+                com.example.studio.model.LayerType.VECTOR_CIRCLE -> {
+                    val radius = layer.width / 2f
+                    val center = androidx.compose.ui.geometry.Offset(radius, layer.height / 2f)
+                    drawContext.canvas.drawCircle(center, radius, paint)
+                }
+                com.example.studio.model.LayerType.VECTOR_STAR -> {
+                    val cacheKey = getLayerGeometryHash(layer)
+                    var path = pathCache.get(cacheKey)
+                    if (path == null) {
+                        path = androidx.compose.ui.graphics.Path().apply {
+                            val cx = layer.width / 2f
+                            val cy = layer.height / 2f
+                            val rOuter = layer.width / 2f
+                            val rInner = rOuter * layer.starInnerRadiusRatio.coerceIn(0.01f, 0.99f)
+                            val pointsCount = if (layer.polygonEdges >= 3) layer.polygonEdges else 5
+                            var angle = Math.PI / 2.0 * 3.0
+                            val step = Math.PI / pointsCount
+
+                            moveTo(
+                                (cx + Math.cos(angle) * rOuter).toFloat(),
+                                (cy + Math.sin(angle) * rOuter).toFloat()
+                            )
+
+                            for (i in 0..(pointsCount * 2)) {
+                                val r = if (i % 2 == 0) rOuter else rInner
+                                lineTo(
+                                    (cx + Math.cos(angle) * r).toFloat(),
+                                    (cy + Math.sin(angle) * r).toFloat()
+                                )
+                                angle += step
+                            }
+                            close()
+                        }
+                        pathCache.put(cacheKey, path)
+                    }
+                    if (layer.cornerRadius > 0f) {
+                        paint.asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    drawContext.canvas.drawPath(path, paint)
+                }
+                com.example.studio.model.LayerType.TEXT -> {
+                    drawTextLayerInternal(
+                        layer = layer,
+                        opacityMultiplier = finalOpacity,
+                        composeBlendMode = composeBlendMode,
+                        blurRadius = blurRadius
+                    )
+                }
+                com.example.studio.model.LayerType.FREEHAND_DRAWING -> {
+                    if (layer.brushPoints.isNotEmpty()) {
+                        val cacheKey = layer.id.hashCode()
+                        val cachedPath = pathCache.get(cacheKey)
+                        val px = layer.positionX
+                        val py = layer.positionY
+
+                        val path = if (cachedPath != null) {
+                            cachedPath
+                        } else {
+                            val newPath = androidx.compose.ui.graphics.Path().apply {
+                                var isFirst = true
+                                for (pt in layer.brushPoints) {
+                                    if (pt == androidx.compose.ui.geometry.Offset.Unspecified || pt.x.isNaN() || pt.y.isNaN()) {
+                                        isFirst = true
+                                    } else {
+                                        if (isFirst) {
+                                            moveTo(pt.x - px, pt.y - py)
+                                            isFirst = false
+                                        } else {
+                                            lineTo(pt.x - px, pt.y - py)
+                                        }
+                                    }
+                                }
+                            }
+                            pathCache.put(cacheKey, newPath)
+                            newPath
+                        }
+                        drawContext.canvas.drawPath(path, paint)
+                    }
+                }
+                com.example.studio.model.LayerType.IMAGE_CARD -> {
+                    val uriStr = layer.imageUri
+                    val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
+                    if (loadedBitmap != null) {
+                        drawContext.canvas.drawImageRect(
+                            image = loadedBitmap,
+                            dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                            paint = paint
+                        )
+                    } else {
+                        drawContext.canvas.drawRect(
+                            rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
+                            paint = paint
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Brush/Gradient drawing helper
+    val drawGeometryWithBrush: (androidx.compose.ui.graphics.Brush, Float, androidx.compose.ui.graphics.drawscope.DrawStyle) -> Unit = { finalBrush, finalOpacity, fillStyle ->
+        val brushAlpha = finalOpacity * layerOpacity
+        val styleToUse = if (layer.strokeThickness > 0f && fillStyle is androidx.compose.ui.graphics.drawscope.Fill && layer.type !in listOf(com.example.studio.model.LayerType.FREEHAND_DRAWING, com.example.studio.model.LayerType.IMAGE_CARD, com.example.studio.model.LayerType.TEXT)) {
+            androidx.compose.ui.graphics.drawscope.Stroke(width = layer.strokeThickness)
+        } else {
+            fillStyle
+        }
+        when (layer.type) {
+            com.example.studio.model.LayerType.VECTOR_RECT -> {
+                if (layer.cornerRadius > 0f) {
+                    drawRoundRect(
+                        brush = finalBrush,
+                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius),
+                        style = styleToUse,
+                        alpha = brushAlpha,
+                        blendMode = composeBlendMode
+                    )
+                } else {
+                    drawRect(
+                        brush = finalBrush,
+                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                        style = styleToUse,
+                        alpha = brushAlpha,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_TRIANGLE -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 3
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    finalBrush.applyTo(androidx.compose.ui.geometry.Size(layer.width, layer.height), paint, brushAlpha)
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        brush = finalBrush,
+                        style = styleToUse,
+                        alpha = brushAlpha,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_PENTAGON -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 5
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    finalBrush.applyTo(androidx.compose.ui.geometry.Size(layer.width, layer.height), paint, brushAlpha)
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        brush = finalBrush,
+                        style = styleToUse,
+                        alpha = brushAlpha,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_HEXAGON -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 6
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    finalBrush.applyTo(androidx.compose.ui.geometry.Size(layer.width, layer.height), paint, brushAlpha)
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        brush = finalBrush,
+                        style = styleToUse,
+                        alpha = brushAlpha,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_OVAL -> {
+                drawOval(
+                    brush = finalBrush,
+                    topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                    size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                    style = styleToUse,
+                    alpha = brushAlpha,
+                    blendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.VECTOR_LINE -> {
+                val strokeW = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) styleToUse.width else (if (layer.strokeThickness > 0f) layer.strokeThickness else 6f)
+                drawLine(
+                    brush = finalBrush,
+                    start = androidx.compose.ui.geometry.Offset.Zero,
+                    end = androidx.compose.ui.geometry.Offset(layer.width, layer.height),
+                    strokeWidth = strokeW,
+                    alpha = brushAlpha,
+                    blendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.VECTOR_BEZIER -> {
+                val start = androidx.compose.ui.geometry.Offset(0f, layer.height)
+                val end = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
+                val controlLocal = layer.brushPoints.getOrNull(0) ?: androidx.compose.ui.geometry.Offset(layer.width / 2f, 0f)
+
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        if (layer.brushPoints.size > 1) {
+                            val startPt = layer.brushPoints[0]
+                            moveTo(startPt.x, startPt.y)
+                            var i = 1
+                            while (i < layer.brushPoints.size) {
+                                val ctrl = layer.brushPoints.getOrNull(i) ?: break
+                                val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
+                                quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
+                                i += 2
+                            }
+                        } else {
+                            moveTo(start.x, start.y)
+                            quadraticTo(controlLocal.x, controlLocal.y, end.x, end.y)
+                        }
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                val shapeStyle = if (layer.isAlphaLocked) {
+                    styleToUse
+                } else {
+                    val strokeW = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) styleToUse.width else (if (layer.strokeThickness > 0f) layer.strokeThickness else 8f)
+                    androidx.compose.ui.graphics.drawscope.Stroke(width = strokeW)
+                }
+                drawPath(
+                    path = path,
+                    brush = finalBrush,
+                    style = shapeStyle,
+                    alpha = brushAlpha,
+                    blendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.VECTOR_CIRCLE -> {
+                val radius = layer.width / 2f
+                val center = androidx.compose.ui.geometry.Offset(radius, layer.height / 2f)
+                drawCircle(
+                    brush = finalBrush,
+                    radius = radius,
+                    center = center,
+                    style = styleToUse,
+                    alpha = brushAlpha,
+                    blendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.VECTOR_STAR -> {
+                val cacheKey = getLayerGeometryHash(layer)
+                var path = pathCache.get(cacheKey)
+                if (path == null) {
+                    path = androidx.compose.ui.graphics.Path().apply {
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rOuter = layer.width / 2f
+                        val rInner = rOuter * layer.starInnerRadiusRatio.coerceIn(0.01f, 0.99f)
+                        val pointsCount = if (layer.polygonEdges >= 3) layer.polygonEdges else 5
+                        var angle = Math.PI / 2.0 * 3.0
+                        val step = Math.PI / pointsCount
+
+                        moveTo(
+                            (cx + Math.cos(angle) * rOuter).toFloat(),
+                            (cy + Math.sin(angle) * rOuter).toFloat()
+                        )
+
+                        for (i in 0..(pointsCount * 2)) {
+                            val r = if (i % 2 == 0) rOuter else rInner
+                            lineTo(
+                                (cx + Math.cos(angle) * r).toFloat(),
+                                (cy + Math.sin(angle) * r).toFloat()
+                            )
+                            angle += step
+                        }
+                        close()
+                    }
+                    pathCache.put(cacheKey, path)
+                }
+                if (layer.cornerRadius > 0f) {
+                    val paint = androidx.compose.ui.graphics.Paint().apply {
+                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            androidx.compose.ui.graphics.PaintingStyle.Stroke
+                        } else {
+                            androidx.compose.ui.graphics.PaintingStyle.Fill
+                        }
+                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                            strokeWidth = styleToUse.width
+                        }
+                        blendMode = composeBlendMode
+                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                    finalBrush.applyTo(androidx.compose.ui.geometry.Size(layer.width, layer.height), paint, brushAlpha)
+                    drawContext.canvas.drawPath(path, paint)
+                } else {
+                    drawPath(
+                        path = path,
+                        brush = finalBrush,
+                        style = styleToUse,
+                        alpha = brushAlpha,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.TEXT -> {
+                drawTextLayerInternal(
+                    layer = layer,
+                    opacityMultiplier = layerOpacity * brushAlpha,
+                    composeBlendMode = composeBlendMode
+                )
+            }
+            com.example.studio.model.LayerType.FREEHAND_DRAWING -> {
+                if (layer.brushPoints.isNotEmpty()) {
+                    val cacheKey = layer.id.hashCode()
+                    val cachedPath = pathCache.get(cacheKey)
+                    val px = layer.positionX
+                    val py = layer.positionY
+
+                    val path = if (cachedPath != null) {
+                        cachedPath
+                    } else {
+                        val newPath = androidx.compose.ui.graphics.Path().apply {
+                            var isFirst = true
+                            for (pt in layer.brushPoints) {
+                                if (pt == androidx.compose.ui.geometry.Offset.Unspecified || pt.x.isNaN() || pt.y.isNaN()) {
+                                    isFirst = true
+                                } else {
+                                    if (isFirst) {
+                                        moveTo(pt.x - px, pt.y - py)
+                                        isFirst = false
+                                    } else {
+                                        lineTo(pt.x - px, pt.y - py)
+                                    }
+                                }
+                            }
+                        }
+                        pathCache.put(cacheKey, newPath)
+                        newPath
+                    }
+                    val strokeW = if (fillStyle is androidx.compose.ui.graphics.drawscope.Stroke) fillStyle.width else 8f
+                    drawPath(
+                        path = path,
+                        brush = finalBrush,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeW),
+                        alpha = brushAlpha,
+                        blendMode = composeBlendMode
+                    )
+                }
+            }
+            com.example.studio.model.LayerType.IMAGE_CARD -> {
+                drawRect(
+                    brush = finalBrush,
+                    topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                    size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                    style = fillStyle,
+                    alpha = brushAlpha,
+                    blendMode = composeBlendMode
+                )
+            }
+        }
+    }
+
+    val layerPath: androidx.compose.ui.graphics.Path by lazy {
+        val cacheKey = getLayerGeometryHash(layer)
+        var p = pathCache.get(cacheKey)
+        if (p == null) {
+            p = androidx.compose.ui.graphics.Path().apply {
+                when (layer.type) {
+                    com.example.studio.model.LayerType.VECTOR_RECT -> {
+                        if (layer.cornerRadius > 0f) {
+                            addRoundRect(
+                                androidx.compose.ui.geometry.RoundRect(
+                                    rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius)
+                                )
+                            )
+                        } else {
+                            addRect(androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height))
+                        }
+                    }
+                    com.example.studio.model.LayerType.VECTOR_CIRCLE,
+                    com.example.studio.model.LayerType.VECTOR_OVAL -> {
+                        addOval(androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height))
+                    }
+                    else -> {
+                        // fallback or default empty
+                    }
+                }
+            }
+        }
+        p ?: androidx.compose.ui.graphics.Path()
+    }
+
+    // 1. Drop Shadow Pass
+    if (bordersShadows != null && (bordersShadows.parameters["DropShadow_Enabled"]?.value ?: 0f) > 0.5f) {
+        val dsDistance = bordersShadows.parameters["DropShadow_Distance"]?.value ?: 10f
+        val dsSize = bordersShadows.parameters["DropShadow_Size"]?.value ?: 15f
+        val dsAngle = bordersShadows.parameters["DropShadow_Angle"]?.value ?: 120f
+        val dsOpacity = bordersShadows.parameters["DropShadow_Opacity"]?.value ?: 0.5f
+        val dsGlow = bordersShadows.parameters["DropShadow_Glow"]?.value ?: 0f
+        val dsSharpen = (bordersShadows.parameters["DropShadow_Sharpen"]?.value ?: 0f) > 0.5f
+        val dsZoom = bordersShadows.parameters["DropShadow_Zoom"]?.value ?: 1.0f
+        val dsHardness = bordersShadows.parameters["DropShadow_Hardness"]?.value ?: 0f
+        val dsAlpha = bordersShadows.parameters["DropShadow_Alpha"]?.value ?: 1.0f
+        
+        val r = bordersShadows.parameters["DropShadow_Color_R"]?.value ?: 0f
+        val g = bordersShadows.parameters["DropShadow_Color_G"]?.value ?: 0f
+        val b = bordersShadows.parameters["DropShadow_Color_B"]?.value ?: 0f
+        val col = androidx.compose.ui.graphics.Color(r, g, b).copy(alpha = dsAlpha)
+
+        val rads = Math.toRadians(dsAngle.toDouble())
+        val dx = (dsDistance * Math.cos(rads)).toFloat()
+        val dy = (dsDistance * -Math.sin(rads)).toFloat()
+        withTransform({
+            translate(left = dx, top = dy)
+            scale(scaleX = dsZoom, scaleY = dsZoom, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+        }) {
+            if (dsSize > 0.1f && !dsSharpen) {
+                drawGeometryWithBlur(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            } else {
+                drawGeometry(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            }
+        }
+    } else if (dropShadow != null) {
+        val dsDistance = dropShadow.parameters["Distance"]?.value ?: 10f
+        val dsSize = dropShadow.parameters["Size"]?.value ?: 15f
+        val dsAngle = dropShadow.parameters["Angle"]?.value ?: 120f
+        val dsOpacity = dropShadow.parameters["Opacity"]?.value ?: 0.5f
+        val rads = Math.toRadians(dsAngle.toDouble())
+        val dx = (dsDistance * Math.cos(rads)).toFloat()
+        val dy = (dsDistance * -Math.sin(rads)).toFloat()
+        withTransform({
+            translate(left = dx, top = dy)
+        }) {
+            if (dsSize > 0.1f) {
+                drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            } else {
+                drawGeometry(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            }
+        }
+    }
+
+    // 2. Outer Glow Pass
+    if (outerGlow != null) {
+        val ogSize = outerGlow.parameters["Size"]?.value ?: 20f
+        val ogOpacity = outerGlow.parameters["Opacity"]?.value ?: 0.75f
+        val ogColor = androidx.compose.ui.graphics.Color(0xFFFF9800)
+        if (ogSize > 0.1f) {
+            drawGeometryWithBlur(ogColor, ogOpacity, androidx.compose.ui.graphics.drawscope.Fill, ogSize, android.graphics.BlurMaskFilter.Blur.OUTER)
+        }
+    }
+
+    // 3. Main Base Shape Pass with Blurs precomputed
+    val bRadius = getBlurRadius(layer) +
+            (raBlur?.let { (it.parameters["Amount"]?.value ?: 10f) * 0.15f } ?: 0f) +
+            (moBlur?.let { (it.parameters["Distance"]?.value ?: 15f) * 0.1f } ?: 0f) +
+            (leBlur?.let { (it.parameters["Radius"]?.value ?: 15f) * 0.1f } ?: 0f)
+
+    // Draw Custom Outer Stroke & Outer Border BEFORE drawing main solid layer so the fill occludes the inner half!
+    if (bordersShadows != null) {
+        // 1. Outer Border
+        if ((bordersShadows.parameters["OuterBorder_Enabled"]?.value ?: 0f) > 0.5f) {
+            val size = bordersShadows.parameters["OuterBorder_Size"]?.value ?: 0f
+            val opacity = bordersShadows.parameters["OuterBorder_Opacity"]?.value ?: 1f
+            val r = bordersShadows.parameters["OuterBorder_Color_R"]?.value ?: 1f
+            val g = bordersShadows.parameters["OuterBorder_Color_G"]?.value ?: 1f
+            val b = bordersShadows.parameters["OuterBorder_Color_B"]?.value ?: 1f
+            val col = androidx.compose.ui.graphics.Color(r, g, b)
+            if (size > 0f) {
+                drawGeometry(col, opacity, androidx.compose.ui.graphics.drawscope.Stroke(width = size * 2f))
+            }
+        }
+        // 2. Outer Stroke
+        if ((bordersShadows.parameters["OuterStroke_Enabled"]?.value ?: 0f) > 0.5f) {
+            val size = bordersShadows.parameters["OuterStroke_Size"]?.value ?: 0f
+            val opacity = bordersShadows.parameters["OuterStroke_Opacity"]?.value ?: 1f
+            val r = bordersShadows.parameters["OuterStroke_Color_R"]?.value ?: 1f
+            val g = bordersShadows.parameters["OuterStroke_Color_G"]?.value ?: 1f
+            val b = bordersShadows.parameters["OuterStroke_Color_B"]?.value ?: 1f
+            val col = androidx.compose.ui.graphics.Color(r, g, b)
+            if (size > 0f) {
+                drawGeometry(col, opacity, androidx.compose.ui.graphics.drawscope.Stroke(width = size * 2f))
+            }
+        }
+    }
+
+    // Main solid layer drawing
+    if (bRadius > 0.1f) {
+        drawGeometryWithBlur(effectiveColor, 1.0f, androidx.compose.ui.graphics.drawscope.Fill, bRadius, android.graphics.BlurMaskFilter.Blur.NORMAL)
+    } else {
+        drawGeometry(effectiveColor, 1.0f, androidx.compose.ui.graphics.drawscope.Fill)
+    }
+
+    // 4. Gradient Overlay Pass
+    if (gradOverlay != null) {
+        val goScale = (gradOverlay.parameters["Scale"]?.value ?: 100f) / 100f
+        val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
+        val goOpacity = gradOverlay.parameters["Opacity"]?.value ?: 1.0f
+        val gradientTypeOrdinal = (gradOverlay.parameters["GradientType"]?.value ?: 0f).toInt().coerceIn(0, 6)
+
+        val rads = Math.toRadians(goAngle.toDouble())
+        val cos = Math.cos(rads).toFloat()
+        val sin = Math.sin(rads).toFloat()
+        val startX = layer.width / 2f - (layer.width / 2f * cos * goScale)
+        val startY = layer.height / 2f - (layer.height / 2f * sin * goScale)
+        val endX = layer.width / 2f + (layer.width / 2f * cos * goScale)
+        val endY = layer.height / 2f + (layer.height / 2f * sin * goScale)
+
+        val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
+        val originalColors = if (goPresetIdx == 7) {
+            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+            val list = mutableListOf<androidx.compose.ui.graphics.Color>()
+            for (i in 0 until stopCount) {
+                val rKey = "CustomStop_${i}_R"
+                val gKey = "CustomStop_${i}_G"
+                val bKey = "CustomStop_${i}_B"
+                
+                val r = gradOverlay.parameters[rKey]?.value ?: when(i) {
+                    0 -> gradOverlay.parameters["CustomStart_R"]?.value ?: 1.0f
+                    1 -> gradOverlay.parameters["CustomEnd_R"]?.value ?: 0.0f
+                    2 -> 0.0f
+                    3 -> 1.0f
+                    4 -> 1.0f
+                    else -> 0.5f
+                }
+                val g = gradOverlay.parameters[gKey]?.value ?: when(i) {
+                    0 -> gradOverlay.parameters["CustomStart_G"]?.value ?: 0.0f
+                    1 -> gradOverlay.parameters["CustomEnd_G"]?.value ?: 0.0f
+                    2 -> 1.0f
+                    3 -> 1.0f
+                    4 -> 0.5f
+                    else -> 0.0f
+                }
+                val b = gradOverlay.parameters[bKey]?.value ?: when(i) {
+                    0 -> gradOverlay.parameters["CustomStart_B"]?.value ?: 0.0f
+                    1 -> gradOverlay.parameters["CustomEnd_B"]?.value ?: 1.0f
+                    2 -> 0.0f
+                    3 -> 0.0f
+                    4 -> 0.0f
+                    else -> 1.0f
+                }
+                list.add(androidx.compose.ui.graphics.Color(r, g, b))
+            }
+            list
+        } else {
+            gradientPresets[goPresetIdx.coerceIn(0, gradientPresets.size - 1)]
+        }
+
+        when (gradientTypeOrdinal) {
+            0 -> { // Linear Gradient
+                val gradBrush = androidx.compose.ui.graphics.Brush.linearGradient(
+                    colors = originalColors,
+                    start = androidx.compose.ui.geometry.Offset(startX, startY),
+                    end = androidx.compose.ui.geometry.Offset(endX, endY)
+                )
+                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            }
+            1 -> { // Radial Gradient
+                val maxRadius = (Math.min(layer.width, layer.height) / 2f) * goScale
+                val gradBrush = androidx.compose.ui.graphics.Brush.radialGradient(
+                    colors = originalColors,
+                    center = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f),
+                    radius = maxRadius.coerceAtLeast(1f)
+                )
+                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            }
+            2 -> { // Sweep / Angular Gradient
+                val gradBrush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                    colors = originalColors,
+                    center = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f)
+                )
+                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            }
+            3 -> { // Reflected Gradient
+                val reflectedColors = originalColors.reversed() + originalColors.drop(1)
+                val gradBrush = androidx.compose.ui.graphics.Brush.linearGradient(
+                    colors = reflectedColors,
+                    start = androidx.compose.ui.geometry.Offset(startX, startY),
+                    end = androidx.compose.ui.geometry.Offset(endX, endY)
+                )
+                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            }
+            4 -> { // Shape-Conforming Concentric Gradient
+                val steps = 30
+                for (step in steps downTo 1) {
+                    val ratio = step.toFloat() / steps
+                    val color = interpolateMultiColor(originalColors, ratio)
+                    withTransform({
+                        scale(scaleX = ratio * goScale, scaleY = ratio * goScale, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+                    }) {
+                        drawGeometry(color, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                    }
+                }
+            }
+            5 -> { // Diamond / Starburst Gradient
+                val steps = 30
+                for (step in steps downTo 1) {
+                    val ratio = step.toFloat() / steps
+                    val color = interpolateMultiColor(originalColors, ratio)
+                    withTransform({
+                        scale(scaleX = ratio * goScale, scaleY = ratio * goScale, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+                        rotate(degrees = 45f, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+                    }) {
+                        drawGeometry(color, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                    }
+                }
+            }
+            6 -> { // Reflected Radial Gradient
+                val reflectedColors = originalColors.reversed() + originalColors.drop(1)
+                val maxRadius = (Math.min(layer.width, layer.height) / 2f) * goScale
+                val gradBrush = androidx.compose.ui.graphics.Brush.radialGradient(
+                    colors = reflectedColors,
+                    center = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f),
+                    radius = maxRadius.coerceAtLeast(1f)
+                )
+                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            }
+        }
+    }
+
+    // 5. Pattern Overlay Pass
+    if (patOverlay != null) {
+        val poScale = (patOverlay.parameters["Scale"]?.value ?: 100f) / 100f
+        val poOpacity = patOverlay.parameters["Opacity"]?.value ?: 1.0f
+        val spacing = (15f * poScale).coerceAtLeast(10f)
+        val step = spacing.coerceAtLeast((layer.width + layer.height) / 150f)
+        var d = 0f
+        while (d < layer.width + layer.height) {
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = poOpacity * 0.22f * layerOpacity),
+                start = androidx.compose.ui.geometry.Offset(d, 0f),
+                end = androidx.compose.ui.geometry.Offset(d - layer.height, layer.height),
+                strokeWidth = 2f,
+                blendMode = composeBlendMode
+            )
+            d += step
+        }
+    }
+
+    // 6. Satin Metallic Waves Pass
+    if (satinStyle != null) {
+        val satSize = satinStyle.parameters["Size"]?.value ?: 14f
+        val satOpacity = satinStyle.parameters["Opacity"]?.value ?: 0.5f
+        val satPath = androidx.compose.ui.graphics.Path().apply {
+            moveTo(0f, layer.height * 0.25f)
+            quadraticTo(layer.width / 2f, layer.height * 0.7f, layer.width, layer.height * 0.3f)
+        }
+        val composePaint = androidx.compose.ui.graphics.Paint().apply {
+            color = androidx.compose.ui.graphics.Color.White.copy(alpha = satOpacity * 0.40f * layerOpacity)
+            style = androidx.compose.ui.graphics.PaintingStyle.Stroke
+            strokeWidth = satSize
+            blendMode = composeBlendMode
+            if (satSize > 1f) {
+                asFrameworkPaint().maskFilter = android.graphics.BlurMaskFilter(satSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+        }
+        val pathCachedObj = layerPath
+        if (!pathCachedObj.asAndroidPath().isEmpty) {
+            clipPath(pathCachedObj) {
+                drawContext.canvas.drawPath(satPath, composePaint)
+            }
+        } else {
+            drawContext.canvas.drawPath(satPath, composePaint)
+        }
+    }
+
+    // 7. Inner Shadow Pass
+    if (bordersShadows != null && (bordersShadows.parameters["InnerShadow_Enabled"]?.value ?: 0f) > 0.5f) {
+        val isDistance = bordersShadows.parameters["InnerShadow_Distance"]?.value ?: 5f
+        val isSize = bordersShadows.parameters["InnerShadow_Size"]?.value ?: 10f
+        val isAngle = bordersShadows.parameters["InnerShadow_Angle"]?.value ?: 120f
+        val isOpacity = bordersShadows.parameters["InnerShadow_Opacity"]?.value ?: 0.5f
+        val isHardness = bordersShadows.parameters["InnerShadow_Hardness"]?.value ?: 0f
+        val isChoke = bordersShadows.parameters["InnerShadow_Choke"]?.value ?: 0f
+
+        val r = bordersShadows.parameters["InnerShadow_Color_R"]?.value ?: 0f
+        val g = bordersShadows.parameters["InnerShadow_Color_G"]?.value ?: 0f
+        val b = bordersShadows.parameters["InnerShadow_Color_B"]?.value ?: 0f
+        val col = androidx.compose.ui.graphics.Color(r, g, b)
+
+        val rads = Math.toRadians(isAngle.toDouble())
+        val dx = (isDistance * Math.cos(rads)).toFloat()
+        val dy = (isDistance * -Math.sin(rads)).toFloat()
+        val pathCachedObj = layerPath
+        if (!pathCachedObj.asAndroidPath().isEmpty) {
+            clipPath(pathCachedObj) {
+                withTransform({ translate(left = dx, top = dy) }) {
+                    drawGeometryWithBlur(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+            }
+        } else {
+            withTransform({ translate(left = dx, top = dy) }) {
+                drawGeometryWithBlur(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+        }
+    } else if (innerShadow != null) {
+        val isSize = innerShadow.parameters["Size"]?.value ?: 10f
+        val isAngle = innerShadow.parameters["Angle"]?.value ?: 120f
+        val isOpacity = innerShadow.parameters["Opacity"]?.value ?: 0.5f
+        val rads = Math.toRadians(isAngle.toDouble())
+        val dx = (3f * Math.cos(rads)).toFloat()
+        val dy = (3f * -Math.sin(rads)).toFloat()
+        val pathCachedObj = layerPath
+        if (!pathCachedObj.asAndroidPath().isEmpty) {
+            clipPath(pathCachedObj) {
+                withTransform({ translate(left = dx, top = dy) }) {
+                    drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+            }
+        } else {
+            withTransform({ translate(left = dx, top = dy) }) {
+                drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+        }
+    }
+
+    // 8. Inner Glow Pass
+    if (innerGlow != null) {
+        val igSize = innerGlow.parameters["Size"]?.value ?: innerGlow.parameters["Choke"]?.value ?: 15f
+        val igOpacity = innerGlow.parameters["Opacity"]?.value ?: 0.65f
+        val igColor = androidx.compose.ui.graphics.Color(0xFF00E676)
+        val pathCachedObj = layerPath
+        if (!pathCachedObj.asAndroidPath().isEmpty) {
+            clipPath(pathCachedObj) {
+                drawGeometryWithBlur(igColor, igOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = igSize * 2f), igSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+        } else {
+            drawGeometryWithBlur(igColor, igOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = igSize), igSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+        }
+    }
+
+    // 9. Stroke Pass
+    if (bordersShadows != null) {
+        // 1. Center Stroke
+        if ((bordersShadows.parameters["CenterStroke_Enabled"]?.value ?: 0f) > 0.5f) {
+            val size = bordersShadows.parameters["CenterStroke_Size"]?.value ?: 0f
+            val opacity = bordersShadows.parameters["CenterStroke_Opacity"]?.value ?: 1f
+            val r = bordersShadows.parameters["CenterStroke_Color_R"]?.value ?: 1f
+            val g = bordersShadows.parameters["CenterStroke_Color_G"]?.value ?: 1f
+            val b = bordersShadows.parameters["CenterStroke_Color_B"]?.value ?: 1f
+            val col = androidx.compose.ui.graphics.Color(r, g, b)
+            if (size > 0f) {
+                drawGeometry(col, opacity, androidx.compose.ui.graphics.drawscope.Stroke(width = size))
+            }
+        }
+        // 2. Inner stroke (clipped to layer path!)
+        if ((bordersShadows.parameters["InnerStroke_Enabled"]?.value ?: 0f) > 0.5f) {
+            val size = bordersShadows.parameters["InnerStroke_Size"]?.value ?: 0f
+            val opacity = bordersShadows.parameters["InnerStroke_Opacity"]?.value ?: 1f
+            val r = bordersShadows.parameters["InnerStroke_Color_R"]?.value ?: 1f
+            val g = bordersShadows.parameters["InnerStroke_Color_G"]?.value ?: 1f
+            val b = bordersShadows.parameters["InnerStroke_Color_B"]?.value ?: 1f
+            val col = androidx.compose.ui.graphics.Color(r, g, b)
+            if (size > 0f) {
+                val pathCachedObj = layerPath
+                if (pathCachedObj.asAndroidPath().isEmpty) {
+                    drawGeometry(col, opacity, androidx.compose.ui.graphics.drawscope.Stroke(width = size))
+                } else {
+                    clipPath(pathCachedObj) {
+                        drawGeometry(col, opacity, androidx.compose.ui.graphics.drawscope.Stroke(width = size * 2f))
+                    }
+                }
+            }
+        }
+        // 3. Inner Border (clipped to layer path!)
+        if ((bordersShadows.parameters["InnerBorder_Enabled"]?.value ?: 0f) > 0.5f) {
+            val size = bordersShadows.parameters["InnerBorder_Size"]?.value ?: 0f
+            val opacity = bordersShadows.parameters["InnerBorder_Opacity"]?.value ?: 1f
+            val r = bordersShadows.parameters["InnerBorder_Color_R"]?.value ?: 1f
+            val g = bordersShadows.parameters["InnerBorder_Color_G"]?.value ?: 1f
+            val b = bordersShadows.parameters["InnerBorder_Color_B"]?.value ?: 1f
+            val col = androidx.compose.ui.graphics.Color(r, g, b)
+            if (size > 0f) {
+                val pathCachedObj = layerPath
+                if (pathCachedObj.asAndroidPath().isEmpty) {
+                    drawGeometry(col, opacity, androidx.compose.ui.graphics.drawscope.Stroke(width = size))
+                } else {
+                    clipPath(pathCachedObj) {
+                        drawGeometry(col, opacity, androidx.compose.ui.graphics.drawscope.Stroke(width = size * 2f))
+                    }
+                }
+            }
+        }
+    } else if (strokeStyle != null) {
+        val sSize = strokeStyle.parameters["Size"]?.value ?: 3f
+        val sOpacity = strokeStyle.parameters["Opacity"]?.value ?: 1.0f
+        drawGeometry(androidx.compose.ui.graphics.Color.White, sOpacity * 0.9f, androidx.compose.ui.graphics.drawscope.Stroke(width = sSize))
+    }
+
+    // 10. Bevel & Emboss Pass
+    if (bevelStyle != null) {
+        val bevSize = bevelStyle.parameters["Size"]?.value ?: 5f
+        val bevDepth = bevelStyle.parameters["Depth"]?.value ?: 100f
+        val bMult = (bevDepth / 100f).coerceIn(0.2f, 2f)
+        val pathCachedObj = layerPath
+        if (!pathCachedObj.asAndroidPath().isEmpty) {
+            clipPath(pathCachedObj) {
+                // Highlight (White) shifted top-left
+                withTransform({ translate(left = -bevSize * 0.25f, top = -bevSize * 0.25f) }) {
+                    drawGeometryWithBlur(androidx.compose.ui.graphics.Color.White, 0.35f * bMult, androidx.compose.ui.graphics.drawscope.Stroke(width = bevSize), bevSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+                // Shadow (Black) shifted bottom-right
+                withTransform({ translate(left = bevSize * 0.25f, top = bevSize * 0.25f) }) {
+                    drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, 0.45f * bMult, androidx.compose.ui.graphics.drawscope.Stroke(width = bevSize), bevSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+            }
+        } else {
+            withTransform({ translate(left = -bevSize * 0.25f, top = -bevSize * 0.25f) }) {
+                drawGeometryWithBlur(androidx.compose.ui.graphics.Color.White, 0.28f * bMult, androidx.compose.ui.graphics.drawscope.Stroke(width = bevSize * 0.5f), bevSize * 0.3f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+            withTransform({ translate(left = bevSize * 0.25f, top = bevSize * 0.25f) }) {
+                drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, 0.38f * bMult, androidx.compose.ui.graphics.drawscope.Stroke(width = bevSize * 0.5f), bevSize * 0.3f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+        }
+    }
+
+    // 11. Custom Noise Grain Pass
+    if (noiseFil != null) {
+        val amount = noiseFil.parameters["Amount"]?.value ?: 10f
+        val rSeed = java.util.Random(layer.id.hashCode().toLong())
+        val dotCount = (amount * 3.5f).toInt().coerceIn(10, 250)
+        for (i in 0 until dotCount) {
+            val nx = rSeed.nextFloat() * layer.width
+            val ny = rSeed.nextFloat() * layer.height
+            val colVal = if (rSeed.nextBoolean()) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color.Black
+            drawCircle(
+                color = colVal.copy(alpha = 0.3f * layerOpacity),
+                radius = 1f,
+                center = androidx.compose.ui.geometry.Offset(nx, ny)
+            )
+        }
+    }
+
+    // 12. Dust & Scratches Pass
+    if (dustScratch != null) {
+        val dRadius = dustScratch.parameters["Radius"]?.value ?: 2f
+        val rSeed = java.util.Random(layer.id.hashCode().toLong() + 199)
+        val count = (dRadius * 0.12f + 4f).toInt()
+        for (i in 0 until count) {
+            val sx = rSeed.nextFloat() * layer.width
+            val sy = rSeed.nextFloat() * layer.height
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.5f * layerOpacity),
+                start = androidx.compose.ui.geometry.Offset(sx, sy),
+                end = androidx.compose.ui.geometry.Offset(sx + rSeed.nextFloat() * 10f - 5f, sy + rSeed.nextFloat() * 10f - 5f),
+                strokeWidth = 1f
+            )
+            drawCircle(
+                color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.45f * layerOpacity),
+                radius = 1.2f,
+                center = androidx.compose.ui.geometry.Offset(rSeed.nextFloat() * layer.width, rSeed.nextFloat() * layer.height)
+            )
+        }
+    }
+
+    // 13. Edge Shaders (Median/Unsharp/Smart/High Filters)
+    if (medFil != null || unsharpFil != null || smartFil != null || highFil != null) {
+        val intense = if (highFil != null) 0.7f else 0.35f
+        drawGeometry(androidx.compose.ui.graphics.Color.White, intense, androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
+    }
+
+    // 14. Color Halftone Pass
+    if (halftoneFil != null) {
+        val maxR = halftoneFil.parameters["MaxRadius"]?.value ?: 8f
+        val spacing = (maxR * 2.8f).coerceAtLeast(8f)
+        val stepX = spacing.coerceAtLeast(layer.width / 50f)
+        val stepY = spacing.coerceAtLeast(layer.height / 50f)
+        var hx = stepX / 2
+        while (hx < layer.width) {
+            var hy = stepY / 2
+            while (hy < layer.height) {
+                drawCircle(androidx.compose.ui.graphics.Color.Cyan.copy(alpha = 0.35f * layerOpacity), maxR * 0.25f, androidx.compose.ui.geometry.Offset(hx - 2f, hy - 2f))
+                drawCircle(androidx.compose.ui.graphics.Color.Magenta.copy(alpha = 0.35f * layerOpacity), maxR * 0.25f, androidx.compose.ui.geometry.Offset(hx + 2f, hy - hx % 3f))
+                drawCircle(androidx.compose.ui.graphics.Color.Yellow.copy(alpha = 0.35f * layerOpacity), maxR * 0.25f, androidx.compose.ui.geometry.Offset(hx, hy + 2f))
+                hy += stepY
+            }
+            hx += stepX
+        }
+    }
+
+    // 15. Crystallize / Mosaic / Pointillize Pass
+    if (crysFil != null || mosFil != null || pointFil != null) {
+        val cSize = crysFil?.parameters["CellSize"]?.value ?: mosFil?.parameters["CellSize"]?.value ?: pointFil?.parameters["CellSize"]?.value ?: 10f
+        val spacing = cSize.coerceIn(8f, 95f)
+        val stepX = spacing.coerceAtLeast(layer.width / 50f)
+        val stepY = spacing.coerceAtLeast(layer.height / 50f)
+        var mx = stepX / 2
+        while (mx < layer.width) {
+            var my = stepY / 2
+            while (my < layer.height) {
+                if (pointFil != null) {
+                    drawCircle(effectiveColor.copy(alpha = 0.55f * layerOpacity), spacing * 0.32f, androidx.compose.ui.geometry.Offset(mx, my))
+                } else if (mosFil != null) {
+                    drawRect(
+                        color = effectiveColor.copy(alpha = 0.40f * layerOpacity),
+                        topLeft = androidx.compose.ui.geometry.Offset(mx - spacing/2 + 1f, my - spacing/2 + 1f),
+                        size = androidx.compose.ui.geometry.Size(spacing - 2f, spacing - 2f)
+                    )
+                } else {
+                    drawLine(
+                        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.2f * layerOpacity),
+                        start = androidx.compose.ui.geometry.Offset(mx - spacing/2, my - spacing/2),
+                        end = androidx.compose.ui.geometry.Offset(mx + spacing/2, my + spacing/2),
+                        strokeWidth = 1f
+                    )
+                }
+                my += stepY
+            }
+            mx += stepX
+        }
+    }
+
+    // 16. Clouds Gaseous Smoke Pass
+    if (cloudFil != null) {
+        val details = cloudFil.parameters["DetailLevel"]?.value ?: 2f
+        val rSeed = java.util.Random(layer.id.hashCode().toLong() * 3)
+        for (i in 0 until (details * 2).toInt().coerceAtLeast(3)) {
+            val cx = rSeed.nextFloat() * layer.width
+            val cy = rSeed.nextFloat() * layer.height
+            val cr = (layer.width + layer.height) * 0.22f * (0.8f + rSeed.nextFloat() * 0.5f)
+            val col = when (i % 3) {
+                0 -> androidx.compose.ui.graphics.Color(0xFF1E88E5)
+                1 -> androidx.compose.ui.graphics.Color(0xFFAB47BC)
+                else -> androidx.compose.ui.graphics.Color(0xFFEF5350)
+            }
+            drawCircle(col.copy(alpha = 0.12f * layerOpacity), cr, androidx.compose.ui.geometry.Offset(cx, cy))
+        }
+    }
+
+    // 17. Cinematic Lens Flare Pass
+    if (flareFil != null) {
+        val bright = (flareFil.parameters["Brightness"]?.value ?: 100f) / 100f
+        val lightColor = androidx.compose.ui.graphics.Color(0xFFFFF9C4)
+        drawCircle(androidx.compose.ui.graphics.Color.White.copy(alpha = 0.9f * layerOpacity * bright), 20f * bright, androidx.compose.ui.geometry.Offset(layer.width/2f, layer.height/2f))
+        drawCircle(lightColor.copy(alpha = 0.45f * layerOpacity * bright), 50f * bright, androidx.compose.ui.geometry.Offset(layer.width/2f, layer.height/2f))
+        drawCircle(
+            color = androidx.compose.ui.graphics.Color(0xFF00E5FF).copy(alpha = 0.22f * layerOpacity * bright),
+            radius = 100f * bright,
+            center = androidx.compose.ui.geometry.Offset(layer.width/2f, layer.height/2f),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f * bright)
+        )
+        val offsetUnitX = 35f * bright
+        val offsetUnitY = -22f * bright
+        drawCircle(androidx.compose.ui.graphics.Color(0xFFFFEA00).copy(alpha = 0.32f * layerOpacity * bright), 10f * bright, androidx.compose.ui.geometry.Offset(layer.width/2f + offsetUnitX, layer.height/2f + offsetUnitY))
+        drawCircle(androidx.compose.ui.graphics.Color(0xFFE040FB).copy(alpha = 0.22f * layerOpacity * bright), 16f * bright, androidx.compose.ui.geometry.Offset(layer.width/2f - offsetUnitX * 1.8f, layer.height/2f - offsetUnitY * 1.8f))
+        drawCircle(androidx.compose.ui.graphics.Color(0xFF00E676).copy(alpha = 0.18f * layerOpacity * bright), 7f * bright, androidx.compose.ui.geometry.Offset(layer.width/2f + offsetUnitX * 2.5f, layer.height/2f + offsetUnitY * 2.5f))
+    }
+
+    // 18. Spotlight Lighting pass
+    if (lightFil != null) {
+        val intensity = (lightFil.parameters["Intensity"]?.value ?: 50f) / 100f
+        val conePath = androidx.compose.ui.graphics.Path().apply {
+            moveTo(0f, 0f)
+            lineTo(layer.width * 0.85f, layer.height * 0.22f)
+            lineTo(layer.width * 0.22f, layer.height * 0.85f)
+            close()
+        }
+        drawPath(
+            path = conePath,
+            color = androidx.compose.ui.graphics.Color.White.copy(alpha = intensity * 0.2f * layerOpacity),
+            blendMode = composeBlendMode
+        )
+    }
+
+    // 19. Find Edges pass
+    if (findFil != null) {
+        drawGeometry(androidx.compose.ui.graphics.Color(0xFF00E5FF), 0.85f, androidx.compose.ui.graphics.drawscope.Stroke(width = 2.2f))
+    }
+
+    // 20. Emboss Contour Pass
+    if (embFil != null) {
+        withTransform({ translate(left = -1.5f, top = -1.5f) }) {
+            drawGeometry(androidx.compose.ui.graphics.Color.White, 0.4f, androidx.compose.ui.graphics.drawscope.Stroke(width = 1.2f))
+        }
+        withTransform({ translate(left = 1.5f, top = 1.5f) }) {
+            drawGeometry(androidx.compose.ui.graphics.Color.Black, 0.5f, androidx.compose.ui.graphics.drawscope.Stroke(width = 1.2f))
+        }
+    }
+
+    // 21. Hand-penciled Sketch / Texture Burlap shaders
+    if (sketchFil != null) {
+        var sy = 0f
+        val step = (layer.height / 150f).coerceAtLeast(10f)
+        while (sy < layer.height) {
+            drawLine(
+                color = androidx.compose.ui.graphics.Color(0xFF616161).copy(alpha = 0.4f * layerOpacity),
+                start = androidx.compose.ui.geometry.Offset(0f, sy),
+                end = androidx.compose.ui.geometry.Offset(layer.width * 0.85f, sy + 12f),
+                strokeWidth = 1f
+            )
+            sy += step
+        }
+    }
+    if (texFil != null) {
+        var gx = 0f
+        val stepX = (layer.width / 150f).coerceAtLeast(8f)
+        while (gx < layer.width) {
+            drawLine(color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.12f * layerOpacity), start = androidx.compose.ui.geometry.Offset(gx, 0f), end = androidx.compose.ui.geometry.Offset(gx, layer.height), strokeWidth = 1f)
+            gx += stepX
+        }
+        var gy = 0f
+        val stepY = (layer.height / 150f).coerceAtLeast(8f)
+        while (gy < layer.height) {
+            drawLine(color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.12f * layerOpacity), start = androidx.compose.ui.geometry.Offset(0f, gy), end = androidx.compose.ui.geometry.Offset(layer.width, gy), strokeWidth = 1f)
+            gy += stepY
+        }
+    }
+    if (artFil != null || brushFil != null) {
+        drawGeometry(androidx.compose.ui.graphics.Color.White.copy(alpha = 0.25f), 0.25f, androidx.compose.ui.graphics.drawscope.Stroke(width = 1.8f))
+    }
+
+    // 22. AI Face Mesh neural overlay
+    if (neuralFil != null) {
+        val nx1 = layer.width * 0.35f
+        val nx2 = layer.width * 0.65f
+        val ny = layer.height * 0.4f
+        drawCircle(androidx.compose.ui.graphics.Color.Cyan.copy(alpha = 0.3f * layerOpacity), 7f, androidx.compose.ui.geometry.Offset(nx1, ny))
+        drawCircle(androidx.compose.ui.graphics.Color.Cyan.copy(alpha = 0.3f * layerOpacity), 7f, androidx.compose.ui.geometry.Offset(nx2, ny))
+        drawLine(androidx.compose.ui.graphics.Color.Cyan.copy(alpha = 0.25f * layerOpacity), androidx.compose.ui.geometry.Offset(nx1, ny), androidx.compose.ui.geometry.Offset(nx2, ny), strokeWidth = 1.2f)
+        drawLine(androidx.compose.ui.graphics.Color.Cyan.copy(alpha = 0.25f * layerOpacity), androidx.compose.ui.geometry.Offset(layer.width / 2f, ny), androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height * 0.65f), strokeWidth = 1.2f)
+    }
+
+    // 23. Wind streak trails
+    if (windFil != null) {
+        val rSeed = java.util.Random(layer.id.hashCode().toLong() * 4)
+        for (i in 0 until 10) {
+            val wy = rSeed.nextFloat() * layer.height
+            val length = rSeed.nextFloat() * 30f + 8f
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.5f * layerOpacity),
+                start = androidx.compose.ui.geometry.Offset(layer.width, wy),
+                end = androidx.compose.ui.geometry.Offset(layer.width + length, wy),
+                strokeWidth = 1.2f
+            )
+        }
+    }
+
+    // 24. Oil Paint strokes overlay
+    if (oilFil != null) {
+        val styliz = oilFil.parameters["Stylization"]?.value ?: 5f
+        val rSeed = java.util.Random(layer.id.hashCode().toLong() * 11)
+        for (i in 0 until (styliz * 1.3f).toInt().coerceAtLeast(3)) {
+            val sy = layer.height * rSeed.nextFloat()
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.25f * layerOpacity),
+                start = androidx.compose.ui.geometry.Offset(0f, sy),
+                end = androidx.compose.ui.geometry.Offset(layer.width, sy + rSeed.nextFloat() * 10f - 5f),
+                strokeWidth = 2.5f + rSeed.nextFloat() * 3f,
+                blendMode = composeBlendMode
+            )
+        }
+    }
+
+    // Paint Bezier control lines overlay if active and selected
+    if (layer.type == com.example.studio.model.LayerType.VECTOR_BEZIER && layer.id == selectedLayerId) {
+        if (layer.brushPoints.isNotEmpty()) {
+            val size = layer.brushPoints.size
+            for (i in 0 until size step 2) {
+                val anchor = layer.brushPoints[i]
+                
+                // Draw manual anchor
+                drawCircle(
+                    color = androidx.compose.ui.graphics.Color(0xFF00E5FF),
+                    radius = 9f / totalScale.coerceAtLeast(0.5f),
+                    center = anchor
+                )
+                drawCircle(
+                    color = androidx.compose.ui.graphics.Color.White,
+                    radius = 4.5f / totalScale.coerceAtLeast(0.5f),
+                    center = anchor
+                )
+                
+                val ctrl = layer.brushPoints.getOrNull(i + 1)
+                if (ctrl != null) {
+                    drawLine(
+                        color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.6f),
+                        start = anchor,
+                        end = ctrl,
+                        strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                        pathEffect = dashEffect
+                    )
+                    
+                    val nextAnchor = layer.brushPoints.getOrNull(i + 2)
+                    if (nextAnchor != null) {
+                        drawLine(
+                            color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.6f),
+                            start = nextAnchor,
+                            end = ctrl,
+                            strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                            pathEffect = dashEffect
+                        )
+                    }
+                    
+                    // Draw control point handle
+                    drawCircle(
+                        color = IndustrialAmber,
+                        radius = 8.5f / totalScale.coerceAtLeast(0.5f),
+                        center = ctrl
+                    )
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color.White,
+                        radius = 4f / totalScale.coerceAtLeast(0.5f),
+                        center = ctrl
+                    )
+                }
+            }
+        } else {
+            val start = androidx.compose.ui.geometry.Offset(0f, layer.height)
+            val end = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
+            val controlLocal = layer.brushPoints.getOrNull(0) ?: androidx.compose.ui.geometry.Offset(layer.width / 2f, 0f)
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.5f),
+                start = start,
+                end = controlLocal,
+                strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                pathEffect = dashEffect
+            )
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.5f),
+                start = end,
+                end = controlLocal,
+                strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                pathEffect = dashEffect
+            )
+            drawCircle(
+                color = IndustrialAmber,
+                radius = 10f / totalScale.coerceAtLeast(0.5f),
+                center = controlLocal
+            )
+            drawCircle(
+                color = androidx.compose.ui.graphics.Color.White,
+                radius = 5f / totalScale.coerceAtLeast(0.5f),
+                center = controlLocal
+            )
+        }
+    }
+
+    // Sizing frames and anchors drawn locally
+    if (layer.id == selectedLayerId) {
+        drawRect(
+            color = IndustrialAmber.copy(0.8f),
+            topLeft = androidx.compose.ui.geometry.Offset(-6f, -6f),
+            size = androidx.compose.ui.geometry.Size(layer.width + 12f, layer.height + 12f),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = 1.5f / totalScale.coerceAtLeast(0.5f),
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(12f / totalScale.coerceAtLeast(0.5f), 8f / totalScale.coerceAtLeast(0.5f)))
+            )
+        )
+        drawCircle(
+            color = EnergeticYellow,
+            radius = 8f / totalScale.coerceAtLeast(0.5f),
+            center = androidx.compose.ui.geometry.Offset.Zero
+        )
+        drawCircle(
+            color = EnergeticYellow,
+            radius = 11f / totalScale.coerceAtLeast(0.5f),
+            center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
+        )
+        drawCircle(
+            color = androidx.compose.ui.graphics.Color(0xFFFF5722),
+            radius = 5.5f / totalScale.coerceAtLeast(0.5f),
+            center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
+        )
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnectedLayer(
+    layer: com.example.studio.model.StudioLayer,
+    layerOpacity: Float,
+    selectedLayerId: String?,
+    pathCache: android.util.SparseArray<androidx.compose.ui.graphics.Path>,
+    pathPointsCountCache: android.util.SparseIntArray,
+    totalScale: Float,
+    dashEffect: androidx.compose.ui.graphics.PathEffect,
+    composeBlendMode: androidx.compose.ui.graphics.BlendMode,
+    imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>,
+    sharedTransformMatrix: androidx.compose.ui.graphics.Matrix
+) {
+    var twirlFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var pinchFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var sphereFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    for (effect in layer.effects) {
+        if (!effect.isEnabled) continue
+        if (effect is com.example.studio.model.StudioEffect.PhotoshopEffect) {
+            when (effect.effectType) {
+                "Twirl" -> twirlFil = effect
+                "Pinch" -> pinchFil = effect
+                "Spherize" -> sphereFil = effect
+            }
+        }
+    }
+
+    val additionalTwirl = twirlFil?.let { (it.parameters["Angle"]?.value ?: 100f) * 0.12f } ?: 0f
+    val additionalScale = (pinchFil?.let { 1f + (it.parameters["Amount"]?.value ?: 50f) / 100f * 0.15f } ?: 1f) *
+                          (sphereFil?.let { 1f + (it.parameters["Amount"]?.value ?: 100f) / 100f * 0.20f } ?: 1f)
+
+    drawContext.canvas.save()
+    drawContext.canvas.translate(layer.positionX, layer.positionY)
+
+    val matrix = sharedTransformMatrix.apply {
+        reset()
+        val centerX = layer.width * layer.pivotX
+        val centerY = layer.height * layer.pivotY
+        
+        translate(centerX, centerY)
+        
+        val sx = layer.skewX
+        val sy = layer.skewY
+        val px = layer.perspX
+        val py = layer.perspY
+        
+        if (sx != 0f || sy != 0f || px != 0f || py != 0f) {
+            val skewPersp = androidx.compose.ui.graphics.Matrix().apply {
+                reset()
+                if (sx != 0f) {
+                    values[4] = sx
+                }
+                if (sy != 0f) {
+                    values[1] = sy
+                }
+                if (px != 0f) {
+                    values[3] = px
+                }
+                if (py != 0f) {
+                    values[7] = py
+                }
+            }
+            timesAssign(skewPersp)
+        }
+        
+        rotateZ(layer.rotation + additionalTwirl)
+        scale(layer.scaleX * additionalScale, layer.scaleY * additionalScale, 1f)
+        translate(-centerX, -centerY)
+    }
+    drawContext.canvas.concat(matrix)
+    drawAllEffectsAndLayersLocal(
+        layer = layer,
+        layerOpacity = layerOpacity,
+        selectedLayerId = selectedLayerId,
+        pathCache = pathCache,
+        pathPointsCountCache = pathPointsCountCache,
+        totalScale = totalScale,
+        dashEffect = dashEffect,
+        imageBitmapCache = imageBitmapCache,
+        composeBlendMode = composeBlendMode
+    )
+    drawContext.canvas.restore()
+}
+
+@Composable
+fun BordersAndShadowsTabPanel(
+    selectedLayer: com.example.studio.model.StudioLayer,
+    onAddEffect: (com.example.studio.model.StudioEffect) -> Unit,
+    onUpdateEffectParam: (String, String, Float) -> Unit
+) {
+    val bordersShadowsEff = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BordersAndShadows" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+
+    if (bordersShadowsEff == null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                .padding(20.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "✨ Advanced Borders & Shadows Layer Styles",
+                    style = Typography.bodyMedium,
+                    color = EnergeticYellow,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Apply real-time high-fidelity drop shadows, inner shadows, nested inner/outer borders, and precise center/inner/outer stroke effects to your layout non-destructively.",
+                    style = Typography.labelSmall,
+                    color = TextSecondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.width(420.dp)
+                )
+                Button(
+                    onClick = {
+                        val newEff = com.example.studio.model.PhotoshopEffectTemplates.create(
+                            id = java.util.UUID.randomUUID().toString(),
+                            effectType = "BordersAndShadows"
+                        )
+                        onAddEffect(newEff)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Icon(Icons.Default.Add, "Add FX", tint = DarkOnyx, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Activate Styling Engine", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    } else {
+        var borderStrokeTypeToEdit by remember { mutableStateOf("InnerBorder") }
+
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // CARD 1: DROP SHADOW
+            Column(
+                modifier = Modifier
+                    .width(310.dp)
+                    .fillMaxHeight()
+                    .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val dsEnabled = (bordersShadowsEff.parameters["DropShadow_Enabled"]?.value ?: 0f) > 0.5f
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Drop Shadow", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                    Switch(
+                        checked = dsEnabled,
+                        onCheckedChange = {
+                            onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Enabled", if (it) 1f else 0f)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = IndustrialAmber,
+                            checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier.scale(0.8f)
+                    )
+                }
+
+                if (dsEnabled) {
+                    // Distance
+                    val dsDist = bordersShadowsEff.parameters["DropShadow_Distance"]?.value ?: 10f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Distance", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${dsDist.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = dsDist,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Distance", it) },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Size / Blur
+                    val dsSize = bordersShadowsEff.parameters["DropShadow_Size"]?.value ?: 15f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Blur / Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${dsSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = dsSize,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Size", it) },
+                            valueRange = 0f..120f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Angle
+                    val dsAngle = bordersShadowsEff.parameters["DropShadow_Angle"]?.value ?: 120f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Angle", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${dsAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = dsAngle,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Angle", it) },
+                            valueRange = 0f..360f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Hardness
+                    val dsHardness = bordersShadowsEff.parameters["DropShadow_Hardness"]?.value ?: 0f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Edge Hardness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${(dsHardness * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = dsHardness,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Hardness", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Glow / Flow / Spread
+                    val dsGlow = bordersShadowsEff.parameters["DropShadow_Glow"]?.value ?: 0f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Outer Glow / Spread", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${dsGlow.toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = dsGlow,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Glow", it) },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Zoom / Scale
+                    val dsZoom = bordersShadowsEff.parameters["DropShadow_Zoom"]?.value ?: 1.0f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Shadow Scale / Zoom", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${"%.2f".format(dsZoom)}x", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = dsZoom,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Zoom", it) },
+                            valueRange = 0.5f..2.0f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Opacity / Alpha
+                    val dsOpacity = bordersShadowsEff.parameters["DropShadow_Opacity"]?.value ?: 0.5f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Shadow Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${(dsOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = dsOpacity,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Opacity", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Color R, G, B, Alpha Sliders
+                    val dsColR = bordersShadowsEff.parameters["DropShadow_Color_R"]?.value ?: 0f
+                    val dsColG = bordersShadowsEff.parameters["DropShadow_Color_G"]?.value ?: 0f
+                    val dsColB = bordersShadowsEff.parameters["DropShadow_Color_B"]?.value ?: 0f
+
+                    Text("Shadow Color Tint", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
+
+                    // Red channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(dsColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
+                        }
+                        Slider(
+                            value = dsColR,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_R", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+
+                    // Green channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(dsColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
+                        }
+                        Slider(
+                            value = dsColG,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_G", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+
+                    // Blue channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(dsColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
+                        }
+                        Slider(
+                            value = dsColB,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_B", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+                }
+            }
+
+            // CARD 2: INNER SHADOW
+            Column(
+                modifier = Modifier
+                    .width(310.dp)
+                    .fillMaxHeight()
+                    .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val isEnabled = (bordersShadowsEff.parameters["InnerShadow_Enabled"]?.value ?: 0f) > 0.5f
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Inner Shadow", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                    Switch(
+                        checked = isEnabled,
+                        onCheckedChange = {
+                            onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Enabled", if (it) 1f else 0f)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = IndustrialAmber,
+                            checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier.scale(0.8f)
+                    )
+                }
+
+                if (isEnabled) {
+                    // Distance
+                    val isDist = bordersShadowsEff.parameters["InnerShadow_Distance"]?.value ?: 5f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Distance", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${isDist.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = isDist,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Distance", it) },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Size / Blur
+                    val isSize = bordersShadowsEff.parameters["InnerShadow_Size"]?.value ?: 10f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Blur / Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${isSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = isSize,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Size", it) },
+                            valueRange = 0f..120f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Angle
+                    val isAngle = bordersShadowsEff.parameters["InnerShadow_Angle"]?.value ?: 120f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Angle", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${isAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = isAngle,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Angle", it) },
+                            valueRange = 0f..360f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Hardness
+                    val isHardness = bordersShadowsEff.parameters["InnerShadow_Hardness"]?.value ?: 0f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Edge Hardness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${(isHardness * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = isHardness,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Hardness", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Choke
+                    val isChoke = bordersShadowsEff.parameters["InnerShadow_Choke"]?.value ?: 0f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Inner Choke", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${isChoke.toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = isChoke,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Choke", it) },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Opacity
+                    val isOpacity = bordersShadowsEff.parameters["InnerShadow_Opacity"]?.value ?: 0.5f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${(isOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = isOpacity,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Opacity", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Color R, G, B Sliders
+                    val isColR = bordersShadowsEff.parameters["InnerShadow_Color_R"]?.value ?: 0f
+                    val isColG = bordersShadowsEff.parameters["InnerShadow_Color_G"]?.value ?: 0f
+                    val isColB = bordersShadowsEff.parameters["InnerShadow_Color_B"]?.value ?: 0f
+
+                    Text("Inner Shadow Tint", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
+
+                    // Red channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(isColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
+                        }
+                        Slider(
+                            value = isColR,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_R", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+
+                    // Green channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(isColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
+                        }
+                        Slider(
+                            value = isColG,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_G", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+
+                    // Blue channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(isColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
+                        }
+                        Slider(
+                            value = isColB,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_B", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+                }
+            }
+
+            // CARD 3: BORDERS & STROKES
+            Column(
+                modifier = Modifier
+                    .width(320.dp)
+                    .fillMaxHeight()
+                    .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Borders & Strokes Style", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+
+                // Selector for stroke type
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MidSlate, RoundedCornerShape(4.dp))
+                        .padding(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    val optList = listOf(
+                        "InnerBorder" to "In-Brd", 
+                        "OuterBorder" to "Out-Brd", 
+                        "InnerStroke" to "In-Stk", 
+                        "OuterStroke" to "Out-Stk", 
+                        "CenterStroke" to "Ctr-Stk"
+                    )
+                    optList.forEach { (typeKey, typeLabel) ->
+                        val isSel = borderStrokeTypeToEdit == typeKey
+                        Button(
+                            onClick = { borderStrokeTypeToEdit = typeKey },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (isSel) IndustrialAmber else Color.Transparent),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(3.dp),
+                            modifier = Modifier.weight(1f).height(24.dp)
+                        ) {
+                            Text(
+                                text = typeLabel, 
+                                style = Typography.labelSmall, 
+                                fontSize = 8.sp,
+                                color = if (isSel) DarkOnyx else TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                val paramPrefix = borderStrokeTypeToEdit
+                val borderEnabled = (bordersShadowsEff.parameters["${paramPrefix}_Enabled"]?.value ?: 0f) > 0.5f
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val prettyLabel = when (paramPrefix) {
+                        "InnerBorder" -> "Inner Border Style"
+                        "OuterBorder" -> "Outer Border Style"
+                        "InnerStroke" -> "Inner Stroke Style"
+                        "OuterStroke" -> "Outer Stroke Style"
+                        else -> "Center Stroke Style"
+                    }
+                    Text(prettyLabel, style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary)
+                    Switch(
+                        checked = borderEnabled,
+                        onCheckedChange = {
+                            onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Enabled", if (it) 1f else 0f)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = IndustrialAmber,
+                            checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
+                        ),
+                        modifier = Modifier.scale(0.8f)
+                    )
+                }
+
+                if (borderEnabled) {
+                    // Size
+                    val bSize = bordersShadowsEff.parameters["${paramPrefix}_Size"]?.value ?: 0f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Thickness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${bSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = bSize,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Size", it) },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Opacity
+                    val bOpacity = bordersShadowsEff.parameters["${paramPrefix}_Opacity"]?.value ?: 1f
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                            Text("${(bOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                        }
+                        Slider(
+                            value = bOpacity,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Opacity", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+
+                    // Preset Color Row and circular targets
+                    Text("Quick Color Presets", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val presets = listOf(
+                            Color.White to "White", 
+                            Color.Black to "Black", 
+                            Color.Red to "Red", 
+                            Color.Yellow to "Yellow", 
+                            Color.Blue to "Blue", 
+                            Color.Green to "Green"
+                        )
+                        presets.forEach { (pColor, pName) ->
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .background(pColor)
+                                    .border(BorderStroke(1.dp, if (pColor == Color.White) Color.Black else Color.White), CircleShape)
+                                    .clickable {
+                                        onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_R", pColor.red)
+                                        onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_G", pColor.green)
+                                        onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_B", pColor.blue)
+                                    }
+                            )
+                        }
+                    }
+
+                    // R, G, B Custom sliders
+                    val bColR = bordersShadowsEff.parameters["${paramPrefix}_Color_R"]?.value ?: 1f
+                    val bColG = bordersShadowsEff.parameters["${paramPrefix}_Color_G"]?.value ?: 1f
+                    val bColB = bordersShadowsEff.parameters["${paramPrefix}_Color_B"]?.value ?: 1f
+
+                    // Red channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(bColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
+                        }
+                        Slider(
+                            value = bColR,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_R", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+
+                    // Green channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(bColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
+                        }
+                        Slider(
+                            value = bColG,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_G", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+
+                    // Blue channel
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Text("${(bColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
+                        }
+                        Slider(
+                            value = bColB,
+                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_B", it) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
+                            modifier = Modifier.height(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// ADVANCED BRUSHES LIBRARY SYSTEM
+// ==========================================
+
+data class BrushPresetItem(
+    val index: Int,
+    val name: String,
+    val category: String, // "Simple", "Sketch", "Comic", "Ink", "Vector", "Airbrush", "Watercolor (Flat)"
+    val defaultSize: Float,
+    val sampleChar: String,
+    val description: String = ""
+)
+
+val ALL_AVAILABLE_BRUSHES = listOf(
+    BrushPresetItem(0, "Solid Ink", "Simple", 16f, "✎", "Direct clean solid line for rapid digital sketching and outlining."),
+    BrushPresetItem(7, "Glass Pen", "Ink", 3f, "🍷", "Fine transparent pen with glossy reflection tracing."),
+    BrushPresetItem(8, "Vector Dip Pen", "Vector", 3f, "➿", "Smoothed path tracing pen simulating vector coordinates."),
+    BrushPresetItem(9, "Vector Felt Tip", "Vector", 8f, "✒", "Uniform weighted vector felt pen for clean illustration lines."),
+    BrushPresetItem(10, "Pencil (#1)", "Sketch", 9f, "✏", "Faint graphite sketching pencil with paper grain feel."),
+    BrushPresetItem(11, "Pencil (#2)", "Sketch", 9f, "✏", "Softer graphite drawing pencil for smooth outlines and shading."),
+    BrushPresetItem(12, "Pencil (Graphite)", "Sketch", 9f, "✏", "Traditional carbon graphite pencil with deep, rich value ranges."),
+    BrushPresetItem(13, "Pencil (Rough)", "Sketch", 9f, "✏", "A highly textured, dynamic sketching pencil with jittery rough tooth."),
+    BrushPresetItem(14, "Hard Japanese Pen", "Comic", 3f, "✒", "Traditional Sumi-Ink styled Japanese calligraphy pen with flex."),
+    BrushPresetItem(15, "Soft Falcon Pen", "Ink", 3f, "✒", "Highly flexible bleed copperplate pen for fine calligraphy."),
+    BrushPresetItem(16, "Hard Falcon Pen", "Ink", 3f, "✒", "Smooth solid metal nib brush pen with clean round endpoints."),
+    BrushPresetItem(17, "Technical Pen", "Ink", 3f, "🖋", "Strict constant-width drafting pen with hard square boundaries."),
+    BrushPresetItem(18, "Ruling Pen", "Ink", 3f, "📏", "Parallel twin metal blades drawing distinct outlines."),
+    BrushPresetItem(19, "Drawing Pen", "Ink", 3f, "✍", "Classic standard steel mapping and drawing pen."),
+    BrushPresetItem(20, "Ballpoint Pen", "Ink", 3f, "✍", "Fine personal pen with subtle texture gaps mimicking drag."),
+    BrushPresetItem(21, "Texture Pen", "Watercolor (Flat)", 3f, "🖌", "Uniquely textured pattern brush mimicking canvas fiber."),
+    BrushPresetItem(22, "Soft Mapping Pen", "Watercolor (Flat)", 3f, "✒", "Manga speedball G-nib with soft textured feathering."),
+    BrushPresetItem(23, "Hard Mapping Pen", "Watercolor (Flat)", 3f, "✒", "Clean comic G-nib with crisp precision rendering."),
+    BrushPresetItem(24, "Soft Turnip Pen", "Comic", 3f, "✒", "Slightly soft porous kabura comic pen for broad lines."),
+    BrushPresetItem(25, "Hard Turnip Pen", "Comic", 3f, "✒", "Firm manga outline brush pen with robust tapered behavior."),
+    BrushPresetItem(26, "Soft School Pen", "Comic", 3f, "🎒", "Soft bleed manga/anime drafting pen favorited by manga students."),
+    BrushPresetItem(27, "Hard School Pen", "Comic", 3f, "🏫", "Stiff uniform manga/anime drafting pen favorited by manga students."),
+    BrushPresetItem(28, "Airbrush (Normal)", "Airbrush", 80f, "☁", "Smooth outer blur mist spray for soft color blending."),
+    BrushPresetItem(29, "Airbrush (Triangle)", "Airbrush", 80f, "▲", "Fuzzy triangular gradient air spray shape."),
+    BrushPresetItem(30, "Airbrush (Trap 20%)", "Airbrush", 80f, "▮", "Wide flattened airbrush overlay with 20% trapezoid falloff."),
+    BrushPresetItem(31, "Airbrush (Trap 40%)", "Airbrush", 80f, "▰", "Medium flattened airbrush overlay with 40% trapezoid falloff."),
+    BrushPresetItem(32, "Airbrush (Trap 60%)", "Airbrush", 80f, "▩", "Compact flattened airbrush overlay with 60% trapezoid falloff."),
+    BrushPresetItem(33, "Airbrush (Particle)", "Airbrush", 80f, "░", "Granular noise spray for stipple shading and dust textures."),
+    BrushPresetItem(34, "Airbrush (Particle L)", "Airbrush", 80f, "▓", "Coarser, wider spray droplets for paint splatters and sand."),
+    BrushPresetItem(35, "Dip Pen (Bleed)", "Simple", 3f, "✒", "Traditional high-capacity fountain brush with heavy bleed."),
+    BrushPresetItem(36, "Felt Tip Pen (Soft)", "Simple", 5f, "🖍", "Soft-edged porous highlighter marker pen."),
+    BrushPresetItem(37, "Felt Tip Pen (Hard)", "Simple", 9.9f, "🖊", "Clean bullet-tip modern marker with bold solid ink."),
+    BrushPresetItem(38, "Pen (Fade)", "Simple", 14.7f, "⏳", "Pressure tapered pen that fades beautifully at ends."),
+    BrushPresetItem(39, "Impasto Brush - Flat", "Watercolor (Flat)", 48f, "🖌", "Thick layered painterly stroke with realistic bristly edges."),
+    BrushPresetItem(40, "Digital Pen", "Simple", 34f, "👾", "Crisp aliased pixel pen for retro game art and clear flat colors."),
+    BrushPresetItem(1, "Calligraphy Wedge", "Vector", 16f, "✒", "Slanted chisel tip pen producing sharp dynamic width shifts."),
+    BrushPresetItem(2, "Neon Light Aura", "Watercolor (Flat)", 16f, "⚡", "Brilliant bright glowing core surrounded by colorful neon light."),
+    BrushPresetItem(3, "Soft Airbrush", "Airbrush", 16f, "☁", "Gentle blurred air mist for gradients and atmosphere."),
+    BrushPresetItem(4, "Felt Marker Tip", "Simple", 16f, "▮", "Flat rectangular marker drawing overlapping transparent layers."),
+    BrushPresetItem(5, "Dotted Stroke", "Watercolor (Flat)", 16f, "⁏", "Rhythmic dashes aligned perfectly along drawing coordinates."),
+    BrushPresetItem(6, "Spray Splatter", "Watercolor (Flat)", 16f, "❖", "Coarse chaotic paint sprays randomly dispersed along brush.")
+)
+
+@Composable
+fun BrushesLibraryOverlay(
+    currentPreset: Int,
+    onPresetChange: (Int) -> Unit,
+    currentSize: Float,
+    onSizeChange: (Float) -> Unit,
+    currentOpacity: Float,
+    onOpacityChange: (Float) -> Unit,
+    currentColor: Color,
+    currentSmoothing: Boolean,
+    onClose: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var activeTab by remember { mutableStateOf("Basic") } // "Basic", "Custom", "Online"
+    var selectedCategory by remember { mutableStateOf("All") }
+
+    val customBrushes = remember { mutableStateListOf(0, 3, 37) }
+    val downloadingProgress = remember { mutableStateMapOf<Int, Float>() }
+    val scope = rememberCoroutineScope()
+
+    val onlineBrushes = listOf(
+        BrushPresetItem(12, "Deep Carbon Graphite", "Sketch", 12f, "✏", "Heavy dense sketching carbon block."),
+        BrushPresetItem(13, "Chalk Pastel (Rough)", "Sketch", 24f, "✏", "Granular porous dry media block."),
+        BrushPresetItem(21, "Sponge Textured roller", "Watercolor (Flat)", 35f, "🖌", "Perforated fluid sponge texture roller."),
+        BrushPresetItem(1, "Scribe Pen (Chisel)", "Vector", 18f, "✒", "Broad metal ink chisel tip."),
+        BrushPresetItem(33, "Stipple Shader Particle", "Airbrush", 75f, "░", "Stipple shading spraying particle nozzle.")
+    )
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = SlatePanel,
+            border = BorderStroke(1.5.dp, HighslateOutline),
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.9f)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // 1. Header Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF131317))
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Brush,
+                            contentDescription = "Brushes",
+                            tint = IndustrialAmber,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Brush (41)",
+                            style = Typography.titleMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
+                    IconButton(onClick = onClose) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close", tint = TextSecondary)
+                    }
+                }
+
+                // 2. Transposed Wave Preview of active brush
+                val activeBrushItem = ALL_AVAILABLE_BRUSHES.find { it.index == currentPreset } ?: ALL_AVAILABLE_BRUSHES[0]
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(84.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(1.dp, HighslateOutline, RoundedCornerShape(8.dp))
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val stripeSize = 10.dp.toPx()
+                        val w = size.width
+                        val h = size.height
+                        for (x in 0..(w / stripeSize).toInt()) {
+                            for (y in 0..(h / stripeSize).toInt()) {
+                                if ((x + y) % 2 == 0) {
+                                    drawRect(
+                                        color = Color(0xFF282833),
+                                        topLeft = Offset(x * stripeSize, y * stripeSize),
+                                        size = androidx.compose.ui.geometry.Size(stripeSize, stripeSize)
+                                    )
+                                } else {
+                                    drawRect(
+                                        color = Color(0xFF181822),
+                                        topLeft = Offset(x * stripeSize, y * stripeSize),
+                                        size = androidx.compose.ui.geometry.Size(stripeSize, stripeSize)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val w = size.width
+                        val h = size.height
+                        val pts = mutableListOf<Offset>()
+                        val steps = 30
+                        for (i in 0..steps) {
+                            val frac = i.toFloat() / steps
+                            val px = w * 0.1f + frac * w * 0.8f
+                            val py = h * 0.5f + kotlin.math.sin(frac * Math.PI.toFloat() * 3f) * (h * 0.22f)
+                            pts.add(Offset(px, py))
+                        }
+                        drawBrushStroke(
+                            points = pts,
+                            color = currentColor,
+                            size = currentSize * 0.65f,
+                            opacity = currentOpacity,
+                            presetIndex = currentPreset,
+                            smoothing = true,
+                            originX = 0f,
+                            originY = 0f
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .background(Color(0xBB0A0A0E), RoundedCornerShape(topEnd = 6.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "Active: ${activeBrushItem.name} (${currentSize.toInt()}px)",
+                            style = Typography.labelSmall,
+                            color = EnergeticYellow,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // 3. Tabs & Search bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .background(Color(0xFF131317), RoundedCornerShape(6.dp))
+                            .padding(2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("Basic", "Custom", "Online").forEach { tab ->
+                            val isSel = activeTab == tab
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(if (isSel) IndustrialAmber else Color.Transparent)
+                                    .clickable { activeTab = tab }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = tab,
+                                    style = Typography.labelSmall,
+                                    color = if (isSel) DarkOnyx else TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // Search input
+                    Row(
+                        modifier = Modifier
+                            .width(180.dp)
+                            .height(30.dp)
+                            .background(Color(0xFF131317), RoundedCornerShape(6.dp))
+                            .border(0.5.dp, HighslateOutline, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Search",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            textStyle = Typography.bodySmall.copy(color = TextPrimary, fontSize = 11.sp),
+                            singleLine = true,
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(IndustrialAmber),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                Divider(color = HighslateOutline, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 4.dp))
+
+                // 4. Split body: Category filter (Basic tab) & list of brushes
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    val categories = listOf("All", "Simple", "Sketch", "Comic", "Ink", "Vector", "Airbrush", "Watercolor (Flat)")
+                    val isBasicTab = activeTab == "Basic"
+
+                    if (isBasicTab) {
+                        Column(
+                            modifier = Modifier
+                                .width(82.dp)
+                                .fillMaxHeight()
+                                .background(Color(0xFF131317))
+                                .verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            categories.forEach { cat ->
+                                val isCatSel = selectedCategory == cat
+                                val displayIcon = when (cat) {
+                                    "All" -> Icons.Default.MenuOpen
+                                    "Simple" -> Icons.Default.Gesture
+                                    "Sketch" -> Icons.Default.Edit
+                                    "Comic" -> Icons.Default.Dashboard
+                                    "Ink" -> Icons.Default.KeyboardAlt
+                                    "Vector" -> Icons.Default.Timeline
+                                    "Airbrush" -> Icons.Default.BlurOn
+                                    else -> Icons.Default.WaterDrop
+                                }
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(if (isCatSel) SlatePanel else Color.Transparent)
+                                        .clickable { selectedCategory = cat }
+                                        .padding(vertical = 8.dp, horizontal = 2.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(
+                                        imageVector = displayIcon,
+                                        contentDescription = cat,
+                                        tint = if (isCatSel) IndustrialAmber else TextSecondary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = cat,
+                                        style = Typography.labelSmall,
+                                        fontSize = 8.sp,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 2,
+                                        color = if (isCatSel) TextPrimary else TextSecondary,
+                                        lineHeight = 10.sp
+                                    )
+                                }
+                                Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+                            }
+                        }
+                        Divider(color = HighslateOutline, thickness = 0.5.dp, modifier = Modifier.fillMaxHeight().width(0.5.dp))
+                    }
+
+                    // Brush grid elements
+                    val sourceList = when (activeTab) {
+                        "Basic" -> ALL_AVAILABLE_BRUSHES.filter { 
+                            (selectedCategory == "All" || it.category == selectedCategory) &&
+                            (searchQuery.isEmpty() || it.name.contains(searchQuery, ignoreCase = true))
+                        }
+                        "Custom" -> ALL_AVAILABLE_BRUSHES.filter { 
+                            customBrushes.contains(it.index) && 
+                            (searchQuery.isEmpty() || it.name.contains(searchQuery, ignoreCase = true))
+                        }
+                        else -> onlineBrushes.filter { 
+                            searchQuery.isEmpty() || it.name.contains(searchQuery, ignoreCase = true)
+                        }
+                    }
+
+                    if (sourceList.isEmpty()) {
+                        Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                            Text("No brushes discovered", style = Typography.labelSmall, color = TextSecondary)
+                        }
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                            contentPadding = PaddingValues(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(sourceList.size) { idx ->
+                                val brushItem = sourceList[idx]
+                                val isSelected = currentPreset == brushItem.index
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(if (isSelected) MidSlate else Color(0xFF131317), RoundedCornerShape(6.dp))
+                                        .border(
+                                            BorderStroke(0.5.dp, if (isSelected) IndustrialAmber else HighslateOutline.copy(alpha = 0.5f)),
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .clickable {
+                                            onPresetChange(brushItem.index)
+                                        }
+                                        .padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Canvas(
+                                        modifier = Modifier
+                                            .width(96.dp)
+                                            .height(28.dp)
+                                            .background(Color(0xFF0C0C0E), RoundedCornerShape(4.dp))
+                                            .border(0.5.dp, HighslateOutline, RoundedCornerShape(4.dp))
+                                    ) {
+                                        val w = size.width
+                                        val h = size.height
+                                        val wavePts = mutableListOf<Offset>()
+                                        val steps = 15
+                                        for (i in 0..steps) {
+                                            val frac = i.toFloat() / steps
+                                            val px = w * 0.1f + frac * w * 0.8f
+                                            val py = h * 0.5f + kotlin.math.sin(frac * Math.PI.toFloat() * 1.8f) * (h * 0.22f)
+                                            wavePts.add(Offset(px, py))
+                                        }
+                                        drawBrushStroke(
+                                            points = wavePts,
+                                            color = currentColor,
+                                            size = brushItem.defaultSize * 0.35f,
+                                            opacity = 1.0f,
+                                            presetIndex = brushItem.index,
+                                            smoothing = true,
+                                            originX = 0f,
+                                            originY = 0f
+                                        )
+                                    }
+
+                                    Spacer(Modifier.width(10.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = brushItem.name,
+                                            style = Typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSelected) IndustrialAmber else TextPrimary,
+                                            fontSize = 11.sp
+                                        )
+                                        Text(
+                                            text = brushItem.category + " • Default: " + brushItem.defaultSize.toInt() + "px",
+                                            style = Typography.labelSmall,
+                                            fontSize = 8.sp,
+                                            color = TextSecondary
+                                        )
+                                    }
+
+                                    Spacer(Modifier.width(4.dp))
+
+                                    if (activeTab == "Basic") {
+                                        val alreadyInCustom = customBrushes.contains(brushItem.index)
+                                        IconButton(
+                                            onClick = {
+                                                if (!alreadyInCustom) {
+                                                    customBrushes.add(brushItem.index)
+                                                }
+                                            },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (alreadyInCustom) Icons.Default.Check else Icons.Default.Add,
+                                                contentDescription = "Add to Custom",
+                                                tint = if (alreadyInCustom) Color.Green else IndustrialAmber,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    } else if (activeTab == "Online") {
+                                        val downloadProgress = downloadingProgress[brushItem.index]
+                                        if (downloadProgress != null) {
+                                            if (downloadProgress >= 1f) {
+                                                Icon(
+                                                    imageVector = Icons.Default.CheckCircle,
+                                                    contentDescription = "Downloaded",
+                                                    tint = Color.Green,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            } else {
+                                                CircularProgressIndicator(
+                                                    progress = { downloadProgress },
+                                                    modifier = Modifier.size(14.dp),
+                                                    color = IndustrialAmber,
+                                                    strokeWidth = 2.dp,
+                                                )
+                                            }
+                                        } else {
+                                            IconButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        downloadingProgress[brushItem.index] = 0.05f
+                                                        for (p in 1..10) {
+                                                            kotlinx.coroutines.delay(120)
+                                                            downloadingProgress[brushItem.index] = p.toFloat() / 10f
+                                                        }
+                                                        customBrushes.add(brushItem.index)
+                                                    }
+                                                },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Download,
+                                                    contentDescription = "Download",
+                                                    tint = IndustrialAmber,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Icon(
+                                        imageVector = Icons.Default.ChevronRight,
+                                        contentDescription = "Details",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Divider(color = HighslateOutline, thickness = 0.5.dp)
+
+                // 5. Sliders Panel with incremental - and + buttons (Strict matches screenshot layouts)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF131317))
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // Thickness setting
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Thickness",
+                            style = Typography.labelSmall,
+                            color = TextSecondary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.width(62.dp)
+                        )
+                        
+                        IconButton(
+                            onClick = { onSizeChange((currentSize - 1f).coerceIn(1f, 150f)) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text("-", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+
+                        Slider(
+                            value = currentSize,
+                            onValueChange = onSizeChange,
+                            valueRange = 1f..150f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(26.dp)
+                        )
+
+                        IconButton(
+                            onClick = { onSizeChange((currentSize + 1f).coerceIn(1f, 150f)) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text("+", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+
+                        Text(
+                            text = "${currentSize.toInt()}px",
+                            style = Typography.labelSmall,
+                            color = TextPrimary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.width(42.dp),
+                            textAlign = TextAlign.End
+                        )
+                    }
+
+                    // Opacity setting
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Opacity",
+                            style = Typography.labelSmall,
+                            color = TextSecondary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.width(62.dp)
+                        )
+
+                        IconButton(
+                            onClick = { onOpacityChange((currentOpacity - 0.05f).coerceIn(0.05f, 1.0f)) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text("-", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+
+                        Slider(
+                            value = currentOpacity,
+                            onValueChange = onOpacityChange,
+                            valueRange = 0.05f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(26.dp)
+                        )
+
+                        IconButton(
+                            onClick = { onOpacityChange((currentOpacity + 0.05f).coerceIn(0.05f, 1.0f)) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Text("+", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+
+                        Text(
+                            text = "${(currentOpacity * 100).toInt()}%",
+                            style = Typography.labelSmall,
+                            color = TextPrimary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.width(42.dp),
+                            textAlign = TextAlign.End
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+data class ParsedFreehandStroke(
+    val isEraser: Boolean,
+    val presetIndex: Int,
+    val size: Float,
+    val opacity: Float,
+    val smoothing: Boolean,
+    val color: androidx.compose.ui.graphics.Color,
+    val points: List<androidx.compose.ui.geometry.Offset>
+)
+
+fun buildStrokeHeaderPoints(
+    isEraser: Boolean,
+    presetIndex: Int,
+    size: Float,
+    opacity: Float,
+    smoothing: Boolean
+): List<androidx.compose.ui.geometry.Offset> {
+    val eraserFlag = if (isEraser) 1.0f else 0.0f
+    val smoothFlag = if (smoothing) 1.0f else 0.0f
+    return listOf(
+        androidx.compose.ui.geometry.Offset(999999.0f, eraserFlag),
+        androidx.compose.ui.geometry.Offset(999998.0f, presetIndex.toFloat()),
+        androidx.compose.ui.geometry.Offset(999997.0f, size),
+        androidx.compose.ui.geometry.Offset(999996.0f, opacity),
+        androidx.compose.ui.geometry.Offset(999995.0f, smoothFlag),
+        androidx.compose.ui.geometry.Offset.Unspecified
+    )
+}
+
+fun parseFreehandStrokes(
+    brushPoints: List<androidx.compose.ui.geometry.Offset>,
+    defaultColor: androidx.compose.ui.graphics.Color,
+    defaultSize: Float,
+    defaultOpacity: Float,
+    defaultPreset: Int,
+    defaultSmoothing: Boolean
+): List<ParsedFreehandStroke> {
+    if (brushPoints.isEmpty()) return emptyList()
+    val strokesList = mutableListOf<ParsedFreehandStroke>()
+    
+    val rawStrokes = mutableListOf<List<androidx.compose.ui.geometry.Offset>>()
+    var currentRawStroke = mutableListOf<androidx.compose.ui.geometry.Offset>()
+    for (pt in brushPoints) {
+        if (pt == androidx.compose.ui.geometry.Offset.Unspecified) {
+            if (currentRawStroke.isNotEmpty()) {
+                rawStrokes.add(currentRawStroke)
+                currentRawStroke = mutableListOf()
+            }
+        } else {
+            currentRawStroke.add(pt)
+        }
+    }
+    if (currentRawStroke.isNotEmpty()) {
+        rawStrokes.add(currentRawStroke)
+    }
+
+    for (raw in rawStrokes) {
+        var isEraser = false
+        var presetIdx = defaultPreset
+        var size = defaultSize
+        var opacity = defaultOpacity
+        var smoothing = defaultSmoothing
+        
+        var pointsStartIdx = 0
+        if (raw.size >= 6 && raw[0].x == 999999.0f) {
+            isEraser = raw[0].y > 0.5f
+            if (raw[1].x == 999998.0f) presetIdx = raw[1].y.toInt()
+            if (raw[2].x == 999997.0f) size = raw[2].y
+            if (raw[3].x == 999996.0f) opacity = raw[3].y
+            if (raw[4].x == 999995.0f) smoothing = raw[4].y > 0.5f
+            pointsStartIdx = 6
+        }
+        
+        val actualPoints = raw.subList(pointsStartIdx, raw.size)
+        if (actualPoints.isNotEmpty()) {
+            strokesList.add(
+                ParsedFreehandStroke(
+                    isEraser = isEraser,
+                    presetIndex = presetIdx,
+                    size = size,
+                    opacity = opacity,
+                    smoothing = smoothing,
+                    color = defaultColor,
+                    points = actualPoints
+                )
+            )
+        }
+    }
+    return strokesList
+}
+
+@Composable
+private fun GridControlPane(
+    gridEnabled: Boolean,
+    onGridEnabledChange: (Boolean) -> Unit,
+    gridColumns: Int,
+    onGridColumnsChange: (Int) -> Unit,
+    gridRows: Int,
+    onGridRowsChange: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Left Part of Grid configurations: toggles and presets
+        Column(
+            modifier = Modifier.width(180.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Grid Overlay", style = Typography.labelSmall, color = Color(0xFF00FF66))
+            Button(
+                onClick = { onGridEnabledChange(!gridEnabled) },
+                colors = ButtonDefaults.buttonColors(containerColor = if (gridEnabled) Color(0xFF00FF66) else MidSlate),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.fillMaxWidth().height(32.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp)
+            ) {
+                Text(if (gridEnabled) "GRID: ACTIVE" else "GRID: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (gridEnabled) DarkOnyx else TextPrimary)
+            }
+            Spacer(Modifier.height(2.dp))
+            Text("Standard Presets:", style = Typography.labelSmall, color = TextSecondary, fontSize = 8.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(4, 8, 16, 32).forEach { num ->
+                    Button(
+                        onClick = {
+                            onGridColumnsChange(num)
+                            onGridRowsChange(num)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = if (gridColumns == num && gridRows == num) Color(0xFF00FF66) else MidSlate),
+                        contentPadding = PaddingValues(horizontal = 4.dp),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.weight(1f).height(24.dp)
+                    ) {
+                        Text("${num}x${num}", fontSize = 8.sp, color = if (gridColumns == num && gridRows == num) DarkOnyx else TextPrimary)
+                    }
+                }
+            }
+        }
+        
+        // Right Part of Grid configurations: Sliders for Columns & Rows
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Precision Resolution Indicators", style = Typography.labelSmall, color = EnergeticYellow)
+            
+            // Columns slider
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Grid Columns", style = Typography.labelSmall, color = TextPrimary)
+                    Text("$gridColumns columns", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66), fontWeight = FontWeight.Bold)
+                }
+                Slider(
+                    value = gridColumns.toFloat(),
+                    onValueChange = { onGridColumnsChange(it.toInt()) },
+                    valueRange = 2f..64f,
+                    colors = SliderDefaults.colors(activeTrackColor = Color(0xFF00FF66), thumbColor = Color(0xFF00FF66)),
+                    modifier = Modifier.fillMaxWidth().height(24.dp)
+                )
+            }
+            
+            // Rows slider
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Grid Rows", style = Typography.labelSmall, color = TextPrimary)
+                    Text("$gridRows rows", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66), fontWeight = FontWeight.Bold)
+                }
+                Slider(
+                    value = gridRows.toFloat(),
+                    onValueChange = { onGridRowsChange(it.toInt()) },
+                    valueRange = 2f..64f,
+                    colors = SliderDefaults.colors(activeTrackColor = Color(0xFF00FF66), thumbColor = Color(0xFF00FF66)),
+                    modifier = Modifier.fillMaxWidth().height(24.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RulerControlPane(
+    rulerEnabled: Boolean,
+    onRulerEnabledChange: (Boolean) -> Unit,
+    rulerOrientation: String,
+    onRulerOrientationChange: (String) -> Unit,
+    rulerLocked: Boolean,
+    onRulerLockedChange: (Boolean) -> Unit,
+    snapToRuler: Boolean,
+    onSnapToRulerChange: (Boolean) -> Unit,
+    rulerAngle: Float,
+    onRulerAngleChange: (Float) -> Unit,
+    rulerPosition: Float,
+    onRulerPositionChange: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Left Column: Toggles
+        Column(
+            modifier = Modifier.width(200.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("Ruler Controls", style = Typography.labelSmall, color = Color(0xFF00FF66))
+            
+            // Ruler ON/OFF & Orientation
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Button(
+                    onClick = { onRulerEnabledChange(!rulerEnabled) },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (rulerEnabled) Color(0xFF00FF66) else MidSlate),
+                    modifier = Modifier.weight(1.1f).height(28.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(if (rulerEnabled) "RULER: ON" else "RULER: OFF", style = Typography.labelSmall, fontSize = 8.sp, color = if (rulerEnabled) DarkOnyx else TextPrimary)
+                }
+                Button(
+                    onClick = { onRulerOrientationChange(if (rulerOrientation == "Horizontal") "Vertical" else "Horizontal") },
+                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                    modifier = Modifier.weight(0.9f).height(28.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(if (rulerOrientation == "Horizontal") "HORIZ" else "VERT", style = Typography.labelSmall, fontSize = 8.sp, color = DarkOnyx)
+                }
+            }
+            
+            // Lock Ruler Switch
+            Button(
+                onClick = { onRulerLockedChange(!rulerLocked) },
+                colors = ButtonDefaults.buttonColors(containerColor = if (rulerLocked) Color.Red else MidSlate),
+                modifier = Modifier.fillMaxWidth().height(28.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Text(if (rulerLocked) "🔒 LOCKED" else "🔓 DRAGGABLE", style = Typography.labelSmall, fontSize = 8.sp, color = if (rulerLocked) Color.White else TextPrimary)
+            }
+            
+            // Snap Items Switch
+            Button(
+                onClick = { onSnapToRulerChange(!snapToRuler) },
+                colors = ButtonDefaults.buttonColors(containerColor = if (snapToRuler) Color(0xFF00FF66) else MidSlate),
+                modifier = Modifier.fillMaxWidth().height(28.dp),
+                contentPadding = PaddingValues(horizontal = 4.dp),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Text(if (snapToRuler) "🎯 SNAPPING: ON" else "🎯 SNAPPING: OFF", style = Typography.labelSmall, fontSize = 8.sp, color = if (snapToRuler) DarkOnyx else TextPrimary)
+            }
+        }
+        
+        // Right Column: Sliders for Angle & Position
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Calibration and Sliders", style = Typography.labelSmall, color = EnergeticYellow)
+            
+            // Angle Slider
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Ruler Rotation Angle", style = Typography.labelSmall, color = TextPrimary)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("${rulerAngle.toInt()}°", style = Typography.labelSmall, fontSize = 10.sp, color = IndustrialAmber, fontWeight = FontWeight.Bold)
+                        Button(
+                            onClick = { onRulerAngleChange(0f) },
+                            colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                            contentPadding = PaddingValues(horizontal = 2.dp),
+                            modifier = Modifier.height(18.dp).width(32.dp),
+                            shape = RoundedCornerShape(2.dp)
+                        ) {
+                            Text("Reset", fontSize = 8.sp, color = TextPrimary)
+                        }
+                    }
+                }
+                Slider(
+                    value = rulerAngle,
+                    onValueChange = onRulerAngleChange,
+                    valueRange = -180f..180f,
+                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                    modifier = Modifier.fillMaxWidth().height(24.dp)
+                )
+            }
+            
+            // Position Slider
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Coordinate Position", style = Typography.labelSmall, color = TextPrimary)
+                    Text("${rulerPosition.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66), fontWeight = FontWeight.Bold)
+                }
+                Slider(
+                    value = rulerPosition,
+                    onValueChange = onRulerPositionChange,
+                    valueRange = 0f..2000f,
+                    colors = SliderDefaults.colors(activeTrackColor = Color(0xFF00FF66), thumbColor = Color(0xFF00FF66)),
+                    modifier = Modifier.fillMaxWidth().height(24.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeftTelemetryAndStatsColumn(
+    activeTool: String,
+    selectedLayer: StudioLayer?,
+    gridEnabled: Boolean,
+    gridColumns: Int,
+    gridRows: Int,
+    rulerEnabled: Boolean,
+    rulerAngle: Float,
+    snapToRuler: Boolean,
+    isBrushStudioActive: Boolean,
+    currentPreset: Int,
+    currentSize: Float,
+    currentOpacity: Float,
+    activeTabOfPanel: Int,
+    onActiveTabOfPanelChange: (Int) -> Unit,
+    onCloseBottomPanel: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(175.dp)
+            .fillMaxHeight()
+            .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+            .padding(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val titleLabel = when (activeTool) {
+                "Grid" -> "Grid Alignment"
+                "Ruler" -> "Ruler Guideline"
+                else -> if (isBrushStudioActive) "Paint Brush Studio" else "Zenith Parameters"
+            }
+            Text(titleLabel, style = Typography.labelSmall, fontSize = 10.sp, color = EnergeticYellow)
+            IconButton(onClick = onCloseBottomPanel, modifier = Modifier.size(20.dp)) {
+                Icon(Icons.Default.Close, "Collapse bottom panel", tint = TextSecondary, modifier = Modifier.size(14.dp))
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            if (activeTool == "Grid") {
+                Column {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Grid Calibration", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(10.dp))
+                    Text("Status: ${if (gridEnabled) "ENABLED" else "DISABLED"}", style = Typography.labelSmall, color = if (gridEnabled) Color(0xFF00FF66) else TextSecondary)
+                    Text("Resolution: $gridColumns x $gridRows", style = Typography.labelSmall, color = TextSecondary)
+                    Spacer(Modifier.height(12.dp))
+                    Text("Align drawings and shapes perfectly with the live layout grid.", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                }
+            } else if (activeTool == "Ruler") {
+                Column {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Guideline Rule", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(10.dp))
+                    Text("Status: ${if (rulerEnabled) "ACTIVE" else "OFF"}", style = Typography.labelSmall, color = if (rulerEnabled) Color(0xFF00FF66) else TextSecondary)
+                    Text("Angle: ${rulerAngle.toInt()}°", style = Typography.labelSmall, color = TextSecondary)
+                    Text("Snapping: ${if (snapToRuler) "ON" else "OFF"}", style = Typography.labelSmall, color = TextSecondary)
+                    Spacer(Modifier.height(12.dp))
+                    Text("Draw vectors, straight strokes, or slide layers along custom angles.", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                }
+            } else if (isBrushStudioActive) {
+                Column {
+                    val presetLabel = when (currentPreset) {
+                        1 -> "Calligraphy Wedge"
+                        2 -> "Neon Light Aura"
+                        3 -> "Soft Airbrush"
+                        4 -> "Felt Marker Tip"
+                        5 -> "Dotted Stroke"
+                        6 -> "Spray Splatter"
+                        else -> "Solid Paint Ink"
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) "Edit layer path" else "Mode: Brush Paint", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Style: $presetLabel", style = Typography.labelSmall, color = TextSecondary)
+                    Text("Size: ${currentSize.toInt()}px", style = Typography.labelSmall, color = TextSecondary)
+                    Text("Flow: ${(currentOpacity * 100).toInt()}%", style = Typography.labelSmall, color = TextSecondary)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) "Editing existing drawing stroke" else "Draw anywhere on canvas!", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                }
+            } else if (selectedLayer != null) {
+                Column {
+                    Text(selectedLayer.name, style = Typography.bodyMedium, color = TextPrimary, maxLines = 1, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(
+                            onClick = { onActiveTabOfPanelChange(0) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 0) IndustrialAmber else MidSlate),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.fillMaxWidth().height(28.dp)
+                        ) {
+                            Text("Transform", style = Typography.labelSmall, color = if (activeTabOfPanel == 0) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { onActiveTabOfPanelChange(1) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 1) IndustrialAmber else MidSlate),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.fillMaxWidth().height(28.dp)
+                        ) {
+                            val tab1Title = if (selectedLayer.type == LayerType.TEXT) "Type 🔤" else "Shape 📐"
+                            Text(tab1Title, style = Typography.labelSmall, color = if (activeTabOfPanel == 1) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { onActiveTabOfPanelChange(2) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 2) IndustrialAmber else MidSlate),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.fillMaxWidth().height(28.dp)
+                        ) {
+                            Text("Color 🎨", style = Typography.labelSmall, color = if (activeTabOfPanel == 2) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { onActiveTabOfPanelChange(3) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 3) IndustrialAmber else MidSlate),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.fillMaxWidth().height(28.dp)
+                        ) {
+                            Text("Filters & FX (${selectedLayer.effects.size})", style = Typography.labelSmall, fontSize = 9.sp, color = if (activeTabOfPanel == 3) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = { onActiveTabOfPanelChange(4) },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 4) IndustrialAmber else MidSlate),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.fillMaxWidth().height(28.dp)
+                        ) {
+                            Text("Stroke & Shadows ✨", style = Typography.labelSmall, fontSize = 9.sp, color = if (activeTabOfPanel == 4) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        Text("Type: ${selectedLayer.type}", style = Typography.labelSmall, fontSize = 9.sp, color = MatteBlue)
+                    }
+                }
+            } else {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Select Canvas Layer first", style = Typography.labelSmall, textAlign = TextAlign.Center, color = TextSecondary)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+
