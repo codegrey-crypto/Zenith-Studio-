@@ -738,6 +738,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     }
 
     var selectedLayerId by remember { mutableStateOf("") }
+    var snapVerticalLine by remember { mutableStateOf<Float?>(null) }
+    var snapHorizontalLine by remember { mutableStateOf<Float?>(null) }
+    var snapIndicatorMsg by remember { mutableStateOf<String?>(null) }
     var activeTool by remember { mutableStateOf("Brush") } // Brush, Move, Shapes, Text
 
     val undoStack = remember { CappedHistoryStack(40) }
@@ -769,6 +772,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var snapToRuler by remember { mutableStateOf(true) }
     var gridColumns by remember { mutableStateOf(8) }
     var gridRows by remember { mutableStateOf(8) }
+    var isLeftToolbarExpanded by remember { mutableStateOf(true) }
 
     var fontSearchQuery by remember { mutableStateOf("") }
     var selectedCategoryFilter by remember { mutableStateOf("All") }
@@ -993,6 +997,15 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val currentCanvasWidthState = rememberUpdatedState(canvasWidth)
     val currentCanvasHeightState = rememberUpdatedState(canvasHeight)
 
+    val currentGridEnabledState = rememberUpdatedState(gridEnabled)
+    val currentGridColumnsState = rememberUpdatedState(gridColumns)
+    val currentGridRowsState = rememberUpdatedState(gridRows)
+    val currentRulerEnabledState = rememberUpdatedState(rulerEnabled)
+    val currentRulerOrientationState = rememberUpdatedState(rulerOrientation)
+    val currentRulerPositionState = rememberUpdatedState(rulerPosition)
+    val currentRulerAngleState = rememberUpdatedState(rulerAngle)
+    val currentSnapToRulerState = rememberUpdatedState(snapToRuler)
+
     val executeArtworkExport: (Float, Boolean) -> Unit = { mult, cmyk ->
         android.widget.Toast.makeText(context, "Exporting high-resolution artwork to Gallery...", android.widget.Toast.LENGTH_SHORT).show()
         scope.launch {
@@ -1208,6 +1221,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             TopControlShelf(
                 activeTool = activeTool,
                 onToolChange = { activeTool = it },
+                isLeftToolbarExpanded = isLeftToolbarExpanded,
+                onToggleLeftToolbar = { isLeftToolbarExpanded = !isLeftToolbarExpanded },
                 onUndo = {
                     if (undoStack.isNotEmpty()) {
                         val prev = undoStack.removeAt(undoStack.size - 1)
@@ -1292,38 +1307,40 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Leftside Dock Panel: Compact dynamic utility toolstrip
-                LeftsideToolDock(
-                    activeTool = activeTool,
-                    onSelectTool = {
-                        activeTool = it
-                        if (it == "Shapes") {
-                            showAddShapeDialog = true
-                        } else if (it == "Text") {
-                            val newL = StudioLayer(
-                                name = "Text Layer",
-                                type = LayerType.TEXT,
-                                positionX = 350f,
-                                positionY = 450f,
-                                width = 350f,
-                                height = 100f,
-                                baseColor = Color.White,
-                                textContent = "DOUBLE TAP TO EDIT"
-                            )
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            layers = listOf(newL) + layers
-                            selectedLayerId = newL.id
-                            activeTool = "Move"
-                        } else if (it == "Grid") {
-                            gridEnabled = true
-                            isBottomPanelVisible = true
-                        } else if (it == "Ruler") {
-                            rulerEnabled = true
-                            isBottomPanelVisible = true
+                // Leftside Dock Panel: Compact dynamic utility toolstrip with collapsibility
+                if (isLeftToolbarExpanded) {
+                    LeftsideToolDock(
+                        activeTool = activeTool,
+                        onSelectTool = {
+                            activeTool = it
+                            if (it == "Shapes") {
+                                showAddShapeDialog = true
+                            } else if (it == "Text") {
+                                val newL = StudioLayer(
+                                    name = "Text Layer",
+                                    type = LayerType.TEXT,
+                                    positionX = 350f,
+                                    positionY = 450f,
+                                    width = 350f,
+                                    height = 100f,
+                                    baseColor = Color.White,
+                                    textContent = "DOUBLE TAP TO EDIT"
+                                )
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                layers = listOf(newL) + layers
+                                selectedLayerId = newL.id
+                                activeTool = "Move"
+                            } else if (it == "Grid") {
+                                gridEnabled = true
+                                isBottomPanelVisible = true
+                            } else if (it == "Ruler") {
+                                rulerEnabled = true
+                                isBottomPanelVisible = true
+                            }
                         }
-                    }
-                )
+                    )
+                }
 
                 // Central Workspace Canvas Container
                 Box(
@@ -1403,7 +1420,12 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 canvasRotation = (canvasRotation + rotation) % 360f
                                             }
                                             if (pan != Offset.Zero) {
-                                                canvasPanX += pan.x
+                                                val snappedNewPanX = canvasPanX + pan.x
+                                                 val snappedNewPanY = canvasPanY + pan.y
+                                                 val snappedFinalX = if (Math.abs(snappedNewPanX) < 25f) 0f else snappedNewPanX
+                                                 val snappedFinalY = if (Math.abs(snappedNewPanY) < 25f) 0f else snappedNewPanY
+                                                 val pan = androidx.compose.ui.geometry.Offset(snappedFinalX - canvasPanX, snappedFinalY - canvasPanY)
+                                                 canvasPanX += pan.x
                                                 canvasPanY += pan.y
                                             }
 
@@ -1611,7 +1633,244 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                 } else {
                                                                     layer.brushPoints
                                                                 }
-                                                                var finalX = layer.positionX + localDragX
+                                                                                                                                 var localDragX = localDragX
+                                                                 var localDragY = localDragY
+
+                                                                 // Calculate temporary unsnapped final positions
+                                                                 var locSnapVerticalLine: Float? = null
+                                                                 var locSnapHorizontalLine: Float? = null
+                                                                 var locSnapIndicatorMsg: String? = null
+                                                                 var tempFinalX = layer.positionX + localDragX
+                                                                 var tempFinalY = layer.positionY + localDragY
+
+                                                                 val snapThreshold = 30f // pixels in canvas space
+                                                                 val canvasW = currentCanvasWidthState.value
+                                                                 val canvasH = currentCanvasHeightState.value
+
+                                                                 val activeGridEnabled = currentGridEnabledState.value
+                                                                 val activeGridColumns = currentGridColumnsState.value
+                                                                 val activeGridRows = currentGridRowsState.value
+                                                                 val activeRulerEnabled = currentRulerEnabledState.value
+                                                                 val activeRulerOrientation = currentRulerOrientationState.value
+                                                                 val activeRulerPosition = currentRulerPositionState.value
+                                                                 val activeRulerAngle = currentRulerAngleState.value
+                                                                 val activeSnapToRuler = currentSnapToRulerState.value
+
+                                                                 // 1. Grid Snapping
+                                                                 if (activeGridEnabled) {
+                                                                     val cols = activeGridColumns.coerceIn(1, 200)
+                                                                     val rows = activeGridRows.coerceIn(1, 200)
+                                                                     val colWidth = canvasW / cols
+                                                                     val rowHeight = canvasH / rows
+
+                                                                     var closestGridX = Float.MAX_VALUE
+                                                                     var bestSnappedX = tempFinalX
+                                                                     for (i in 0..cols) {
+                                                                         val gridLineX = i * colWidth
+                                                                         val dLeft = Math.abs(tempFinalX - gridLineX)
+                                                                         if (dLeft < snapThreshold && dLeft < closestGridX) {
+                                                                             closestGridX = dLeft
+                                                                             bestSnappedX = gridLineX
+                                                                         }
+                                                                         val dRight = Math.abs((tempFinalX + layer.width) - gridLineX)
+                                                                         if (dRight < snapThreshold && dRight < closestGridX) {
+                                                                             closestGridX = dRight
+                                                                             bestSnappedX = gridLineX - layer.width
+                                                                         }
+                                                                         val dMid = Math.abs((tempFinalX + layer.width / 2f) - gridLineX)
+                                                                         if (dMid < snapThreshold && dMid < closestGridX) {
+                                                                             closestGridX = dMid
+                                                                             bestSnappedX = gridLineX - layer.width / 2f
+                                                                         }
+                                                                     }
+                                                                     if (closestGridX < snapThreshold) {
+                                                                         tempFinalX = bestSnappedX
+                                                                         locSnapVerticalLine = bestSnappedX
+                                                                         locSnapIndicatorMsg = "Snapped to Grid X"
+                                                                     }
+
+                                                                     var closestGridY = Float.MAX_VALUE
+                                                                     var bestSnappedY = tempFinalY
+                                                                     for (j in 0..rows) {
+                                                                         val gridLineY = j * rowHeight
+                                                                         val dTop = Math.abs(tempFinalY - gridLineY)
+                                                                         if (dTop < snapThreshold && dTop < closestGridY) {
+                                                                             closestGridY = dTop
+                                                                             bestSnappedY = gridLineY
+                                                                         }
+                                                                         val dBot = Math.abs((tempFinalY + layer.height) - gridLineY)
+                                                                         if (dBot < snapThreshold && dBot < closestGridY) {
+                                                                             closestGridY = dBot
+                                                                             bestSnappedY = gridLineY - layer.height
+                                                                         }
+                                                                         val dMidY = Math.abs((tempFinalY + layer.height / 2f) - gridLineY)
+                                                                         if (dMidY < snapThreshold && dMidY < closestGridY) {
+                                                                             closestGridY = dMidY
+                                                                             bestSnappedY = gridLineY - layer.height / 2f
+                                                                         }
+                                                                     }
+                                                                     if (closestGridY < snapThreshold) {
+                                                                         tempFinalY = bestSnappedY
+                                                                         locSnapHorizontalLine = bestSnappedY
+                                                                         locSnapIndicatorMsg = if (locSnapVerticalLine != null) "Snapped to Grid Intersection" else "Snapped to Grid Y"
+                                                                     }
+                                                                 }
+
+                                                                 // 2. Center Snapping && Axis Snapping && Sides Snapping
+                                                                 if (!activeGridEnabled) {
+                                                                     val canvasMinX = 0f
+                                                                     val canvasMaxX = canvasW
+                                                                     val canvasMinY = 0f
+                                                                     val canvasMaxY = canvasH
+                                                                     val canvasCenterX = canvasW / 2f
+                                                                     val canvasCenterY = canvasH / 2f
+
+                                                                     val objCenterX = tempFinalX + layer.width / 2f
+                                                                     val objCenterY = tempFinalY + layer.height / 2f
+
+                                                                     var bestSnappedX = tempFinalX
+                                                                     var closestXDist = Float.MAX_VALUE
+
+                                                                     val dMidX = Math.abs(objCenterX - canvasCenterX)
+                                                                     if (dMidX < snapThreshold && dMidX < closestXDist) {
+                                                                         closestXDist = dMidX
+                                                                         bestSnappedX = canvasCenterX - layer.width / 2f
+                                                                         matchedXVal = canvasCenterX
+                                                                         matchedXLabel = "Canvas Center"
+                                                                     }
+                                                                     val dLeft = Math.abs(tempFinalX - canvasMinX)
+                                                                     if (dLeft < snapThreshold && dLeft < closestXDist) {
+                                                                         closestXDist = dLeft
+                                                                         bestSnappedX = canvasMinX
+                                                                         matchedXVal = canvasMinX
+                                                                         matchedXLabel = "Left Edge"
+                                                                     }
+                                                                     val dRight = Math.abs((tempFinalX + layer.width) - canvasMaxX)
+                                                                     if (dRight < snapThreshold && dRight < closestXDist) {
+                                                                         closestXDist = dRight
+                                                                         bestSnappedX = canvasMaxX - layer.width
+                                                                         matchedXVal = canvasMaxX
+                                                                         matchedXLabel = "Right Edge"
+                                                                     }
+
+                                                                     if (closestXDist < snapThreshold) {
+                                                                         tempFinalX = bestSnappedX
+                                                                         locSnapVerticalLine = matchedXVal
+                                                                         locSnapIndicatorMsg = "Snapped to $matchedXLabel"
+                                                                     }
+
+                                                                     var bestSnappedY = tempFinalY
+                                                                     var closestYDist = Float.MAX_VALUE
+
+                                                                     val dMidY = Math.abs(objCenterY - canvasCenterY)
+                                                                     if (dMidY < snapThreshold && dMidY < closestYDist) {
+                                                                         closestYDist = dMidY
+                                                                         bestSnappedY = canvasCenterY - layer.height / 2f
+                                                                         matchedYVal = canvasCenterY
+                                                                         matchedYLabel = "Canvas Center"
+                                                                     }
+                                                                     val dTop = Math.abs(tempFinalY - canvasMinY)
+                                                                     if (dTop < snapThreshold && dTop < closestYDist) {
+                                                                         closestYDist = dTop
+                                                                         bestSnappedY = canvasMinY
+                                                                         matchedYVal = canvasMinY
+                                                                         matchedYLabel = "Top Edge"
+                                                                     }
+                                                                     val dBot = Math.abs((tempFinalY + layer.height) - canvasMaxY)
+                                                                     if (dBot < snapThreshold && dBot < closestYDist) {
+                                                                         closestYDist = dBot
+                                                                         bestSnappedY = canvasMaxY - layer.height
+                                                                         matchedYVal = canvasMaxY
+                                                                         matchedYLabel = "Bottom Edge"
+                                                                     }
+
+                                                                     if (closestYDist < snapThreshold) {
+                                                                         tempFinalY = bestSnappedY
+                                                                         locSnapHorizontalLine = matchedYVal
+                                                                         if (matchedXVal != null) {
+                                                                             locSnapIndicatorMsg = "Snapped to Intersection ($matchedXLabel & $matchedYLabel)"
+                                                                         } else {
+                                                                             locSnapIndicatorMsg = "Snapped to $matchedYLabel"
+                                                                         }
+                                                                     }
+                                                                 }
+
+                                                                 // 3. Ruler Snapping on proximity
+                                                                 if (activeRulerEnabled && activeSnapToRuler) {
+                                                                     val angleRad = (activeRulerAngle * Math.PI / 180.0)
+                                                                     val dX: Float
+                                                                     val dY: Float
+                                                                     val aX: Float
+                                                                     val aY: Float
+                                                                     if (activeRulerOrientation == "Horizontal") {
+                                                                         dX = Math.cos(angleRad).toFloat()
+                                                                         dY = Math.sin(angleRad).toFloat()
+                                                                         aX = 0f
+                                                                         aY = activeRulerPosition
+                                                                     } else {
+                                                                         dX = -Math.sin(angleRad).toFloat()
+                                                                         dY = Math.cos(angleRad).toFloat()
+                                                                         aX = activeRulerPosition
+                                                                         aY = 0f
+                                                                     }
+
+                                                                     val nX = -dY
+                                                                     val nY = dX
+
+                                                                     val lCenterX = tempFinalX + layer.width / 2f
+                                                                     val lCenterY = tempFinalY + layer.height / 2f
+
+                                                                     val distToCenter = Math.abs((lCenterX - aX) * nX + (lCenterY - aY) * nY)
+                                                                     val distToTopLeft = Math.abs((tempFinalX - aX) * nX + (tempFinalY - aY) * nY)
+                                                                     val distToBotRight = Math.abs(((tempFinalX + layer.width) - aX) * nX + ((tempFinalY + layer.height) - aY) * nY)
+
+                                                                     val proxThreshold = 30f
+                                                                     var didSnapRuler = false
+                                                                     if (distToCenter < proxThreshold) {
+                                                                         val tCent = (lCenterX - aX) * dX + (lCenterY - aY) * dY
+                                                                         val snappedCenterX = aX + tCent * dX
+                                                                         val snappedCenterY = aY + tCent * dY
+                                                                         tempFinalX += (snappedCenterX - lCenterX)
+                                                                         tempFinalY += (snappedCenterY - lCenterY)
+                                                                         didSnapRuler = true
+                                                                     } else if (distToTopLeft < proxThreshold) {
+                                                                         val tTL = (tempFinalX - aX) * dX + (tempFinalY - aY) * dY
+                                                                         val snappedTLX = aX + tTL * dX
+                                                                         val snappedTLY = aY + tTL * dY
+                                                                         tempFinalX += (snappedTLX - tempFinalX)
+                                                                         tempFinalY += (snappedTLY - tempFinalY)
+                                                                         didSnapRuler = true
+                                                                     } else if (distToBotRight < proxThreshold) {
+                                                                         val tBR = ((tempFinalX + layer.width) - aX) * dX + ((tempFinalY + layer.height) - aY) * dY
+                                                                         val snappedBRX = aX + tBR * dX
+                                                                         val snappedBRY = aY + tBR * dY
+                                                                         tempFinalX += (snappedBRX - (tempFinalX + layer.width))
+                                                                         tempFinalY += (snappedBRY - (tempFinalY + layer.height))
+                                                                         didSnapRuler = true
+                                                                     }
+
+                                                                     if (didSnapRuler) {
+                                                                         locSnapIndicatorMsg = "Snapped to Ruler"
+                                                                         if (activeRulerOrientation == "Horizontal") {
+                                                                             locSnapHorizontalLine = activeRulerPosition
+                                                                             locSnapVerticalLine = null
+                                                                         } else {
+                                                                             locSnapVerticalLine = activeRulerPosition
+                                                                             locSnapHorizontalLine = null
+                                                                         }
+                                                                     }
+                                                                 }
+
+                                                                 // Overwrite shadowed local delta deltas with correct snapped values
+                                                                 localDragX = tempFinalX - layer.positionX
+                                                                 localDragY = tempFinalY - layer.positionY
+
+                                                                 // Shadow original ruler snapping block variables so it is bypassed
+                                                                 val rulerEnabled = false
+                                                                 val snapToRuler = false
+
+                                                                 // Define the real var finalX using the snapped localDragX offset
+                                                                 var finalX = layer.positionX + localDragX
                                                                 var finalY = layer.positionY + localDragY
                                                                 if (rulerEnabled && snapToRuler) {
                                                                     val angleRad = (rulerAngle * Math.PI / 180.0)
@@ -1638,6 +1897,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                     finalX += (snappedCenterX - lCenterX)
                                                                     finalY += (snappedCenterY - lCenterY)
                                                                 }
+                                                                snapVerticalLine = locSnapVerticalLine
+                                                                snapHorizontalLine = locSnapHorizontalLine
+                                                                snapIndicatorMsg = locSnapIndicatorMsg
                                                                 layer.copy(
                                                                     positionX = finalX,
                                                                     positionY = finalY,
@@ -1653,6 +1915,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     } while (event.changes.any { it.pressed })
 
                                     // Gesture over: finalize actions
+                                    snapVerticalLine = null
+                                    snapHorizontalLine = null
+                                    snapIndicatorMsg = null
                                     if (!isTransforming) {
                                         activeBezierPointIndex = -1
                                         dragMode = null
@@ -5359,6 +5624,8 @@ fun findStarPath(layer: StudioLayer): Path {
 fun TopControlShelf(
     activeTool: String,
     onToolChange: (String) -> Unit,
+    isLeftToolbarExpanded: Boolean,
+    onToggleLeftToolbar: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     canUndo: Boolean,
@@ -5380,7 +5647,7 @@ fun TopControlShelf(
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center
     ) {
-        // Left Area: Back Button, Divider, and UNDO/REDO at the front!
+        // Left Area: Back Button, Collapse/Expand Button, Divider, and UNDO/REDO!
         Row(
             modifier = Modifier.align(Alignment.CenterStart),
             verticalAlignment = Alignment.CenterVertically,
@@ -5397,6 +5664,23 @@ fun TopControlShelf(
                     modifier = Modifier.size(18.dp)
                 )
             }
+
+            IconButton(
+                onClick = onToggleLeftToolbar,
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (!isLeftToolbarExpanded) IndustrialAmber.copy(0.18f) else Color.Transparent)
+                    .border(1.dp, if (!isLeftToolbarExpanded) IndustrialAmber else Color.Transparent, RoundedCornerShape(6.dp))
+            ) {
+                Icon(
+                    imageVector = if (isLeftToolbarExpanded) Icons.Default.MenuOpen else Icons.Default.Menu,
+                    contentDescription = if (isLeftToolbarExpanded) "Collapse left toolbar" else "Expand left toolbar",
+                    tint = if (!isLeftToolbarExpanded) IndustrialAmber else TextPrimary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
             Box(
                 modifier = Modifier
                     .width(1.dp)
@@ -8826,8 +9110,8 @@ fun EffectsGalleryOverlay(
             color = SlatePanel,
             border = BorderStroke(1.5.dp, HighslateOutline),
             modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .fillMaxHeight(0.9f)
+                .fillMaxWidth(0.98f)
+                .fillMaxHeight(0.88f)
         ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     // Header Bar
@@ -8867,197 +9151,204 @@ fun EffectsGalleryOverlay(
                         }
                     }
 
-                    // Work Area (Search + Tab side + main gallery)
-                    Row(modifier = Modifier.weight(1f)) {
-                        // Left sidebar: Categories
-                        Column(
+                    // Work Area (Responsive single-column layout)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        // Search bar (takes full width)
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
                             modifier = Modifier
-                                .width(180.dp)
-                                .fillMaxHeight()
-                                .background(Color(0xFF131317))
-                                .border(BorderStroke(0.5.dp, HighslateOutline))
-                                .padding(vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = "CATEGORIES",
-                                style = Typography.labelSmall,
-                                color = TextSecondary,
-                                fontSize = 9.sp,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                                fontWeight = FontWeight.Bold
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, "Search", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                            },
+                            placeholder = {
+                                Text("Search 40+ native Photoshop effects...", style = Typography.labelSmall, color = TextSecondary)
+                            },
+                            singleLine = true,
+                            textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = IndustrialAmber,
+                                unfocusedBorderColor = HighslateOutline,
+                                cursorColor = IndustrialAmber
                             )
-                            categories.forEach { cat ->
+                        )
+
+                        Spacer(Modifier.height(10.dp))
+
+                        // Category Selection: Horizontal chips list
+                        androidx.compose.foundation.lazy.LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            items(categories.size) { index ->
+                                val cat = categories[index]
                                 val isSelected = cat == selectedCategory
-                                Row(
+                                Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (isSelected) IndustrialAmber else Color(0xFF1E1E24))
+                                        .border(
+                                            BorderStroke(
+                                                1.dp,
+                                                if (isSelected) IndustrialAmber else HighslateOutline
+                                            ),
+                                            RoundedCornerShape(12.dp)
+                                        )
                                         .clickable { selectedCategory = cat }
-                                        .background(if (isSelected) IndustrialAmber.copy(0.12f) else Color.Transparent)
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = when (cat) {
-                                            "Layer Styles (fx)" -> Icons.Default.Layers
-                                            "Core Filters" -> Icons.Default.Brush
-                                            "Filter Gallery" -> Icons.Default.Palette
-                                            else -> Icons.Default.Bolt
-                                        },
-                                        contentDescription = cat,
-                                        tint = if (isSelected) IndustrialAmber else TextSecondary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        text = cat,
-                                        style = Typography.labelSmall,
-                                        color = if (isSelected) IndustrialAmber else TextSecondary,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = when (cat) {
+                                                "Layer Styles (fx)" -> Icons.Default.Layers
+                                                "Core Filters" -> Icons.Default.Brush
+                                                "Filter Gallery" -> Icons.Default.Palette
+                                                else -> Icons.Default.Bolt
+                                            },
+                                            contentDescription = cat,
+                                            tint = if (isSelected) DarkOnyx else TextSecondary,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            text = cat,
+                                            style = Typography.labelSmall,
+                                            color = if (isSelected) DarkOnyx else TextSecondary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
                                 }
                             }
                         }
 
-                        // Right side list containing the search and list
-                        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                            // Search bar
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp),
-                                leadingIcon = {
-                                    Icon(Icons.Default.Search, "Search", tint = TextSecondary, modifier = Modifier.size(16.dp))
-                                },
-                                placeholder = {
-                                    Text("Search 40+ native Photoshop effects...", style = Typography.labelSmall, color = TextSecondary)
-                                },
-                                singleLine = true,
-                                textStyle = Typography.labelSmall.copy(color = TextPrimary),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = IndustrialAmber,
-                                    unfocusedBorderColor = HighslateOutline,
-                                    cursorColor = IndustrialAmber
+                        Spacer(Modifier.height(10.dp))
+
+                        // List of effects
+                        val rawList = PhotoshopEffectTemplates.ALL_TYPES_BY_CATEGORY[selectedCategory] ?: emptyList()
+                        val sortedAndFiltered = rawList.map { effType ->
+                            PhotoshopEffectTemplates.create(effectType = effType) as StudioEffect.PhotoshopEffect
+                        }.filter {
+                            searchQuery.isBlank() || it.name.contains(searchQuery, ignoreCase = true) || it.effectType.contains(searchQuery, ignoreCase = true)
+                        }
+
+                        if (sortedAndFiltered.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No matching effects found.\nTry searching another keyword.",
+                                    style = Typography.labelSmall,
+                                    color = TextSecondary,
+                                    textAlign = TextAlign.Center
                                 )
-                            )
-
-                            Spacer(Modifier.height(12.dp))
-
-                            // List of effects
-                            val rawList = PhotoshopEffectTemplates.ALL_TYPES_BY_CATEGORY[selectedCategory] ?: emptyList()
-                            val sortedAndFiltered = rawList.map { effType ->
-                                PhotoshopEffectTemplates.create(effectType = effType) as StudioEffect.PhotoshopEffect
-                            }.filter {
-                                searchQuery.isBlank() || it.name.contains(searchQuery, ignoreCase = true) || it.effectType.contains(searchQuery, ignoreCase = true)
                             }
-
-                            if (sortedAndFiltered.isEmpty()) {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "No matching effects found.\nTry searching another keyword.",
-                                        style = Typography.labelSmall,
-                                        color = TextSecondary,
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            } else {
-                                LazyColumn(
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    itemsIndexed(sortedAndFiltered) { _, eff ->
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(MidSlate)
-                                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                                                .clickable {
-                                                    onAddEffect(eff)
-                                                    onClose()
-                                                }
-                                                .padding(12.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(modifier = Modifier.weight(1f)) {
-                                                // Decorative thumbnail container/icon
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(36.dp)
-                                                        .background(Color(0xFF131317), RoundedCornerShape(6.dp))
-                                                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(6.dp)),
-                                                    contentAlignment = Alignment.Center
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                itemsIndexed(sortedAndFiltered) { _, eff ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MidSlate)
+                                            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                onAddEffect(eff)
+                                                onClose()
+                                            }
+                                            .padding(12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(modifier = Modifier.weight(1f)) {
+                                            // Decorative thumbnail container/icon
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(36.dp)
+                                                    .background(Color(0xFF131317), RoundedCornerShape(6.dp))
+                                                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(6.dp)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = if (eff.category.contains("Styles")) "fx" else "F",
+                                                    style = Typography.labelSmall,
+                                                    color = IndustrialAmber,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            Spacer(Modifier.width(12.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = eff.name,
+                                                    style = Typography.bodyMedium,
+                                                    color = TextPrimary,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = getEffectDescription(eff.effectType),
+                                                    style = Typography.labelSmall,
+                                                    color = TextSecondary,
+                                                    fontSize = 10.sp
+                                                )
+                                                Spacer(Modifier.height(4.dp))
+                                                // Display sliders parameters as light grey pills
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                    modifier = Modifier.fillMaxWidth()
                                                 ) {
-                                                    Text(
-                                                        text = if (eff.category.contains("Styles")) "fx" else "F",
-                                                        style = Typography.labelSmall,
-                                                        color = IndustrialAmber,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                }
-                                                Spacer(Modifier.width(12.dp))
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        text = eff.name,
-                                                        style = Typography.bodyMedium,
-                                                        color = TextPrimary,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
-                                                    Text(
-                                                        text = getEffectDescription(eff.effectType),
-                                                        style = Typography.labelSmall,
-                                                        color = TextSecondary,
-                                                        fontSize = 10.sp
-                                                    )
-                                                    Spacer(Modifier.height(4.dp))
-                                                    // Display sliders parameters as light grey pills
-                                                    Row(
-                                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    ) {
-                                                        eff.parameters.keys.forEach { term ->
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .background(Color(0xFF131317), RoundedCornerShape(3.dp))
-                                                                    .padding(horizontal = 4.dp, vertical = 1.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = term,
-                                                                    style = Typography.labelSmall,
-                                                                    fontSize = 8.sp,
-                                                                    color = TextSecondary
-                                                                )
-                                                            }
+                                                    eff.parameters.keys.forEach { term ->
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .background(Color(0xFF131317), RoundedCornerShape(3.dp))
+                                                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = term,
+                                                                style = Typography.labelSmall,
+                                                                fontSize = 8.sp,
+                                                                color = TextSecondary
+                                                            )
                                                         }
                                                     }
                                                 }
                                             }
-                                            Spacer(Modifier.width(8.dp))
-                                            Button(
-                                                onClick = {
-                                                    onAddEffect(eff)
-                                                    onClose()
-                                                },
-                                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
-                                                border = BorderStroke(0.5.dp, IndustrialAmber),
-                                                shape = RoundedCornerShape(4.dp),
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                                modifier = Modifier.height(26.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Apply",
-                                                    style = Typography.labelSmall,
-                                                    fontSize = 9.sp,
-                                                    color = IndustrialAmber,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        Button(
+                                            onClick = {
+                                                onAddEffect(eff)
+                                                onClose()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                            border = BorderStroke(0.5.dp, IndustrialAmber),
+                                            shape = RoundedCornerShape(4.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(26.dp)
+                                        ) {
+                                            Text(
+                                                text = "Apply",
+                                                style = Typography.labelSmall,
+                                                fontSize = 9.sp,
+                                                color = IndustrialAmber,
+                                                fontWeight = FontWeight.Bold
+                                            )
                                         }
                                     }
                                 }
