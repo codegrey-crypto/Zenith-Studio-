@@ -932,10 +932,16 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val dashEffect8 = remember { PathEffect.dashPathEffect(floatArrayOf(8f, 8f)) }
     val dashEffect12 = remember { PathEffect.dashPathEffect(floatArrayOf(12f, 8f)) }
 
+    val displayMetrics = androidx.compose.ui.platform.LocalContext.current.resources.displayMetrics
+    val screenWidth = displayMetrics.widthPixels.toFloat()
+    val screenHeight = displayMetrics.heightPixels.toFloat()
+    val deviceAspect = if (screenWidth > 0f) screenHeight / screenWidth else 1350f / 1080f
+    val defaultHeightStr = (1080f * deviceAspect).toInt().toString()
+
     // Canvas size initialization state variables
     var isProjectInitialized by remember { mutableStateOf(false) }
     var canvasWidthInput by remember { mutableStateOf("1080") }
-    var canvasHeightInput by remember { mutableStateOf("1350") }
+    var canvasHeightInput by remember { mutableStateOf(defaultHeightStr) }
     var selectedPresetIndex by remember { mutableStateOf(0) }
     
     var showExportSettingsDialog by remember { mutableStateOf(false) }
@@ -943,7 +949,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var exportIsCmyk by remember { mutableStateOf(false) }
     
     var canvasWidth by remember { mutableStateOf(1080f) }
-    var canvasHeight by remember { mutableStateOf(1350f) }
+    var canvasHeight by remember { mutableStateOf(1080f * deviceAspect) }
 
     // Background Auto-Save Side-Effect
     LaunchedEffect(layers, canvasWidth, canvasHeight, projectName, projectId) {
@@ -1036,13 +1042,18 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             onHeightChange = { canvasHeightInput = it },
             onPresetSelect = { index ->
                 selectedPresetIndex = index
+                val displayMetrics = context.resources.displayMetrics
+                val screenW = displayMetrics.widthPixels
+                val screenH = displayMetrics.heightPixels
+                val aspect = if (screenW > 0) screenH.toFloat() / screenW.toFloat() else 1350f / 1080f
                 when (index) {
-                    0 -> { canvasWidthInput = "1080"; canvasHeightInput = "1350" } // Instagram Portrait
-                    1 -> { canvasWidthInput = "1080"; canvasHeightInput = "1920" } // Instagram Story
-                    2 -> { canvasWidthInput = "1080"; canvasHeightInput = "1080" } // Square Post
-                    3 -> { canvasWidthInput = "1920"; canvasHeightInput = "1080" } // FHD Landscape
-                    4 -> { canvasWidthInput = "1200"; canvasHeightInput = "1600" } // Modern Poster
-                    5 -> { /* Custom size - let user adjust manually */ }
+                    0 -> { canvasWidthInput = "1080"; canvasHeightInput = (1080f * aspect).toInt().toString() } // Perfect Fit (Device Screen)
+                    1 -> { canvasWidthInput = "1080"; canvasHeightInput = "1350" } // Instagram Portrait
+                    2 -> { canvasWidthInput = "1080"; canvasHeightInput = "1920" } // Instagram Story
+                    3 -> { canvasWidthInput = "1080"; canvasHeightInput = "1080" } // Square Post
+                    4 -> { canvasWidthInput = "1920"; canvasHeightInput = "1080" } // FHD Landscape
+                    5 -> { canvasWidthInput = "1200"; canvasHeightInput = "1600" } // Modern Poster
+                    6 -> { /* Custom size - let user adjust manually */ }
                 }
             },
             onInitialize = {
@@ -5497,19 +5508,18 @@ fun LeftsideToolDock(
     activeTool: String,
     onSelectTool: (String) -> Unit
 ) {
-    Column(
+    androidx.compose.foundation.lazy.LazyColumn(
         modifier = Modifier
             .width(64.dp)
             .fillMaxHeight()
             .padding(start = 8.dp, top = 8.dp, bottom = 8.dp)
             .background(SlatePanel, RoundedCornerShape(16.dp))
             .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
-            .verticalScroll(rememberScrollState())
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        listOf(
+        val tools = listOf(
             Triple("Brush", Icons.Default.Brush, "Stylus drawing mode"),
             Triple("Pen", Icons.Default.Gesture, "Manual Bézier Path Tool"),
             Triple("Move", Icons.Default.OpenWith, "Move & transform"),
@@ -5518,7 +5528,12 @@ fun LeftsideToolDock(
             Triple("Shapes", Icons.Default.Category, "Spawn circles/squares"),
             Triple("Text", Icons.Default.TextFields, "Add title typography"),
             Triple("Visuals", Icons.Default.Palette, "Color modifiers")
-        ).forEach { (toolName, icon, description) ->
+        )
+        items(
+            count = tools.size,
+            key = { index -> tools[index].first }
+        ) { index ->
+            val (toolName, icon, description) = tools[index]
             val isActive = activeTool == toolName
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -7660,7 +7675,37 @@ fun PresetSilhouette(index: Int, isSelected: Boolean) {
             )
             
             when (index) {
-                0 -> { // Instagram Portrait (4:5)
+                0 -> { // Perfect Fit (Device Screen) - Draw a phone outline
+                    val w = 11.dp.toPx()
+                    val h = 23.dp.toPx()
+                    val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
+                    drawRect(
+                        brush = fillBrush,
+                        topLeft = topLeft,
+                        size = Size(w, h)
+                    )
+                    drawRect(
+                        color = color,
+                        topLeft = topLeft,
+                        size = Size(w, h),
+                        style = stroke
+                    )
+                    // Tiny notch at top
+                    drawLine(
+                        color = color,
+                        start = Offset(size.width / 2 - 2.dp.toPx(), topLeft.y + 1.5.dp.toPx()),
+                        end = Offset(size.width / 2 + 2.dp.toPx(), topLeft.y + 1.5.dp.toPx()),
+                        strokeWidth = 1f
+                    )
+                    // Home indicator at bottom
+                    drawLine(
+                        color = color,
+                        start = Offset(size.width / 2 - 3.dp.toPx(), topLeft.y + h - 1.5.dp.toPx()),
+                        end = Offset(size.width / 2 + 3.dp.toPx(), topLeft.y + h - 1.5.dp.toPx()),
+                        strokeWidth = 1f
+                    )
+                }
+                1 -> { // Instagram Portrait (4:5)
                     val w = 16.dp.toPx()
                     val h = 20.dp.toPx()
                     val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
@@ -7676,7 +7721,7 @@ fun PresetSilhouette(index: Int, isSelected: Boolean) {
                         style = stroke
                     )
                 }
-                1 -> { // Instagram Story (9:16)
+                2 -> { // Instagram Story (9:16)
                     val w = 12.dp.toPx()
                     val h = 21.33.dp.toPx()
                     val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
@@ -7692,7 +7737,7 @@ fun PresetSilhouette(index: Int, isSelected: Boolean) {
                         style = stroke
                     )
                 }
-                2 -> { // Square (1:1)
+                3 -> { // Square (1:1)
                     val w = 18.dp.toPx()
                     val h = 18.dp.toPx()
                     val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
@@ -7708,7 +7753,7 @@ fun PresetSilhouette(index: Int, isSelected: Boolean) {
                         style = stroke
                     )
                 }
-                3 -> { // FHD Landscape (16:9)
+                4 -> { // FHD Landscape (16:9)
                     val w = 24.dp.toPx()
                     val h = 13.5.dp.toPx()
                     val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
@@ -7724,7 +7769,7 @@ fun PresetSilhouette(index: Int, isSelected: Boolean) {
                         style = stroke
                     )
                 }
-                4 -> { // Modern Poster (3:4)
+                5 -> { // Modern Poster (3:4)
                     val w = 16.dp.toPx()
                     val h = 21.33.dp.toPx()
                     val topLeft = Offset((size.width - w) / 2, (size.height - h) / 2)
@@ -8035,8 +8080,14 @@ fun CanvasSetupScreen(
                             )
                         }
 
+                        val displayMetrics = androidx.compose.ui.platform.LocalContext.current.resources.displayMetrics
+                        val screenW = displayMetrics.widthPixels.toFloat()
+                        val screenH = displayMetrics.heightPixels.toFloat()
+                        val deviceAspect = if (screenW > 0) screenH / screenW else 1350f / 1080f
+
                         // Presets Grid Layout - 2 columns
                         val presets = listOf(
+                            Triple("Perfect Fit (Device Screen)", "${screenW.toInt()} x ${screenH.toInt()} px", "Tailored to your exact screen size"),
                             Triple("Instagram Portrait (4:5)", "1080 x 1350 px", "Recommended for portrait content"),
                             Triple("Instagram Story (9:16)", "1080 x 1920 px", "Full immersive vertical layout"),
                             Triple("Square Grid (1:1)", "1080 x 1080 px", "Standard social grid post"),
@@ -8076,11 +8127,12 @@ fun CanvasSetupScreen(
                                                     .clickable {
                                                         onPresetSelect(index)
                                                         val nextRatio = when (index) {
-                                                            0 -> 1080f / 1350f
-                                                            1 -> 1080f / 1920f
-                                                            2 -> 1f
-                                                            3 -> 1920f / 1080f
-                                                            4 -> 1200f / 1600f
+                                                            0 -> 1f / deviceAspect
+                                                            1 -> 1080f / 1350f
+                                                            2 -> 1080f / 1920f
+                                                            3 -> 1f
+                                                            4 -> 1920f / 1080f
+                                                            5 -> 1200f / 1600f
                                                             else -> {
                                                                 val wFloat = canvasWidthInput.toFloatOrNull() ?: 1080f
                                                                 val hFloat = canvasHeightInput.toFloatOrNull() ?: 1350f
@@ -9684,6 +9736,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPreviewPathWith
     }
 }
 
+private val adjustedBitmapCache = android.util.LruCache<String, android.graphics.Bitmap>(16)
+
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLayersLocal(
     layer: com.example.studio.model.StudioLayer,
     layerOpacity: Float,
@@ -9809,7 +9863,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                  it.effectType in listOf("CameraRaw", "ColorGrading", "Solarize", "Emboss", "FindEdges", "ColorHalftone", "Sketch", "Mosaic", "Twirl", "Spherize", "GaussianBlur", "SmartSharpen", "UnsharpMask", "AddNoise")) 
             }
 
-        val croppedBmp = if (hasAdj && backdropBitmap != null) {
+        val adjustedBmp = if (hasAdj && backdropBitmap != null) {
             val rx = globalX
             val ry = globalY
             val rw = layer.width
@@ -9820,17 +9874,29 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             val y = ry.toInt().coerceIn(0, backdropH - 1)
             val w = rw.toInt().coerceAtLeast(1).coerceAtMost(backdropW - x)
             val h = rh.toInt().coerceAtLeast(1).coerceAtMost(backdropH - y)
-            if (w > 0 && h > 0) {
-                try {
-                    android.graphics.Bitmap.createBitmap(backdropBitmap, x, y, w, h)
-                } catch (e: Exception) {
-                    null
+            
+            val cacheKey = "adj_${layer.id}_${w}_${h}_${x}_${y}_${backdropBitmap.generationId}_${activeList.hashCode()}"
+            val cached = adjustedBitmapCache.get(cacheKey)
+            if (cached != null) {
+                cached
+            } else {
+                val croppedBmp = if (w > 0 && h > 0) {
+                    try {
+                        android.graphics.Bitmap.createBitmap(backdropBitmap, x, y, w, h)
+                    } catch (e: Exception) {
+                        null
+                    }
+                } else null
+                
+                val filtered = if (croppedBmp != null) {
+                    globalAppContext?.let { applyGPUImageFilters(it, croppedBmp, activeList) } ?: croppedBmp
+                } else null
+                
+                if (filtered != null) {
+                    adjustedBitmapCache.put(cacheKey, filtered)
                 }
-            } else null
-        } else null
-
-        val adjustedBmp = if (croppedBmp != null) {
-            globalAppContext?.let { applyGPUImageFilters(it, croppedBmp, activeList) } ?: croppedBmp
+                filtered
+            }
         } else null
 
         val paintToUse = if (fillStyle is androidx.compose.ui.graphics.drawscope.Fill && adjustedBmp != null) {
