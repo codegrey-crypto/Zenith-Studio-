@@ -234,6 +234,33 @@ object PhotoshopEffectTemplates {
                     "Preset" to EffectParameter("Preset", 0f, 0f, 10f)
                 )
             )
+            "GlassMorphism" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Glass Morphism",
+                category = "Layer Styles (fx)",
+                effectType = effectType,
+                parameters = mapOf(
+                    "FractalIntensity" to EffectParameter("Fractal Intensity", 5f, 0f, 10f),
+                    "FractalType" to EffectParameter("Fractal Type (Shattered)", 0f, 0f, 1f),
+                    "RefractionIndex" to EffectParameter("Refraction Index", 3f, -10f, 10f),
+                    "EdgeTorsion" to EffectParameter("Edge Torsion", 2f, 0f, 10f),
+                    "SurfaceTension" to EffectParameter("Surface Tension", 4f, 0f, 10f),
+                    "Radius" to EffectParameter("Glass Thickness (Blur)", 20f, 0f, 100f, "px")
+                )
+            )
+            "ReededGlass" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Reeded Glass",
+                category = "Layer Styles (fx)",
+                effectType = effectType,
+                parameters = mapOf(
+                    "LineDensity" to EffectParameter("Line Density", 33f, 5f, 100f),
+                    "RefractionStrength" to EffectParameter("Refraction Strength", 8f, 0f, 50f),
+                    "BlurMix" to EffectParameter("Blur Mix", 12f, 0f, 100f),
+                    "SpecularHighlight" to EffectParameter("Specular Highlight", 5f, 0f, 10f),
+                    "Rotation" to EffectParameter("Rotation (Horiz=1)", 0f, 0f, 1f)
+                )
+            )
             "DropShadow" -> StudioEffect.PhotoshopEffect(
                 id = id,
                 name = "Drop Shadow",
@@ -746,8 +773,17 @@ object PhotoshopEffectTemplates {
                 parameters = mapOf(
                     "Exposure" to EffectParameter("Exposure", 0f, -5f, 5f, "ev"),
                     "Contrast" to EffectParameter("Contrast", 0f, -100f, 100f, "%"),
+                    "Highlights" to EffectParameter("Highlights", 0f, -100f, 100f, "%"),
+                    "Shadows" to EffectParameter("Shadows", 0f, -100f, 100f, "%"),
+                    "Whites" to EffectParameter("Whites", 0f, -100f, 100f, "%"),
+                    "Blacks" to EffectParameter("Blacks", 0f, -100f, 100f, "%"),
+                    "Temp" to EffectParameter("Temp", 0f, -100f, 100f, "k"),
+                    "Tint" to EffectParameter("Tint", 0f, -100f, 100f, "%"),
+                    "Vibrance" to EffectParameter("Vibrance", 0f, -100f, 100f, "%"),
+                    "Saturation" to EffectParameter("Saturation", 0f, -100f, 100f, "%"),
+                    "Texture" to EffectParameter("Texture", 0f, -100f, 100f, "%"),
                     "Clarity" to EffectParameter("Clarity", 0f, -100f, 100f, "%"),
-                    "Vibrance" to EffectParameter("Vibrance", 0f, -100f, 100f, "%")
+                    "Dehaze" to EffectParameter("Dehaze", 0f, -100f, 100f, "%")
                 )
             )
             "NeuralFilters" -> StudioEffect.PhotoshopEffect(
@@ -841,7 +877,7 @@ object PhotoshopEffectTemplates {
         "Layer Styles (fx)" to listOf(
             "DropShadow", "InnerShadow", "OuterGlow", "InnerGlow",
             "BevelEmboss", "Satin", "ColorOverlay", "GradientOverlay",
-            "PatternOverlay", "Stroke"
+            "PatternOverlay", "Stroke", "GlassMorphism", "ReededGlass"
         ),
         "Core Filters" to listOf(
             "GaussianBlur", "MotionBlur", "RadialBlur", "LensBlur",

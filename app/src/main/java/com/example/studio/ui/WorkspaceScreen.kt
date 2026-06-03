@@ -17,6 +17,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.window.core.layout.WindowWidthSizeClass
+import androidx.window.core.layout.WindowHeightSizeClass
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,8 +56,13 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Paint
 import com.example.studio.model.*
 import com.example.ui.theme.*
 import java.util.UUID
@@ -107,6 +115,218 @@ fun interpolateMultiColor(colors: List<androidx.compose.ui.graphics.Color>, frac
     )
 }
 
+val processedImageBitmapCache = java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
+var globalAppContext: android.content.Context? = null
+
+data class AnchorPoint(
+    val position: Offset,
+    val handleIn: Offset = position,
+    val handleOut: Offset = position
+)
+
+fun List<Offset>.toAnchorPoints(): List<AnchorPoint> {
+    val results = mutableListOf<AnchorPoint>()
+    var i = 0
+    while (i < this.size) {
+        val pos = this[i]
+        val hIn = this.getOrNull(i + 1) ?: pos
+        val hOut = this.getOrNull(i + 2) ?: pos
+        results.add(AnchorPoint(pos, hIn, hOut))
+        i += 3
+    }
+    return results
+}
+
+const val LIGHTROOM_VERTEX_SHADER = """
+attribute vec4 position;
+attribute vec4 inputTextureCoordinate;
+
+varying vec2 textureCoordinate;
+
+void main() {
+    gl_Position = position;
+    textureCoordinate = inputTextureCoordinate.xy;
+}
+"""
+
+const val LIGHTROOM_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+
+uniform highp float uExposure;
+uniform highp float uContrast;
+uniform highp float uHighlights;
+uniform highp float uShadows;
+uniform highp float uWhites;
+uniform highp float uBlacks;
+uniform highp float uTemp;
+uniform highp float uTint;
+uniform highp float uVibrance;
+uniform highp float uSaturation;
+uniform highp float uClarity;
+uniform highp float uDehaze;
+
+void main() {
+    highp vec4 color = texture2D(inputImageTexture, textureCoordinate);
+    
+    // 1. Temperature & Tint (White Balance)
+    color.r += uTemp * 0.0030 + uTint * 0.0015;
+    color.g -= uTint * 0.0020;
+    color.b -= uTemp * 0.0030 - uTint * 0.0015;
+    
+    // 2. Exposure
+    color.rgb *= pow(2.0, uExposure);
+    
+    // Compute luminance
+    highp float luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+    
+    // 3. Highlights & Shadows
+    highp float highlightWeight = clamp((luma - 0.5) * 2.0, 0.0, 1.0);
+    highp float shadowWeight = clamp((0.5 - luma) * 2.0, 0.0, 1.0);
+    
+    color.rgb += color.rgb * (uHighlights * 0.004) * highlightWeight;
+    color.rgb += color.rgb * (uShadows * 0.004) * shadowWeight;
+    
+    // 4. Whites & Blacks
+    highp float whiteWeight = clamp((luma - 0.6) * 2.5, 0.0, 1.0);
+    highp float blackWeight = clamp((0.4 - luma) * 2.5, 0.0, 1.0);
+    
+    color.rgb += color.rgb * (uWhites * 0.005) * whiteWeight;
+    color.rgb += color.rgb * (uBlacks * 0.005) * blackWeight;
+    
+    // 5. Contrast
+    highp float cFactor = (uContrast + 100.0) / 100.0;
+    if (cFactor < 1.0) {
+        cFactor = mix(0.2, 1.0, cFactor);
+    } else {
+        cFactor = mix(1.0, 3.0, (cFactor - 1.0));
+    }
+    color.rgb = (color.rgb - 0.5) * cFactor + 0.5;
+    
+    // 6. Clarity (midtone contrast)
+    highp float midtoneWeight = 1.0 - clamp(abs(luma - 0.5) * 2.0, 0.0, 1.0);
+    highp float clarityFactor = (uClarity * 0.006);
+    color.rgb += (color.rgb - 0.5) * clarityFactor * midtoneWeight;
+    
+    // 7. Dehaze
+    if (uDehaze != 0.0) {
+        highp float dehazeFactor = uDehaze * 0.004;
+        color.rgb = (color.rgb - 0.2) * (1.0 + dehazeFactor) + 0.2;
+    }
+    
+    // Recompute luma
+    luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+    
+    // 8. Saturation
+    highp float satFactor = (uSaturation + 100.0) / 100.0;
+    if (satFactor < 1.0) {
+        satFactor = mix(0.0, 1.0, satFactor);
+    } else {
+        satFactor = mix(1.0, 2.5, (satFactor - 1.0) / 1.0);
+    }
+    highp vec3 desat = vec3(luma);
+    highp vec3 satColor = mix(desat, color.rgb, satFactor);
+    color.rgb = satColor;
+    
+    // 9. Vibrance
+    highp float maxSample = max(color.r, max(color.g, color.b));
+    highp float minSample = min(color.r, min(color.g, color.b));
+    highp float currentSat = maxSample - minSample;
+    highp float vibFactor = uVibrance * 0.015 * (1.0 - currentSat);
+    color.rgb = mix(color.rgb, color.rgb * (1.0 + vibFactor), clamp(vibFactor, -1.0, 1.0));
+    
+    color.rgb = clamp(color.rgb, 0.0, 1.0);
+    gl_FragColor = vec4(color.rgb, color.a);
+}
+"""
+
+class LightroomFilter(
+    var exposure: Float = 0f,
+    var contrast: Float = 0f,
+    var highlights: Float = 0f,
+    var shadows: Float = 0f,
+    var whites: Float = 0f,
+    var blacks: Float = 0f,
+    var temp: Float = 0f,
+    var tint: Float = 0f,
+    var vibrance: Float = 0f,
+    var saturation: Float = 0f,
+    var clarity: Float = 0f,
+    var dehaze: Float = 0f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(
+    LIGHTROOM_VERTEX_SHADER,
+    LIGHTROOM_FRAGMENT_SHADER
+) {
+    private var uExposureLocation: Int = -1
+    private var uContrastLocation: Int = -1
+    private var uHighlightsLocation: Int = -1
+    private var uShadowsLocation: Int = -1
+    private var uWhitesLocation: Int = -1
+    private var uBlacksLocation: Int = -1
+    private var uTempLocation: Int = -1
+    private var uTintLocation: Int = -1
+    private var uVibranceLocation: Int = -1
+    private var uSaturationLocation: Int = -1
+    private var uClarityLocation: Int = -1
+    private var uDehazeLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uExposureLocation = android.opengl.GLES20.glGetUniformLocation(program, "uExposure")
+        uContrastLocation = android.opengl.GLES20.glGetUniformLocation(program, "uContrast")
+        uHighlightsLocation = android.opengl.GLES20.glGetUniformLocation(program, "uHighlights")
+        uShadowsLocation = android.opengl.GLES20.glGetUniformLocation(program, "uShadows")
+        uWhitesLocation = android.opengl.GLES20.glGetUniformLocation(program, "uWhites")
+        uBlacksLocation = android.opengl.GLES20.glGetUniformLocation(program, "uBlacks")
+        uTempLocation = android.opengl.GLES20.glGetUniformLocation(program, "uTemp")
+        uTintLocation = android.opengl.GLES20.glGetUniformLocation(program, "uTint")
+        uVibranceLocation = android.opengl.GLES20.glGetUniformLocation(program, "uVibrance")
+        uSaturationLocation = android.opengl.GLES20.glGetUniformLocation(program, "uSaturation")
+        uClarityLocation = android.opengl.GLES20.glGetUniformLocation(program, "uClarity")
+        uDehazeLocation = android.opengl.GLES20.glGetUniformLocation(program, "uDehaze")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun updateParams(
+        exposure: Float, contrast: Float, highlights: Float, shadows: Float,
+        whites: Float, blacks: Float, temp: Float, tint: Float,
+        vibrance: Float, saturation: Float, clarity: Float, dehaze: Float
+    ) {
+        this.exposure = exposure
+        this.contrast = contrast
+        this.highlights = highlights
+        this.shadows = shadows
+        this.whites = whites
+        this.blacks = blacks
+        this.temp = temp
+        this.tint = tint
+        this.vibrance = vibrance
+        this.saturation = saturation
+        this.clarity = clarity
+        this.dehaze = dehaze
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        if (uExposureLocation != -1) setFloat(uExposureLocation, exposure)
+        if (uContrastLocation != -1) setFloat(uContrastLocation, contrast)
+        if (uHighlightsLocation != -1) setFloat(uHighlightsLocation, highlights)
+        if (uShadowsLocation != -1) setFloat(uShadowsLocation, shadows)
+        if (uWhitesLocation != -1) setFloat(uWhitesLocation, whites)
+        if (uBlacksLocation != -1) setFloat(uBlacksLocation, blacks)
+        if (uTempLocation != -1) setFloat(uTempLocation, temp)
+        if (uTintLocation != -1) setFloat(uTintLocation, tint)
+        if (uVibranceLocation != -1) setFloat(uVibranceLocation, vibrance)
+        if (uSaturationLocation != -1) setFloat(uSaturationLocation, saturation)
+        if (uClarityLocation != -1) setFloat(uClarityLocation, clarity)
+        if (uDehazeLocation != -1) setFloat(uDehazeLocation, dehaze)
+    }
+}
+
 private fun getLayerGeometryHash(layer: StudioLayer): Int {
     var result = layer.id.hashCode()
     result = 31 * result + layer.type.ordinal
@@ -129,6 +349,296 @@ private fun rotateOffset(offset: Offset, degrees: Float): Offset {
     val rx = offset.x * cos - offset.y * sin
     val ry = offset.x * sin + offset.y * cos
     return Offset(rx.toFloat(), ry.toFloat())
+}
+
+class GPUImageNoiseFilter(var noiseAmount: Float = 0.05f) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(
+    NOISE_VERTEX_SHADER,
+    NOISE_FRAGMENT_SHADER
+) {
+    private var uNoiseAmountLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uNoiseAmountLocation = android.opengl.GLES20.glGetUniformLocation(program, "uNoiseAmount")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setAmount(amount: Float) {
+        this.noiseAmount = amount
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        if (uNoiseAmountLocation != -1) setFloat(uNoiseAmountLocation, noiseAmount)
+    }
+}
+
+const val NOISE_VERTEX_SHADER = """
+attribute vec4 position;
+attribute vec4 inputTextureCoordinate;
+varying vec2 textureCoordinate;
+void main() {
+    gl_Position = position;
+    textureCoordinate = inputTextureCoordinate.xy;
+}
+"""
+
+const val NOISE_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uNoiseAmount;
+
+highp float rand(highp vec2 co) {
+    return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+    highp vec4 color = texture2D(inputImageTexture, textureCoordinate);
+    highp float noise = (rand(textureCoordinate) - 0.5) * uNoiseAmount;
+    gl_FragColor = vec4(color.rgb + vec3(noise), color.a);
+}
+"""
+
+private fun applyGPUImageFilters(
+    context: android.content.Context,
+    originalBitmap: android.graphics.Bitmap,
+    effects: List<com.example.studio.model.StudioEffect>
+): android.graphics.Bitmap {
+    val activeEffects = effects.filter { it.isEnabled }
+    if (activeEffects.isEmpty()) return originalBitmap
+
+    try {
+        val gpuImage = jp.co.cyberagent.android.gpuimage.GPUImage(context)
+        gpuImage.setImage(originalBitmap)
+
+        val filterGroup = jp.co.cyberagent.android.gpuimage.filter.GPUImageFilterGroup()
+        var hasFilters = false
+
+        for (effect in activeEffects) {
+            when (effect) {
+                is com.example.studio.model.StudioEffect.ColorBalance -> {
+                    val brightnessVal = effect.parameters["Brightness"]?.value ?: 1.0f
+                    val brightnessShift = (brightnessVal - 1.0f).coerceIn(-1.0f, 1.0f)
+                    filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageBrightnessFilter(brightnessShift))
+
+                    val hueShift = effect.parameters["HueShift"]?.value ?: 0f
+                    if (hueShift != 0f) {
+                        val hueDeg = (hueShift + 360f) % 360f
+                        filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageHueFilter(hueDeg))
+                    }
+
+                    val saturationVal = effect.parameters["Saturation"]?.value ?: 1.0f
+                    filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageSaturationFilter(saturationVal.coerceIn(0.0f, 2.0f)))
+                    hasFilters = true
+                }
+                is com.example.studio.model.StudioEffect.Invert -> {
+                    filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageColorInvertFilter())
+                    hasFilters = true
+                }
+                is com.example.studio.model.StudioEffect.Threshold -> {
+                    val threshVal = effect.parameters["Threshold"]?.value ?: 0.5f
+                    filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageLuminanceThresholdFilter(threshVal))
+                    hasFilters = true
+                }
+                is com.example.studio.model.StudioEffect.Posterize -> {
+                    val levelsVal = effect.parameters["Levels"]?.value ?: 4f
+                    filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImagePosterizeFilter(levelsVal.toInt().coerceIn(1, 256)))
+                    hasFilters = true
+                }
+                is com.example.studio.model.StudioEffect.PhotoshopEffect -> {
+                    when (effect.effectType) {
+                        "CameraRaw", "ColorGrading" -> {
+                            val exposure = effect.parameters["Exposure"]?.value ?: 0f
+                            val contrast = effect.parameters["Contrast"]?.value ?: 0f
+                            val highlights = effect.parameters["Highlights"]?.value ?: 0f
+                            val shadows = effect.parameters["Shadows"]?.value ?: 0f
+                            val whites = effect.parameters["Whites"]?.value ?: 0f
+                            val blacks = effect.parameters["Blacks"]?.value ?: 0f
+                            val temp = effect.parameters["Temp"]?.value ?: 0f
+                            val tint = effect.parameters["Tint"]?.value ?: 0f
+                            val vibrance = effect.parameters["Vibrance"]?.value ?: 0f
+                            val saturation = effect.parameters["Saturation"]?.value ?: 0f
+                            val texture = effect.parameters["Texture"]?.value ?: 0f
+                            val clarity = effect.parameters["Clarity"]?.value ?: 0f
+                            val dehaze = effect.parameters["Dehaze"]?.value ?: 0f
+
+                            val lrFilter = LightroomFilter().apply {
+                                updateParams(
+                                    exposure = exposure,
+                                    contrast = contrast,
+                                    highlights = highlights,
+                                    shadows = shadows,
+                                    whites = whites,
+                                    blacks = blacks,
+                                    temp = temp,
+                                    tint = tint,
+                                    vibrance = vibrance,
+                                    saturation = saturation,
+                                    clarity = clarity,
+                                    dehaze = dehaze
+                                )
+                            }
+                            filterGroup.addFilter(lrFilter)
+                            hasFilters = true
+
+                            if (texture != 0f) {
+                                if (texture > 0f) {
+                                    val sharpFilter = jp.co.cyberagent.android.gpuimage.filter.GPUImageSharpenFilter().apply {
+                                        setSharpness(texture / 100f * 2.0f)
+                                    }
+                                    filterGroup.addFilter(sharpFilter)
+                                } else {
+                                    val blurFilter = jp.co.cyberagent.android.gpuimage.filter.GPUImageGaussianBlurFilter().apply {
+                                        setBlurSize(-texture / 100f * 4.0f)
+                                    }
+                                    filterGroup.addFilter(blurFilter)
+                                }
+                            }
+                        }
+                        "Solarize" -> {
+                            val thresh = effect.parameters["Threshold"]?.value ?: 0.5f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageSolarizeFilter().apply {
+                                setThreshold(thresh)
+                            })
+                            hasFilters = true
+                        }
+                        "Emboss" -> {
+                            val heightVal = effect.parameters["Height"]?.value ?: 2.0f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageEmbossFilter().apply {
+                                setIntensity((heightVal / 10f).coerceIn(0.0f, 1.0f))
+                            })
+                            hasFilters = true
+                        }
+                        "FindEdges" -> {
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageSobelEdgeDetectionFilter())
+                            hasFilters = true
+                        }
+                        "ColorHalftone" -> {
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageHalftoneFilter())
+                            hasFilters = true
+                        }
+                        "Sketch" -> {
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageSketchFilter())
+                            hasFilters = true
+                        }
+                        "Mosaic" -> {
+                            val cellSize = effect.parameters["CellSize"]?.value ?: 8f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImagePixelationFilter().apply {
+                                setPixel(cellSize.coerceIn(1f, 1000f))
+                            })
+                            hasFilters = true
+                        }
+                        "Twirl" -> {
+                            val angleVal = effect.parameters["Angle"]?.value ?: 100f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageSwirlFilter().apply {
+                                setAngle(angleVal / 100f)
+                                setRadius(0.5f)
+                            })
+                            hasFilters = true
+                        }
+                        "Spherize" -> {
+                            val amt = effect.parameters["Amount"]?.value ?: 100f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageBulgeDistortionFilter().apply {
+                                setRadius(0.5f)
+                                setScale(amt / 100f * 0.5f)
+                            })
+                            hasFilters = true
+                        }
+                        "GaussianBlur" -> {
+                            val radiusVal = effect.parameters["Radius"]?.value ?: 12f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageGaussianBlurFilter().apply {
+                                setBlurSize(radiusVal / 5f)
+                            })
+                            hasFilters = true
+                        }
+                        "SmartSharpen", "UnsharpMask" -> {
+                            val amt = effect.parameters["Amount"]?.value ?: 50f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageSharpenFilter().apply {
+                                setSharpness(amt / 100f * 2.0f)
+                            })
+                            hasFilters = true
+                        }
+                        "AddNoise" -> {
+                            val amt = (effect.parameters["Amount"]?.value ?: 10f) / 100f
+                            filterGroup.addFilter(GPUImageNoiseFilter(amt))
+                            hasFilters = true
+                        }
+                    }
+                }
+                else -> {}
+            }
+        }
+
+        if (hasFilters) {
+            gpuImage.setFilter(filterGroup)
+            val filtered = gpuImage.bitmapWithFilterApplied
+            if (filtered != null) {
+                return filtered
+            }
+        }
+    } catch (e: Throwable) {
+        android.util.Log.e("GPUImage", "Failed to apply GPUImage filters", e)
+    }
+    return originalBitmap
+}
+
+fun Modifier.dropShadow(
+    color: Color = Color.Black,
+    blur: Dp = 8.dp,
+    dx: Dp = 0.dp,
+    dy: Dp = 0.dp,
+    spread: Dp = 0.dp,
+    isEnabled: Boolean = true
+): Modifier = if (isEnabled) {
+    this.drawBehind {
+        val bPx = blur.toPx()
+        val dxPx = dx.toPx()
+        val dyPx = dy.toPx()
+        val spreadPx = spread.toPx()
+        
+        val paint = Paint().asFrameworkPaint().apply {
+            this.color = android.graphics.Color.argb(
+                (color.alpha * 255).toInt(),
+                (color.red * 255).toInt(),
+                (color.green * 255).toInt(),
+                (color.blue * 255).toInt()
+            )
+            if (bPx > 0f) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    try {
+                        val setMethod = this.javaClass.getMethod("setRenderEffect", android.graphics.RenderEffect::class.java)
+                        setMethod.invoke(this, android.graphics.RenderEffect.createBlurEffect(bPx, bPx, android.graphics.Shader.TileMode.DECAL))
+                    } catch (t: Throwable) {
+                        maskFilter = android.graphics.BlurMaskFilter(bPx, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                    }
+                } else {
+                    maskFilter = android.graphics.BlurMaskFilter(bPx, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+            }
+        }
+        val dSize = this.size
+        val sizeWithSpread = dSize.copy(
+            width = dSize.width + spreadPx * 2f,
+            height = dSize.height + spreadPx * 2f
+        )
+        val topLeftWithOffset = Offset(
+            dxPx - spreadPx,
+            dyPx - spreadPx
+        )
+        this.drawContext.canvas.nativeCanvas.drawRect(
+            topLeftWithOffset.x,
+            topLeftWithOffset.y,
+            topLeftWithOffset.x + sizeWithSpread.width,
+            topLeftWithOffset.y + sizeWithSpread.height,
+            paint
+        )
+    }
+} else {
+    this
 }
 
 private fun screenToCanvas(
@@ -207,9 +717,15 @@ class CappedHistoryStack(private val maxLimit: Int = 40) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkspaceScreen(modifier: Modifier = Modifier) {
+    globalAppContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val workspaceViewModel: WorkspaceViewModel = viewModel()
     val previousProjects by workspaceViewModel.previousProjects.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+
+    val adaptiveInfo = currentWindowAdaptiveInfo()
+    val isLandscape = adaptiveInfo.windowSizeClass.windowWidthSizeClass == WindowWidthSizeClass.EXPANDED || 
+                      adaptiveInfo.windowSizeClass.windowWidthSizeClass == WindowWidthSizeClass.MEDIUM ||
+                      androidx.compose.ui.platform.LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
     var projectId by remember { mutableStateOf("") }
     var projectName by remember { mutableStateOf("") }
@@ -235,6 +751,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var brushPresetIndex by remember { mutableStateOf(0) }
     var currentStrokePoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
     val sharedTransformMatrix = remember { androidx.compose.ui.graphics.Matrix() }
+    var reusableBackdropBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var activeBezierPointIndex by remember { mutableStateOf(-1) }
 
     // Floating UI selector for adding specific shapes
@@ -343,6 +860,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     }
 
     val imageBitmapCache = remember { mutableStateMapOf<String, androidx.compose.ui.graphics.ImageBitmap>() }
+    // Global processedImageBitmapCache is used
     val loadingUris = remember { mutableStateOf(emptySet<String>()) }
     LaunchedEffect(layers) {
         val currentImageUris = layers.filter { it.type == LayerType.IMAGE_CARD && !it.imageUri.isNullOrEmpty() }
@@ -361,32 +879,22 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     loadingUris.value = loadingUris.value + uriStr
                     val loaded = withContext(Dispatchers.IO) {
                         try {
-                            val uri = android.net.Uri.parse(uriStr)
-                            // 1. Get image boundaries safely
-                            val options = android.graphics.BitmapFactory.Options().apply {
-                                inJustDecodeBounds = true
+                            val imageLoader = coil.ImageLoader(context)
+                            val request = coil.request.ImageRequest.Builder(context)
+                                .data(uriStr)
+                                .size(1024, 1024)
+                                .scale(coil.size.Scale.FIT)
+                                .allowHardware(false)
+                                .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
+                                .diskCachePolicy(coil.request.CachePolicy.ENABLED)
+                                .build()
+                            val result = imageLoader.execute(request)
+                            if (result is coil.request.SuccessResult) {
+                                val bitmap = (result.drawable as android.graphics.drawable.BitmapDrawable).bitmap
+                                bitmap.asImageBitmap()
+                            } else {
+                                null
                             }
-                            context.contentResolver.openInputStream(uri)?.use { stream ->
-                                android.graphics.BitmapFactory.decodeStream(stream, null, options)
-                            }
-                            // 2. Limit maximum dimension to 1024px to prevent OutOfMemoryError
-                            val maxDimension = 1024
-                            var inSampleSize = 1
-                            if (options.outWidth > maxDimension || options.outHeight > maxDimension) {
-                                val halfWidth = options.outWidth / 2
-                                val halfHeight = options.outHeight / 2
-                                while ((halfWidth / inSampleSize) >= maxDimension || (halfHeight / inSampleSize) >= maxDimension) {
-                                    inSampleSize *= 2
-                                }
-                            }
-                            // 3. Decode safely with proper inSampleSize
-                            val finalOptions = android.graphics.BitmapFactory.Options().apply {
-                                this.inSampleSize = inSampleSize
-                            }
-                            val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
-                                android.graphics.BitmapFactory.decodeStream(stream, null, finalOptions)
-                            }
-                            bitmap?.asImageBitmap()
                         } catch (t: Throwable) {
                             null
                         }
@@ -488,6 +996,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 
                 val exportedBitmap = withContext(Dispatchers.Default) {
                     exportCanvasToBitmap(
+                        context = context,
                         canvasWidth = canvasWidth,
                         canvasHeight = canvasHeight,
                         layers = layers,
@@ -575,6 +1084,107 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             }
         )
     } else {
+        @Composable
+        fun RenderBottomEffectPanel(isLandscapeMode: Boolean) {
+            BottomEffectPanel(
+                selectedLayer = selectedLayer,
+                selectedEffectIndex = selectedEffectIndex,
+                onSelectEffectIndex = { selectedEffectIndex = it },
+                onAddEffect = { effect ->
+                    if (selectedLayer != null) {
+                        layers = layers.map { layer ->
+                            if (layer.id == selectedLayer.id) {
+                                layer.copy(effects = layer.effects + effect)
+                            } else layer
+                        }
+                    }
+                },
+                onUpdateEffectParam = { effectId, paramName, newValue ->
+                    if (selectedLayer != null) {
+                        layers = layers.map { layer ->
+                            if (layer.id == selectedLayer.id) {
+                                val updatedEffects = layer.effects.map { eff ->
+                                    if (eff.id == effectId) {
+                                        eff.updateParameter(paramName, newValue)
+                                    } else eff
+                                }
+                                layer.copy(effects = updatedEffects)
+                            } else layer
+                        }
+                    }
+                },
+                onRemoveEffect = { effectId ->
+                    if (selectedLayer != null) {
+                        undoStack.add(layers)
+                        redoStack.clear()
+                        layers = layers.map { layer ->
+                            if (layer.id == selectedLayer.id) {
+                                layer.copy(effects = layer.effects.filter { it.id != effectId })
+                            } else layer
+                        }
+                    }
+                },
+                onToggleEffectEnabled = { effectId ->
+                    if (selectedLayer != null) {
+                        undoStack.add(layers)
+                        redoStack.clear()
+                        layers = layers.map { layer ->
+                            if (layer.id == selectedLayer.id) {
+                                val updatedEffects = layer.effects.map { eff ->
+                                    if (eff.id == effectId) {
+                                        eff.toggleEnabled()
+                                    } else eff
+                                }
+                                layer.copy(effects = updatedEffects)
+                            } else layer
+                        }
+                    }
+                },
+                onUpdateLayer = { updatedLayer ->
+                    layers = layers.map { if (it.id == updatedLayer.id) updatedLayer else it }
+                },
+                onCloseBottomPanel = { isBottomPanelVisible = false },
+                onOpenEffectsGallery = { showEffectsGallery = true },
+                onOpenBrushesLibrary = { showBrushesLibrary = true },
+                activeTool = activeTool,
+                brushSize = brushSize,
+                onBrushSizeChange = { brushSize = it },
+                onBrushOpacityChange = { brushOpacity = it },
+                brushOpacity = brushOpacity,
+                brushColor = brushColor,
+                onBrushColorChange = { brushColor = it },
+                brushSmoothing = brushSmoothing,
+                onBrushSmoothingChange = { brushSmoothing = it },
+                brushPresetIndex = brushPresetIndex,
+                onBrushPresetIndexChange = { brushPresetIndex = it },
+                fontSearchQuery = fontSearchQuery,
+                onFontSearchQueryChange = { fontSearchQuery = it },
+                selectedCategoryFilter = selectedCategoryFilter,
+                onSelectedCategoryFilterChange = { selectedCategoryFilter = it },
+                onImportFontClick = { fontPickerLauncher.launch("*/*") },
+                onExportCanvas = onExportArtwork,
+                gridEnabled = gridEnabled,
+                onGridEnabledChange = { gridEnabled = it },
+                rulerEnabled = rulerEnabled,
+                onRulerEnabledChange = { rulerEnabled = it },
+                rulerOrientation = rulerOrientation,
+                onRulerOrientationChange = { rulerOrientation = it },
+                rulerPosition = rulerPosition,
+                onRulerPositionChange = { rulerPosition = it },
+                gridColumns = gridColumns,
+                onGridColumnsChange = { gridColumns = it },
+                gridRows = gridRows,
+                onGridRowsChange = { gridRows = it },
+                rulerAngle = rulerAngle,
+                onRulerAngleChange = { rulerAngle = it },
+                rulerLocked = rulerLocked,
+                onRulerLockedChange = { rulerLocked = it },
+                snapToRuler = snapToRuler,
+                onSnapToRulerChange = { snapToRuler = it },
+                isLandscape = isLandscapeMode
+            )
+        }
+
         // App Workspace UI Grid Root
         Box(
             modifier = modifier
@@ -1087,13 +1697,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 val currentSelected = lyrs.find { it.id == selectedLayerId }
                                                 if (currentSelected != null && currentSelected.type == LayerType.VECTOR_BEZIER) {
                                                     val clickLocal = canvasToLayerLocal(clickPt, currentSelected)
-                                                    val lastAnchor = currentSelected.brushPoints.lastOrNull()
-                                                    val updatedPoints = if (lastAnchor != null) {
-                                                        val midway = Offset((lastAnchor.x + clickLocal.x) / 2f, (lastAnchor.y + clickLocal.y) / 2f)
-                                                        currentSelected.brushPoints + midway + clickLocal
-                                                    } else {
-                                                        listOf(clickLocal)
-                                                    }
+                                                    val updatedPoints = currentSelected.brushPoints + clickLocal + clickLocal + clickLocal
                                                     undoStack.add(layers)
                                                     redoStack.clear()
                                                     layers = layers.map {
@@ -1111,7 +1715,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                         width = currentCanvasWidthState.value,
                                                         height = currentCanvasHeightState.value,
                                                         baseColor = brushColor,
-                                                        brushPoints = listOf(clickPt)
+                                                        brushPoints = listOf(clickPt, clickPt, clickPt)
                                                      )
                                                      undoStack.add(layers)
                                                      redoStack.clear()
@@ -1489,15 +2093,18 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 var path = pathCache.get(cacheKey)
                                                 if (path == null) {
                                                     val newPath = Path().apply {
-                                                        if (layer.brushPoints.size > 1) {
-                                                            val startPt = layer.brushPoints[0]
-                                                            moveTo(startPt.x, startPt.y)
-                                                            var i = 1
-                                                            while (i < layer.brushPoints.size) {
-                                                                val ctrl = layer.brushPoints.getOrNull(i) ?: break
-                                                                val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
-                                                                quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
-                                                                i += 2
+                                                        val anchors = layer.brushPoints.toAnchorPoints()
+                                                        if (anchors.isNotEmpty()) {
+                                                            val first = anchors[0]
+                                                            moveTo(first.position.x, first.position.y)
+                                                            for (index in 0 until anchors.size - 1) {
+                                                                val current = anchors[index]
+                                                                val next = anchors[index + 1]
+                                                                cubicTo(
+                                                                    current.handleOut.x, current.handleOut.y,
+                                                                    next.handleIn.x, next.handleIn.y,
+                                                                    next.position.x, next.position.y
+                                                                )
                                                             }
                                                         } else {
                                                             moveTo(start.x, start.y)
@@ -1538,53 +2145,58 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
                                                 // Paint support guidelines if layer is selected
                                                 if (layer.id == selectedLayerId) {
-                                                    if (layer.brushPoints.size > 1) {
-                                                        val size = layer.brushPoints.size
-                                                        for (i in 0 until size step 2) {
-                                                            val anchor = layer.brushPoints[i]
-                                                            drawCircle(
-                                                                color = Color(0xFF00E5FF),
-                                                                radius = 9f / totalScale.coerceAtLeast(0.5f),
-                                                                center = anchor
-                                                            )
-                                                            drawCircle(
-                                                                color = Color.White,
-                                                                radius = 4.5f / totalScale.coerceAtLeast(0.5f),
-                                                                center = anchor
-                                                            )
-
-                                                            val ctrl = layer.brushPoints.getOrNull(i + 1)
-                                                            if (ctrl != null) {
+                                                    val anchors = layer.brushPoints.toAnchorPoints()
+                                                    if (anchors.isNotEmpty()) {
+                                                        for (ap in anchors) {
+                                                            if (ap.handleIn != ap.position) {
                                                                 drawLine(
                                                                     color = Color.LightGray.copy(alpha = 0.6f),
-                                                                    start = anchor,
-                                                                    end = ctrl,
+                                                                    start = ap.position,
+                                                                    end = ap.handleIn,
                                                                     strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
                                                                     pathEffect = dashEffect8
                                                                 )
-
-                                                                val nextAnchor = layer.brushPoints.getOrNull(i + 2)
-                                                                if (nextAnchor != null) {
-                                                                    drawLine(
-                                                                        color = Color.LightGray.copy(alpha = 0.6f),
-                                                                        start = nextAnchor,
-                                                                        end = ctrl,
-                                                                        strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
-                                                                        pathEffect = dashEffect8
-                                                                    )
-                                                                }
-
                                                                 drawCircle(
                                                                     color = IndustrialAmber,
                                                                     radius = 8.5f / totalScale.coerceAtLeast(0.5f),
-                                                                    center = ctrl
+                                                                    center = ap.handleIn
                                                                 )
                                                                 drawCircle(
                                                                     color = Color.White,
                                                                     radius = 4f / totalScale.coerceAtLeast(0.5f),
-                                                                    center = ctrl
+                                                                    center = ap.handleIn
                                                                 )
                                                             }
+                                                            if (ap.handleOut != ap.position) {
+                                                                drawLine(
+                                                                    color = Color.LightGray.copy(alpha = 0.6f),
+                                                                    start = ap.position,
+                                                                    end = ap.handleOut,
+                                                                    strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                                                                    pathEffect = dashEffect8
+                                                                )
+                                                                drawCircle(
+                                                                    color = IndustrialAmber,
+                                                                    radius = 8.5f / totalScale.coerceAtLeast(0.5f),
+                                                                    center = ap.handleOut
+                                                                )
+                                                                drawCircle(
+                                                                    color = Color.White,
+                                                                    radius = 4f / totalScale.coerceAtLeast(0.5f),
+                                                                    center = ap.handleOut
+                                                                )
+                                                            }
+
+                                                            drawCircle(
+                                                                color = Color(0xFF00E5FF),
+                                                                radius = 9f / totalScale.coerceAtLeast(0.5f),
+                                                                center = ap.position
+                                                            )
+                                                            drawCircle(
+                                                                color = Color.White,
+                                                                radius = 4.5f / totalScale.coerceAtLeast(0.5f),
+                                                                center = ap.position
+                                                            )
                                                         }
                                                     } else {
                                                         drawLine(
@@ -1781,6 +2393,39 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     }
                                     }
 
+                                    val activeEffectsList = layer.effects.filter { it.isEnabled }
+                                    val hasAdjustmentEffect = layer.type != com.example.studio.model.LayerType.IMAGE_CARD && 
+                                        layer.type != com.example.studio.model.LayerType.TEXT && 
+                                        layer.type != com.example.studio.model.LayerType.FREEHAND_DRAWING &&
+                                        activeEffectsList.any { 
+                                            it is com.example.studio.model.StudioEffect.ColorBalance || 
+                                            it is com.example.studio.model.StudioEffect.Invert || 
+                                            it is com.example.studio.model.StudioEffect.Threshold || 
+                                            it is com.example.studio.model.StudioEffect.Posterize || 
+                                            (it is com.example.studio.model.StudioEffect.PhotoshopEffect && 
+                                             it.effectType in listOf("CameraRaw", "ColorGrading", "Solarize", "Emboss", "FindEdges", "ColorHalftone", "Sketch", "Mosaic", "Twirl", "Spherize", "GaussianBlur", "SmartSharpen", "UnsharpMask", "AddNoise")) 
+                                        }
+                                    val hasGlassEffect = layer.effects.any { it.isEnabled && it is com.example.studio.model.StudioEffect.PhotoshopEffect && (it.effectType == "GlassMorphism" || it.effectType == "ReededGlass") }
+                                    val needsBackdrop = hasGlassEffect || hasAdjustmentEffect
+                                    val currentBackdrop = if (needsBackdrop && android.os.Build.VERSION.SDK_INT >= 33) {
+                                        val computedBackdrop = generateBackdropForLayer(
+                                            layers = layers,
+                                            currentIndex = index,
+                                            canvasWidth = canvasWidth,
+                                            canvasHeight = canvasHeight,
+                                            imageBitmapCache = imageBitmapCache,
+                                            pathCache = pathCache,
+                                            pathPointsCountCache = pathPointsCountCache,
+                                            existingBitmap = reusableBackdropBitmap
+                                         )
+                                         if (computedBackdrop != null) {
+                                             reusableBackdropBitmap = computedBackdrop
+                                         }
+                                         computedBackdrop
+                                    } else {
+                                        null
+                                    }
+
                                     // Invoke drawing lambda, constraining within Clipping Mask boundaries if enabled
                                     if (layer.isClippingMask && beneathLayer != null) {
                                         clipRect(
@@ -1799,7 +2444,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 dashEffect = dashEffect8,
                                                 imageBitmapCache = imageBitmapCache,
                                                 composeBlendMode = composeBlendMode,
-                                                sharedTransformMatrix = sharedTransformMatrix
+                                                sharedTransformMatrix = sharedTransformMatrix,
+                                                backdropBitmap = currentBackdrop,
+                                                globalX = layer.positionX,
+                                                globalY = layer.positionY
                                             )
                                         }
                                     } else {
@@ -1813,7 +2461,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                              dashEffect = dashEffect8,
                                              imageBitmapCache = imageBitmapCache,
                                              composeBlendMode = composeBlendMode,
-                                             sharedTransformMatrix = sharedTransformMatrix
+                                             sharedTransformMatrix = sharedTransformMatrix,
+                                             backdropBitmap = currentBackdrop,
+                                             globalX = layer.positionX,
+                                             globalY = layer.positionY
                                          )
                                     }
                                 }
@@ -2029,6 +2680,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     }
                 }
 
+                if (isLandscape && isBottomPanelVisible) {
+                    RenderBottomEffectPanel(isLandscapeMode = true)
+                }
+
                 // Collapsible sidebar drawer for layer management panel (with smooth animations)
                 AnimatedVisibility(
                     visible = isLayersPanelVisible,
@@ -2141,107 +2796,14 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             }
 
             // -- BOTTOM EFFECTS & PARAMETERS PANEL (with smooth animated transition) --
-            AnimatedVisibility(
-                visible = isBottomPanelVisible,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                BottomEffectPanel(
-                    selectedLayer = selectedLayer,
-                    selectedEffectIndex = selectedEffectIndex,
-                    onSelectEffectIndex = { selectedEffectIndex = it },
-                    onAddEffect = { effect ->
-                        if (selectedLayer != null) {
-                            layers = layers.map { layer ->
-                                if (layer.id == selectedLayer.id) {
-                                    layer.copy(effects = layer.effects + effect)
-                                } else layer
-                            }
-                        }
-                    },
-                    onUpdateEffectParam = { effectId, paramName, newValue ->
-                        if (selectedLayer != null) {
-                            layers = layers.map { layer ->
-                                if (layer.id == selectedLayer.id) {
-                                    val updatedEffects = layer.effects.map { eff ->
-                                        if (eff.id == effectId) {
-                                            eff.updateParameter(paramName, newValue)
-                                        } else eff
-                                    }
-                                    layer.copy(effects = updatedEffects)
-                                } else layer
-                            }
-                        }
-                    },
-                    onRemoveEffect = { effectId ->
-                        if (selectedLayer != null) {
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            layers = layers.map { layer ->
-                                if (layer.id == selectedLayer.id) {
-                                    layer.copy(effects = layer.effects.filter { it.id != effectId })
-                                } else layer
-                            }
-                        }
-                    },
-                    onToggleEffectEnabled = { effectId ->
-                        if (selectedLayer != null) {
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            layers = layers.map { layer ->
-                                if (layer.id == selectedLayer.id) {
-                                    val updatedEffects = layer.effects.map { eff ->
-                                        if (eff.id == effectId) {
-                                            eff.toggleEnabled()
-                                        } else eff
-                                    }
-                                    layer.copy(effects = updatedEffects)
-                                } else layer
-                            }
-                        }
-                    },
-                    onUpdateLayer = { updatedLayer ->
-                        layers = layers.map { if (it.id == updatedLayer.id) updatedLayer else it }
-                    },
-                    onCloseBottomPanel = { isBottomPanelVisible = false },
-                    onOpenEffectsGallery = { showEffectsGallery = true },
-                    onOpenBrushesLibrary = { showBrushesLibrary = true },
-                    activeTool = activeTool,
-                    brushSize = brushSize,
-                    onBrushSizeChange = { brushSize = it },
-                    brushOpacity = brushOpacity,
-                    onBrushOpacityChange = { brushOpacity = it },
-                    brushColor = brushColor,
-                    onBrushColorChange = { brushColor = it },
-                    brushSmoothing = brushSmoothing,
-                    onBrushSmoothingChange = { brushSmoothing = it },
-                    brushPresetIndex = brushPresetIndex,
-                    onBrushPresetIndexChange = { brushPresetIndex = it },
-                    fontSearchQuery = fontSearchQuery,
-                    onFontSearchQueryChange = { fontSearchQuery = it },
-                    selectedCategoryFilter = selectedCategoryFilter,
-                    onSelectedCategoryFilterChange = { selectedCategoryFilter = it },
-                    onImportFontClick = { fontPickerLauncher.launch("*/*") },
-                    onExportCanvas = onExportArtwork,
-                    gridEnabled = gridEnabled,
-                    onGridEnabledChange = { gridEnabled = it },
-                    rulerEnabled = rulerEnabled,
-                    onRulerEnabledChange = { rulerEnabled = it },
-                    rulerOrientation = rulerOrientation,
-                    onRulerOrientationChange = { rulerOrientation = it },
-                    rulerPosition = rulerPosition,
-                    onRulerPositionChange = { rulerPosition = it },
-                    gridColumns = gridColumns,
-                    onGridColumnsChange = { gridColumns = it },
-                    gridRows = gridRows,
-                    onGridRowsChange = { gridRows = it },
-                    rulerAngle = rulerAngle,
-                    onRulerAngleChange = { rulerAngle = it },
-                    rulerLocked = rulerLocked,
-                    onRulerLockedChange = { rulerLocked = it },
-                    snapToRuler = snapToRuler,
-                    onSnapToRulerChange = { snapToRuler = it }
-                )
+            if (!isLandscape) {
+                AnimatedVisibility(
+                    visible = isBottomPanelVisible,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    RenderBottomEffectPanel(isLandscapeMode = false)
+                }
             }
 
             if (showEffectsGallery && selectedLayer != null) {
@@ -4299,6 +4861,7 @@ fun getLayerEffectiveColor(layer: StudioLayer, layerOpacity: Float): Color {
 }
 
 fun exportCanvasToBitmap(
+    context: android.content.Context,
     canvasWidth: Float,
     canvasHeight: Float,
     layers: List<com.example.studio.model.StudioLayer>,
@@ -4664,12 +5227,18 @@ fun exportCanvasToBitmap(
             com.example.studio.model.LayerType.IMAGE_CARD -> {
                 val loadedBitmap = imageBitmapCache[originalLayer.imageUri ?: ""]?.asAndroidBitmap()
                 if (loadedBitmap != null) {
+                    val activeEffects = originalLayer.effects.filter { it.isEnabled }
+                    val filteredBmp = if (activeEffects.isNotEmpty()) {
+                        applyGPUImageFilters(context, loadedBitmap, activeEffects)
+                    } else {
+                        loadedBitmap
+                    }
                     val destRect = android.graphics.Rect(0, 0, originalLayer.width.toInt(), originalLayer.height.toInt())
                     val imagePaint = android.graphics.Paint().apply {
                         isAntiAlias = true
                         alpha = (originalLayer.opacity * 255).toInt().coerceIn(0, 255)
                     }
-                    canvas.drawBitmap(loadedBitmap, null, destRect, imagePaint)
+                    canvas.drawBitmap(filteredBmp, null, destRect, imagePaint)
                 }
             }
             else -> {}
@@ -5429,7 +5998,8 @@ fun BottomEffectPanel(
     rulerLocked: Boolean = false,
     onRulerLockedChange: (Boolean) -> Unit = {},
     snapToRuler: Boolean = true,
-    onSnapToRulerChange: (Boolean) -> Unit = {}
+    onSnapToRulerChange: (Boolean) -> Unit = {},
+    isLandscape: Boolean = false
 ) {
     var activeTabOfPanel by remember { mutableStateOf(0) } // 0: Transform, 1: Edit Shape, 2: Color, 3: Filters & FX Stack
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -5504,13 +6074,23 @@ fun BottomEffectPanel(
 
     CompositionLocalProvider(LocalSliderValueEditTrigger provides { activeValueEditConfig = it }) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
-            .height(260.dp)
-            .background(SlatePanel, RoundedCornerShape(16.dp))
-            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
-            .padding(10.dp),
+        modifier = if (isLandscape) {
+            Modifier
+                .width(360.dp)
+                .fillMaxHeight()
+                .padding(top = 8.dp, bottom = 8.dp, end = 8.dp)
+                .background(SlatePanel, RoundedCornerShape(16.dp))
+                .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+                .padding(10.dp)
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .height(260.dp)
+                .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+                .background(SlatePanel, RoundedCornerShape(16.dp))
+                .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+                .padding(10.dp)
+        },
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         LeftTelemetryAndStatsColumn(
@@ -6760,6 +7340,22 @@ fun BottomEffectPanel(
                                             "HSL: Magenta Channel" to listOf("HSL_Magenta_Hue", "HSL_Magenta_Sat", "HSL_Magenta_Lum"),
                                             "Technical Correction" to listOf("NoiseLuminance", "NoiseColor", "Vignetting", "Grain")
                                         )
+                                    } else if (actEff is com.example.studio.model.StudioEffect.PhotoshopEffect && actEff.effectType == "CameraRaw") {
+                                        listOf(
+                                            "Light" to listOf("Exposure", "Contrast", "Highlights", "Shadows", "Whites", "Blacks"),
+                                            "Color" to listOf("Temp", "Tint", "Vibrance", "Saturation"),
+                                            "Detail" to listOf("Texture", "Clarity", "Dehaze")
+                                        )
+                                    } else if (actEff is com.example.studio.model.StudioEffect.PhotoshopEffect && actEff.effectType == "GlassMorphism") {
+                                        listOf(
+                                            "Glass Fracture & Torsion" to listOf("FractalIntensity", "FractalType", "EdgeTorsion"),
+                                            "Optics & Surface Tension" to listOf("RefractionIndex", "SurfaceTension", "Radius")
+                                        )
+                                    } else if (actEff is com.example.studio.model.StudioEffect.PhotoshopEffect && actEff.effectType == "ReededGlass") {
+                                        listOf(
+                                            "Structural Ripples" to listOf("LineDensity", "Rotation"),
+                                            "Optics & Diffusive Blur" to listOf("RefractionStrength", "BlurMix", "SpecularHighlight")
+                                        )
                                     } else {
                                         listOf("" to actEff.parameters.keys.toList())
                                     }
@@ -6784,7 +7380,22 @@ fun BottomEffectPanel(
                                                             modifier = Modifier.fillMaxWidth(),
                                                             horizontalArrangement = Arrangement.SpaceBetween
                                                         ) {
-                                                            Text(param.name, style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary)
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                            ) {
+                                                                Text(param.name, style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary)
+                                                                if (param.value != 0f) {
+                                                                    Icon(
+                                                                        imageVector = androidx.compose.material.icons.Icons.Default.Refresh,
+                                                                        contentDescription = "Reset ${param.name}",
+                                                                        tint = IndustrialAmber.copy(alpha = 0.6f),
+                                                                        modifier = Modifier
+                                                                            .size(12.dp)
+                                                                            .clickable { onUpdateEffectParam(actEff.id, pName, 0f) }
+                                                                    )
+                                                                }
+                                                            }
                                                             val displayVal = if (actEff is com.example.studio.model.StudioEffect.PhotoshopEffect && actEff.effectType == "ColorGrading" && pName == "Preset") {
                                                                 val LUTs = listOf("Cinema Golden", "Teal & Orange", "Mono B&W", "Cold Frost", "Dreamy Pastel", "Vintage Sepia", "Acid Neon")
                                                                 LUTs.getOrNull(param.value.toInt()) ?: "Preset ${param.value.toInt()}"
@@ -7940,6 +8551,7 @@ fun CanvasSetupScreen(
                                                         
                                                         val exportedBitmap = withContext(Dispatchers.Default) {
                                                             exportCanvasToBitmap(
+                                                                context = homeContext,
                                                                 canvasWidth = proj.width,
                                                                 canvasHeight = proj.height,
                                                                 layers = decodedLayers,
@@ -9080,7 +9692,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     totalScale: Float,
     dashEffect: androidx.compose.ui.graphics.PathEffect,
     composeBlendMode: androidx.compose.ui.graphics.BlendMode,
-    imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>
+    imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>,
+    backdropBitmap: android.graphics.Bitmap? = null,
+    globalX: Float = 0f,
+    globalY: Float = 0f
 ) {
     val effectiveColor = getLayerEffectiveColor(layer, 1.0f)
     var dropShadow: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
@@ -9121,11 +9736,16 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     var texFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
     var neuralFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
     var brushConfig: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var glassMorphism: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var reededGlass: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
+    var didSaveLayer = false
 
     for (effect in layer.effects) {
         if (!effect.isEnabled) continue
         if (effect is com.example.studio.model.StudioEffect.PhotoshopEffect) {
             when (effect.effectType) {
+                "GlassMorphism" -> glassMorphism = effect
+                "ReededGlass" -> reededGlass = effect
                 "DropShadow" -> dropShadow = effect
                 "InnerShadow" -> innerShadow = effect
                 "BordersAndShadows" -> bordersShadows = effect
@@ -9174,25 +9794,97 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         } else {
             fillStyle
         }
+
+        val activeList = layer.effects.filter { it.isEnabled }
+        val hasAdj = layer.type != com.example.studio.model.LayerType.IMAGE_CARD && 
+            layer.type != com.example.studio.model.LayerType.TEXT && 
+            layer.type != com.example.studio.model.LayerType.FREEHAND_DRAWING &&
+            activeList.any { 
+                it is com.example.studio.model.StudioEffect.ColorBalance || 
+                it is com.example.studio.model.StudioEffect.Invert || 
+                it is com.example.studio.model.StudioEffect.Threshold || 
+                it is com.example.studio.model.StudioEffect.Posterize || 
+                (it is com.example.studio.model.StudioEffect.PhotoshopEffect && 
+                 it.effectType in listOf("CameraRaw", "ColorGrading", "Solarize", "Emboss", "FindEdges", "ColorHalftone", "Sketch", "Mosaic", "Twirl", "Spherize", "GaussianBlur", "SmartSharpen", "UnsharpMask", "AddNoise")) 
+            }
+
+        val croppedBmp = if (hasAdj && backdropBitmap != null) {
+            val rx = globalX
+            val ry = globalY
+            val rw = layer.width
+            val rh = layer.height
+            val backdropW = backdropBitmap.width
+            val backdropH = backdropBitmap.height
+            val x = rx.toInt().coerceIn(0, backdropW - 1)
+            val y = ry.toInt().coerceIn(0, backdropH - 1)
+            val w = rw.toInt().coerceAtLeast(1).coerceAtMost(backdropW - x)
+            val h = rh.toInt().coerceAtLeast(1).coerceAtMost(backdropH - y)
+            if (w > 0 && h > 0) {
+                try {
+                    android.graphics.Bitmap.createBitmap(backdropBitmap, x, y, w, h)
+                } catch (e: Exception) {
+                    null
+                }
+            } else null
+        } else null
+
+        val adjustedBmp = if (croppedBmp != null) {
+            globalAppContext?.let { applyGPUImageFilters(it, croppedBmp, activeList) } ?: croppedBmp
+        } else null
+
+        val paintToUse = if (fillStyle is androidx.compose.ui.graphics.drawscope.Fill && adjustedBmp != null) {
+            val composePaint = androidx.compose.ui.graphics.Paint()
+            val nativePaint = composePaint.asFrameworkPaint()
+            val shader = android.graphics.BitmapShader(adjustedBmp, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP)
+            nativePaint.shader = shader
+            // Retain any opacity settings
+            nativePaint.alpha = (finalOpacity * layerOpacity * 255).toInt().coerceIn(0, 255)
+            composePaint
+        } else {
+            null
+        }
+
         when (layer.type) {
             com.example.studio.model.LayerType.VECTOR_RECT -> {
-                if (layer.cornerRadius > 0f) {
-                    drawRoundRect(
-                        color = finalComposeColor,
-                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
-                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius),
-                        style = styleToUse,
-                        blendMode = composeBlendMode
-                    )
+                if (paintToUse != null) {
+                    if (layer.cornerRadius > 0f) {
+                        drawContext.canvas.drawRoundRect(
+                            left = 0f,
+                            top = 0f,
+                            right = layer.width,
+                            bottom = layer.height,
+                            radiusX = layer.cornerRadius,
+                            radiusY = layer.cornerRadius,
+                            paint = paintToUse
+                        )
+                    } else {
+                        drawContext.canvas.drawRect(
+                            left = 0f,
+                            top = 0f,
+                            right = layer.width,
+                            bottom = layer.height,
+                            paint = paintToUse
+                        )
+                    }
                 } else {
-                    drawRect(
-                        color = finalComposeColor,
-                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
-                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
-                        style = styleToUse,
-                        blendMode = composeBlendMode
-                    )
+                    if (layer.cornerRadius > 0f) {
+                        drawRoundRect(
+                            color = finalComposeColor,
+                            topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                            size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius),
+                            style = styleToUse,
+                            blendMode = composeBlendMode
+                        )
+                    } else {
+                        drawRect(
+                            color = finalComposeColor,
+                            topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                            size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
+                            style = styleToUse,
+                            blendMode = composeBlendMode
+                        )
+                    }
                 }
             }
             com.example.studio.model.LayerType.VECTOR_TRIANGLE -> {
@@ -9215,28 +9907,35 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     }
                     pathCache.put(cacheKey, path)
                 }
-                if (layer.cornerRadius > 0f) {
-                    val paint = androidx.compose.ui.graphics.Paint().apply {
-                        color = finalComposeColor
-                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            androidx.compose.ui.graphics.PaintingStyle.Stroke
-                        } else {
-                            androidx.compose.ui.graphics.PaintingStyle.Fill
-                        }
-                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            strokeWidth = styleToUse.width
-                        }
-                        blendMode = composeBlendMode
-                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                if (paintToUse != null) {
+                    if (layer.cornerRadius > 0f) {
+                        paintToUse.asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
                     }
-                    drawContext.canvas.drawPath(path, paint)
+                    drawContext.canvas.drawPath(path, paintToUse)
                 } else {
-                    drawPath(
-                        path = path,
-                        color = finalComposeColor,
-                        style = styleToUse,
-                        blendMode = composeBlendMode
-                    )
+                    if (layer.cornerRadius > 0f) {
+                        val paint = androidx.compose.ui.graphics.Paint().apply {
+                            color = finalComposeColor
+                            style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                androidx.compose.ui.graphics.PaintingStyle.Stroke
+                            } else {
+                                androidx.compose.ui.graphics.PaintingStyle.Fill
+                            }
+                            if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                strokeWidth = styleToUse.width
+                            }
+                            blendMode = composeBlendMode
+                            asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                        }
+                        drawContext.canvas.drawPath(path, paint)
+                    } else {
+                        drawPath(
+                            path = path,
+                            color = finalComposeColor,
+                            style = styleToUse,
+                            blendMode = composeBlendMode
+                        )
+                    }
                 }
             }
             com.example.studio.model.LayerType.VECTOR_PENTAGON -> {
@@ -9259,28 +9958,35 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     }
                     pathCache.put(cacheKey, path)
                 }
-                if (layer.cornerRadius > 0f) {
-                    val paint = androidx.compose.ui.graphics.Paint().apply {
-                        color = finalComposeColor
-                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            androidx.compose.ui.graphics.PaintingStyle.Stroke
-                        } else {
-                            androidx.compose.ui.graphics.PaintingStyle.Fill
-                        }
-                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            strokeWidth = styleToUse.width
-                        }
-                        blendMode = composeBlendMode
-                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                if (paintToUse != null) {
+                    if (layer.cornerRadius > 0f) {
+                        paintToUse.asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
                     }
-                    drawContext.canvas.drawPath(path, paint)
+                    drawContext.canvas.drawPath(path, paintToUse)
                 } else {
-                    drawPath(
-                        path = path,
-                        color = finalComposeColor,
-                        style = styleToUse,
-                        blendMode = composeBlendMode
-                    )
+                    if (layer.cornerRadius > 0f) {
+                        val paint = androidx.compose.ui.graphics.Paint().apply {
+                            color = finalComposeColor
+                            style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                androidx.compose.ui.graphics.PaintingStyle.Stroke
+                            } else {
+                                androidx.compose.ui.graphics.PaintingStyle.Fill
+                            }
+                            if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                strokeWidth = styleToUse.width
+                            }
+                            blendMode = composeBlendMode
+                            asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                        }
+                        drawContext.canvas.drawPath(path, paint)
+                    } else {
+                        drawPath(
+                            path = path,
+                            color = finalComposeColor,
+                            style = styleToUse,
+                            blendMode = composeBlendMode
+                        )
+                    }
                 }
             }
             com.example.studio.model.LayerType.VECTOR_HEXAGON -> {
@@ -9303,38 +10009,55 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     }
                     pathCache.put(cacheKey, path)
                 }
-                if (layer.cornerRadius > 0f) {
-                    val paint = androidx.compose.ui.graphics.Paint().apply {
-                        color = finalComposeColor
-                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            androidx.compose.ui.graphics.PaintingStyle.Stroke
-                        } else {
-                            androidx.compose.ui.graphics.PaintingStyle.Fill
-                        }
-                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            strokeWidth = styleToUse.width
-                        }
-                        blendMode = composeBlendMode
-                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                if (paintToUse != null) {
+                    if (layer.cornerRadius > 0f) {
+                        paintToUse.asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
                     }
-                    drawContext.canvas.drawPath(path, paint)
+                    drawContext.canvas.drawPath(path, paintToUse)
                 } else {
-                    drawPath(
-                        path = path,
+                    if (layer.cornerRadius > 0f) {
+                        val paint = androidx.compose.ui.graphics.Paint().apply {
+                            color = finalComposeColor
+                            style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                androidx.compose.ui.graphics.PaintingStyle.Stroke
+                            } else {
+                                androidx.compose.ui.graphics.PaintingStyle.Fill
+                            }
+                            if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                strokeWidth = styleToUse.width
+                            }
+                            blendMode = composeBlendMode
+                            asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                        }
+                        drawContext.canvas.drawPath(path, paint)
+                    } else {
+                        drawPath(
+                            path = path,
+                            color = finalComposeColor,
+                            style = styleToUse,
+                            blendMode = composeBlendMode
+                        )
+                    }
+                }
+            }
+            com.example.studio.model.LayerType.VECTOR_OVAL -> {
+                if (paintToUse != null) {
+                    drawContext.canvas.drawOval(
+                        left = 0f,
+                        top = 0f,
+                        right = layer.width,
+                        bottom = layer.height,
+                        paint = paintToUse
+                    )
+                } else {
+                    drawOval(
                         color = finalComposeColor,
+                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                        size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
                         style = styleToUse,
                         blendMode = composeBlendMode
                     )
                 }
-            }
-            com.example.studio.model.LayerType.VECTOR_OVAL -> {
-                drawOval(
-                    color = finalComposeColor,
-                    topLeft = androidx.compose.ui.geometry.Offset.Zero,
-                    size = androidx.compose.ui.geometry.Size(layer.width, layer.height),
-                    style = styleToUse,
-                    blendMode = composeBlendMode
-                )
             }
             com.example.studio.model.LayerType.VECTOR_LINE -> {
                 val strokeW = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) styleToUse.width else (if (layer.strokeThickness > 0f) layer.strokeThickness else 6f)
@@ -9352,50 +10075,67 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     var path = pathCache.get(cacheKey)
                     if (path == null) {
                         path = androidx.compose.ui.graphics.Path().apply {
-                            val startPt = layer.brushPoints[0]
-                            moveTo(startPt.x, startPt.y)
-                            if (layer.brushPoints.size > 1) {
-                                var i = 1
-                                while (i < layer.brushPoints.size) {
-                                    val ctrl = layer.brushPoints.getOrNull(i) ?: break
-                                    val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
-                                    quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
-                                    i += 2
+                            val anchors = layer.brushPoints.toAnchorPoints()
+                            if (anchors.isNotEmpty()) {
+                                val first = anchors[0]
+                                moveTo(first.position.x, first.position.y)
+                                for (index in 0 until anchors.size - 1) {
+                                    val current = anchors[index]
+                                    val next = anchors[index + 1]
+                                    cubicTo(
+                                        current.handleOut.x, current.handleOut.y,
+                                        next.handleIn.x, next.handleIn.y,
+                                        next.position.x, next.position.y
+                                    )
                                 }
                             } else {
+                                val startPt = layer.brushPoints[0]
+                                moveTo(startPt.x, startPt.y)
                                 lineTo(startPt.x + 0.1f, startPt.y)
                             }
                         }
                         pathCache.put(cacheKey, path)
                     }
-                    val shapeStyle = if (layer.isAlphaLocked) {
-                        styleToUse
+                    if (paintToUse != null) {
+                        drawContext.canvas.drawPath(path, paintToUse)
                     } else {
-                        val strokeW = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) styleToUse.width else (if (layer.strokeThickness > 0f) layer.strokeThickness else 8f)
-                        androidx.compose.ui.graphics.drawscope.Stroke(
-                            width = strokeW,
-                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        val shapeStyle = if (layer.isAlphaLocked) {
+                            styleToUse
+                        } else {
+                            val strokeW = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) styleToUse.width else (if (layer.strokeThickness > 0f) layer.strokeThickness else 8f)
+                            androidx.compose.ui.graphics.drawscope.Stroke(
+                                width = strokeW,
+                                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                join = androidx.compose.ui.graphics.StrokeJoin.Round
+                            )
+                        }
+                        drawPath(
+                            path = path,
+                            color = finalComposeColor,
+                            style = shapeStyle,
+                            blendMode = composeBlendMode
                         )
                     }
-                    drawPath(
-                        path = path,
-                        color = finalComposeColor,
-                        style = shapeStyle,
-                        blendMode = composeBlendMode
-                    )
                 }
             }
             com.example.studio.model.LayerType.VECTOR_CIRCLE -> {
                 val radius = layer.width / 2f
                 val center = androidx.compose.ui.geometry.Offset(radius, layer.height / 2f)
-                drawCircle(
-                    color = finalComposeColor,
-                    radius = radius,
-                    center = center,
-                    style = styleToUse,
-                    blendMode = composeBlendMode
-                )
+                if (paintToUse != null) {
+                    drawContext.canvas.drawCircle(
+                        center = center,
+                        radius = radius,
+                        paint = paintToUse
+                    )
+                } else {
+                    drawCircle(
+                        color = finalComposeColor,
+                        radius = radius,
+                        center = center,
+                        style = styleToUse,
+                        blendMode = composeBlendMode
+                    )
+                }
             }
             com.example.studio.model.LayerType.VECTOR_STAR -> {
                 val cacheKey = getLayerGeometryHash(layer)
@@ -9427,28 +10167,35 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     }
                     pathCache.put(cacheKey, path)
                 }
-                if (layer.cornerRadius > 0f) {
-                    val paint = androidx.compose.ui.graphics.Paint().apply {
-                        color = finalComposeColor
-                        style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            androidx.compose.ui.graphics.PaintingStyle.Stroke
-                        } else {
-                            androidx.compose.ui.graphics.PaintingStyle.Fill
-                        }
-                        if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
-                            strokeWidth = styleToUse.width
-                        }
-                        blendMode = composeBlendMode
-                        asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                if (paintToUse != null) {
+                    if (layer.cornerRadius > 0f) {
+                        paintToUse.asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
                     }
-                    drawContext.canvas.drawPath(path, paint)
+                    drawContext.canvas.drawPath(path, paintToUse)
                 } else {
-                    drawPath(
-                        path = path,
-                        color = finalComposeColor,
-                        style = styleToUse,
-                        blendMode = composeBlendMode
-                    )
+                    if (layer.cornerRadius > 0f) {
+                        val paint = androidx.compose.ui.graphics.Paint().apply {
+                            color = finalComposeColor
+                            style = if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                androidx.compose.ui.graphics.PaintingStyle.Stroke
+                            } else {
+                                androidx.compose.ui.graphics.PaintingStyle.Fill
+                            }
+                            if (styleToUse is androidx.compose.ui.graphics.drawscope.Stroke) {
+                                strokeWidth = styleToUse.width
+                            }
+                            blendMode = composeBlendMode
+                            asFrameworkPaint().pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                        }
+                        drawContext.canvas.drawPath(path, paint)
+                    } else {
+                        drawPath(
+                            path = path,
+                            color = finalComposeColor,
+                            style = styleToUse,
+                            blendMode = composeBlendMode
+                        )
+                    }
                 }
             }
             com.example.studio.model.LayerType.TEXT -> {
@@ -9526,8 +10273,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                 val uriStr = layer.imageUri
                 val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
                 if (loadedBitmap != null) {
+                    val activeEffects = layer.effects.filter { it.isEnabled }
+                    val drawImage = if (activeEffects.isNotEmpty()) {
+                        val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
+                        val processedKey = "${layer.id}_${uriStr}_${effectHash}"
+                        var cachedProcessed = processedImageBitmapCache[processedKey]
+                        if (cachedProcessed == null) {
+                            val androidBmp = loadedBitmap.asAndroidBitmap()
+                            val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
+                            cachedProcessed = filteredBmp.asImageBitmap()
+                            processedImageBitmapCache[processedKey] = cachedProcessed
+                        }
+                        cachedProcessed
+                    } else {
+                        loadedBitmap
+                    }
                     drawImage(
-                        image = loadedBitmap,
+                        image = drawImage,
                         dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
                         alpha = finalOpacity * layerOpacity,
                         blendMode = composeBlendMode
@@ -9573,7 +10335,22 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     this.strokeWidth = styleToUse.width
                 }
                 this.blendMode = composeBlendMode
-                asFrameworkPaint().maskFilter = android.graphics.BlurMaskFilter(blurRadius, blurMode)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    val tileMode = if (blurMode == android.graphics.BlurMaskFilter.Blur.OUTER) {
+                        android.graphics.Shader.TileMode.CLAMP
+                    } else {
+                        android.graphics.Shader.TileMode.DECAL
+                    }
+                    try {
+                        val fwPaint = asFrameworkPaint()
+                        val mSet = fwPaint.javaClass.getMethod("setRenderEffect", android.graphics.RenderEffect::class.java)
+                        mSet.invoke(fwPaint, android.graphics.RenderEffect.createBlurEffect(blurRadius, blurRadius, tileMode))
+                    } catch (t: Throwable) {
+                        asFrameworkPaint().maskFilter = android.graphics.BlurMaskFilter(blurRadius, blurMode)
+                    }
+                } else {
+                    asFrameworkPaint().maskFilter = android.graphics.BlurMaskFilter(blurRadius, blurMode)
+                }
             }
 
             when (layer.type) {
@@ -9646,17 +10423,22 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                         var path = pathCache.get(cacheKey)
                         if (path == null) {
                             path = androidx.compose.ui.graphics.Path().apply {
-                                val startPt = layer.brushPoints[0]
-                                moveTo(startPt.x, startPt.y)
-                                if (layer.brushPoints.size > 1) {
-                                    var i = 1
-                                    while (i < layer.brushPoints.size) {
-                                        val ctrl = layer.brushPoints.getOrNull(i) ?: break
-                                        val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
-                                        quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
-                                        i += 2
+                                val anchors = layer.brushPoints.toAnchorPoints()
+                                if (anchors.isNotEmpty()) {
+                                    val first = anchors[0]
+                                    moveTo(first.position.x, first.position.y)
+                                    for (index in 0 until anchors.size - 1) {
+                                        val current = anchors[index]
+                                        val next = anchors[index + 1]
+                                        cubicTo(
+                                            current.handleOut.x, current.handleOut.y,
+                                            next.handleIn.x, next.handleIn.y,
+                                            next.position.x, next.position.y
+                                        )
                                     }
                                 } else {
+                                    val startPt = layer.brushPoints[0]
+                                    moveTo(startPt.x, startPt.y)
                                     lineTo(startPt.x + 0.1f, startPt.y)
                                 }
                             }
@@ -9748,8 +10530,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     val uriStr = layer.imageUri
                     val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
                     if (loadedBitmap != null) {
+                        val activeEffects = layer.effects.filter { it.isEnabled }
+                        val drawImage = if (activeEffects.isNotEmpty()) {
+                            val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
+                            val processedKey = "${layer.id}_${uriStr}_${effectHash}"
+                            var cachedProcessed = processedImageBitmapCache[processedKey]
+                            if (cachedProcessed == null) {
+                                val androidBmp = loadedBitmap.asAndroidBitmap()
+                                val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
+                                cachedProcessed = filteredBmp.asImageBitmap()
+                                processedImageBitmapCache[processedKey] = cachedProcessed
+                            }
+                            cachedProcessed
+                        } else {
+                            loadedBitmap
+                        }
                         drawContext.canvas.drawImageRect(
-                            image = loadedBitmap,
+                            image = drawImage,
                             dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
                             paint = paint
                         )
@@ -9960,15 +10757,18 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                 var path = pathCache.get(cacheKey)
                 if (path == null) {
                     path = androidx.compose.ui.graphics.Path().apply {
-                        if (layer.brushPoints.size > 1) {
-                            val startPt = layer.brushPoints[0]
-                            moveTo(startPt.x, startPt.y)
-                            var i = 1
-                            while (i < layer.brushPoints.size) {
-                                val ctrl = layer.brushPoints.getOrNull(i) ?: break
-                                val endPt = layer.brushPoints.getOrNull(i + 1) ?: ctrl
-                                quadraticTo(ctrl.x, ctrl.y, endPt.x, endPt.y)
-                                i += 2
+                        val anchors = layer.brushPoints.toAnchorPoints()
+                        if (anchors.isNotEmpty()) {
+                            val first = anchors[0]
+                            moveTo(first.position.x, first.position.y)
+                            for (index in 0 until anchors.size - 1) {
+                                val current = anchors[index]
+                                val next = anchors[index + 1]
+                                cubicTo(
+                                    current.handleOut.x, current.handleOut.y,
+                                    next.handleIn.x, next.handleIn.y,
+                                    next.position.x, next.position.y
+                                )
                             }
                         } else {
                             moveTo(start.x, start.y)
@@ -10193,6 +10993,49 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             } else {
                 drawGeometry(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
             }
+        }
+    }
+
+    // --- Glass Morphism & Reeded Glass Shader Injection ---
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        val compiledEffect = if (glassMorphism != null && glassMorphism.isEnabled) {
+            com.example.studio.ui.GlassShaders.compileGlassMorphismEffect(
+                effect = glassMorphism,
+                width = layer.width,
+                height = layer.height,
+                backdrop = backdropBitmap,
+                globalX = globalX,
+                globalY = globalY,
+                zoomScale = totalScale
+            )
+        } else if (reededGlass != null && reededGlass.isEnabled) {
+            com.example.studio.ui.GlassShaders.compileReededGlassEffect(
+                effect = reededGlass,
+                width = layer.width,
+                height = layer.height,
+                backdrop = backdropBitmap,
+                globalX = globalX,
+                globalY = globalY,
+                zoomScale = totalScale
+            )
+        } else {
+            null
+        }
+
+        if (compiledEffect != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val nativeCanvas = drawContext.canvas.nativeCanvas
+            val paint = android.graphics.Paint()
+            try {
+                val setRenderEffectMethod = android.graphics.Paint::class.java.getMethod(
+                    "setRenderEffect",
+                    android.graphics.RenderEffect::class.java
+                )
+                setRenderEffectMethod.invoke(paint, compiledEffect as android.graphics.RenderEffect)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            nativeCanvas.saveLayer(null, paint)
+            didSaveLayer = true
         }
     }
 
@@ -10809,56 +11652,62 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
 
     // Paint Bezier control lines overlay if active and selected
     if (layer.type == com.example.studio.model.LayerType.VECTOR_BEZIER && layer.id == selectedLayerId) {
-        if (layer.brushPoints.isNotEmpty()) {
-            val size = layer.brushPoints.size
-            for (i in 0 until size step 2) {
-                val anchor = layer.brushPoints[i]
-                
-                // Draw manual anchor
-                drawCircle(
-                    color = androidx.compose.ui.graphics.Color(0xFF00E5FF),
-                    radius = 9f / totalScale.coerceAtLeast(0.5f),
-                    center = anchor
-                )
-                drawCircle(
-                    color = androidx.compose.ui.graphics.Color.White,
-                    radius = 4.5f / totalScale.coerceAtLeast(0.5f),
-                    center = anchor
-                )
-                
-                val ctrl = layer.brushPoints.getOrNull(i + 1)
-                if (ctrl != null) {
+        val anchors = layer.brushPoints.toAnchorPoints()
+        if (anchors.isNotEmpty()) {
+            for (ap in anchors) {
+                // If handleIn is active, draw line and handle circle
+                if (ap.handleIn != ap.position) {
                     drawLine(
                         color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.6f),
-                        start = anchor,
-                        end = ctrl,
+                        start = ap.position,
+                        end = ap.handleIn,
                         strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
                         pathEffect = dashEffect
                     )
-                    
-                    val nextAnchor = layer.brushPoints.getOrNull(i + 2)
-                    if (nextAnchor != null) {
-                        drawLine(
-                            color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.6f),
-                            start = nextAnchor,
-                            end = ctrl,
-                            strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
-                            pathEffect = dashEffect
-                        )
-                    }
-                    
-                    // Draw control point handle
                     drawCircle(
                         color = IndustrialAmber,
                         radius = 8.5f / totalScale.coerceAtLeast(0.5f),
-                        center = ctrl
+                        center = ap.handleIn
                     )
                     drawCircle(
                         color = androidx.compose.ui.graphics.Color.White,
                         radius = 4f / totalScale.coerceAtLeast(0.5f),
-                        center = ctrl
+                        center = ap.handleIn
                     )
                 }
+
+                // If handleOut is active, draw line and handle circle
+                if (ap.handleOut != ap.position) {
+                    drawLine(
+                        color = androidx.compose.ui.graphics.Color.LightGray.copy(alpha = 0.6f),
+                        start = ap.position,
+                        end = ap.handleOut,
+                        strokeWidth = 2f / totalScale.coerceAtLeast(0.5f),
+                        pathEffect = dashEffect
+                    )
+                    drawCircle(
+                        color = IndustrialAmber,
+                        radius = 8.5f / totalScale.coerceAtLeast(0.5f),
+                        center = ap.handleOut
+                    )
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color.White,
+                        radius = 4f / totalScale.coerceAtLeast(0.5f),
+                        center = ap.handleOut
+                    )
+                }
+
+                // Main anchor center point
+                drawCircle(
+                    color = androidx.compose.ui.graphics.Color(0xFF00E5FF),
+                    radius = 9f / totalScale.coerceAtLeast(0.5f),
+                    center = ap.position
+                )
+                drawCircle(
+                    color = androidx.compose.ui.graphics.Color.White,
+                    radius = 4.5f / totalScale.coerceAtLeast(0.5f),
+                    center = ap.position
+                )
             }
         } else {
             val start = androidx.compose.ui.geometry.Offset(0f, layer.height)
@@ -10918,6 +11767,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
         )
     }
+    if (didSaveLayer) {
+        drawContext.canvas.nativeCanvas.restore()
+    }
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnectedLayer(
@@ -10930,7 +11782,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     dashEffect: androidx.compose.ui.graphics.PathEffect,
     composeBlendMode: androidx.compose.ui.graphics.BlendMode,
     imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>,
-    sharedTransformMatrix: androidx.compose.ui.graphics.Matrix
+    sharedTransformMatrix: androidx.compose.ui.graphics.Matrix,
+    backdropBitmap: android.graphics.Bitmap? = null,
+    globalX: Float = 0f,
+    globalY: Float = 0f
 ) {
     var twirlFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
     var pinchFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
@@ -10998,9 +11853,75 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
         totalScale = totalScale,
         dashEffect = dashEffect,
         imageBitmapCache = imageBitmapCache,
-        composeBlendMode = composeBlendMode
+        composeBlendMode = composeBlendMode,
+        backdropBitmap = backdropBitmap,
+        globalX = globalX,
+        globalY = globalY
     )
     drawContext.canvas.restore()
+}
+
+private fun getOrCreateBackdropBitmap(width: Int, height: Int, existing: android.graphics.Bitmap?): android.graphics.Bitmap {
+    if (existing != null && existing.width == width && existing.height == height) {
+        existing.eraseColor(android.graphics.Color.TRANSPARENT)
+        return existing
+    }
+    existing?.recycle()
+    return android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.generateBackdropForLayer(
+    layers: List<com.example.studio.model.StudioLayer>,
+    currentIndex: Int,
+    canvasWidth: Float,
+    canvasHeight: Float,
+    imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>,
+    pathCache: android.util.SparseArray<androidx.compose.ui.graphics.Path>,
+    pathPointsCountCache: android.util.SparseIntArray,
+    existingBitmap: android.graphics.Bitmap?
+): android.graphics.Bitmap? {
+    if (android.os.Build.VERSION.SDK_INT < 33) return null
+    val w = canvasWidth.toInt().coerceIn(100, 4000)
+    val h = canvasHeight.toInt().coerceIn(100, 4000)
+    
+    return try {
+        val bitmap = getOrCreateBackdropBitmap(w, h, existingBitmap)
+        val canvas = android.graphics.Canvas(bitmap)
+        val composeCanvas = androidx.compose.ui.graphics.Canvas(canvas)
+        val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
+        
+        drawScope.draw(
+            density = androidx.compose.ui.unit.Density(1.0f),
+            layoutDirection = androidx.compose.ui.unit.LayoutDirection.Ltr,
+            canvas = composeCanvas,
+            size = androidx.compose.ui.geometry.Size(w.toFloat(), h.toFloat())
+        ) {
+            // Draw previous layers from back to front (largest index down to currentIndex + 1)
+            for (idx in layers.size - 1 downTo currentIndex + 1) {
+                val lyr = layers[idx]
+                if (!lyr.isVisible) continue
+                val lOpacity = lyr.opacity
+                val cBlend = lyr.blendMode.toComposeBlendMode()
+                
+                drawSingleConnectedLayer(
+                    layer = lyr,
+                    layerOpacity = lOpacity,
+                    selectedLayerId = null,
+                    pathCache = pathCache,
+                    pathPointsCountCache = pathPointsCountCache,
+                    totalScale = 1.0f,
+                    dashEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(12f, 8f)),
+                    composeBlendMode = cBlend,
+                    imageBitmapCache = imageBitmapCache,
+                    sharedTransformMatrix = androidx.compose.ui.graphics.Matrix()
+                )
+            }
+        }
+        bitmap
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
 }
 
 @Composable
