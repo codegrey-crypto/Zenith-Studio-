@@ -714,6 +714,68 @@ class CappedHistoryStack(private val maxLimit: Int = 40) {
     }
 }
 
+data class StudioRuler(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String = "Ruler",
+    val enabled: Boolean = true,
+    val orientation: String = "Horizontal",
+    val position: Float = 300f,
+    val angle: Float = 0f,
+    val locked: Boolean = false
+)
+
+private fun snapPointToRulers(
+    px: Float,
+    py: Float,
+    rulers: List<StudioRuler>,
+    canvasWidth: Float,
+    canvasHeight: Float
+): Offset {
+    var bestPoints = Offset(px, py)
+    var minDistanceSq = Float.MAX_VALUE
+    for (ruler in rulers) {
+        if (!ruler.enabled) continue
+        val w = canvasWidth
+        val h = canvasHeight
+        val angleRad = (ruler.angle * Math.PI / 180.0)
+        val dX: Float
+        val dY: Float
+        val aX: Float
+        val aY: Float
+        if (ruler.orientation == "Horizontal") {
+            dX = Math.cos(angleRad).toFloat()
+            dY = Math.sin(angleRad).toFloat()
+            aX = w / 2f
+            aY = ruler.position
+        } else {
+            dX = -Math.sin(angleRad).toFloat()
+            dY = Math.cos(angleRad).toFloat()
+            aX = ruler.position
+            aY = h / 2f
+        }
+        val t = (px - aX) * dX + (py - aY) * dY
+        val snappedX = aX + t * dX
+        val snappedY = aY + t * dY
+        val distSq = (px - snappedX) * (px - snappedX) + (py - snappedY) * (py - snappedY)
+        if (distSq < minDistanceSq) {
+            minDistanceSq = distSq
+            bestPoints = Offset(snappedX, snappedY)
+        }
+    }
+    return bestPoints
+}
+
+data class WorkspaceRulerSettings(
+    val rulers: List<StudioRuler> = emptyList(),
+    val onRulersChange: (List<StudioRuler>) -> Unit = {},
+    val selectedRulerId: String = "",
+    val onSelectedRulerIdChange: (String) -> Unit = {},
+    val snapToRuler: Boolean = true,
+    val onSnapToRulerChange: (Boolean) -> Unit = {}
+)
+
+val LocalRulerSettings = androidx.compose.runtime.compositionLocalOf { WorkspaceRulerSettings() }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkspaceScreen(modifier: Modifier = Modifier) {
@@ -761,14 +823,31 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var showAddShapeDialog by remember { mutableStateOf(false) }
     var showBrushesLibrary by remember { mutableStateOf(false) }
 
-    var rulerEnabled by remember { mutableStateOf(false) }
-    var rulerOrientation by remember { mutableStateOf("Horizontal") }
-    var rulerPosition by remember { mutableStateOf(300f) }
+    var rulers by remember {
+        mutableStateOf(
+            listOf(
+                StudioRuler(
+                    id = "default_ruler",
+                    name = "Primary Ruler",
+                    enabled = false,
+                    orientation = "Horizontal",
+                    position = 300f,
+                    angle = 0f,
+                    locked = false
+                )
+            )
+        )
+    }
+    var selectedRulerId by remember { mutableStateOf("default_ruler") }
+    val activeRuler = rulers.find { it.id == selectedRulerId } ?: rulers.firstOrNull() ?: StudioRuler()
+    val rulerEnabled = activeRuler.enabled
+    val rulerOrientation = activeRuler.orientation
+    val rulerPosition = activeRuler.position
+    val rulerAngle = activeRuler.angle
+    val rulerLocked = activeRuler.locked
+
     var gridEnabled by remember { mutableStateOf(false) }
     var showExportResolutionDialog by remember { mutableStateOf(false) }
-
-    var rulerAngle by remember { mutableStateOf(0f) }
-    var rulerLocked by remember { mutableStateOf(false) }
     var snapToRuler by remember { mutableStateOf(true) }
     var gridColumns by remember { mutableStateOf(8) }
     var gridRows by remember { mutableStateOf(8) }
@@ -1005,6 +1084,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val currentRulerPositionState = rememberUpdatedState(rulerPosition)
     val currentRulerAngleState = rememberUpdatedState(rulerAngle)
     val currentSnapToRulerState = rememberUpdatedState(snapToRuler)
+    val currentRulersState = rememberUpdatedState(rulers)
+    val currentSelectedRulerIdState = rememberUpdatedState(selectedRulerId)
 
     val executeArtworkExport: (Float, Boolean) -> Unit = { mult, cmyk ->
         android.widget.Toast.makeText(context, "Exporting high-resolution artwork to Gallery...", android.widget.Toast.LENGTH_SHORT).show()
@@ -1110,7 +1191,18 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     } else {
         @Composable
         fun RenderBottomEffectPanel(isLandscapeMode: Boolean) {
-            BottomEffectPanel(
+            val rulerSettings = remember(rulers, selectedRulerId, snapToRuler) {
+                WorkspaceRulerSettings(
+                    rulers = rulers,
+                    onRulersChange = { rulers = it },
+                    selectedRulerId = selectedRulerId,
+                    onSelectedRulerIdChange = { selectedRulerId = it },
+                    snapToRuler = snapToRuler,
+                    onSnapToRulerChange = { snapToRuler = it }
+                )
+            }
+            CompositionLocalProvider(LocalRulerSettings provides rulerSettings) {
+                BottomEffectPanel(
                 selectedLayer = selectedLayer,
                 selectedEffectIndex = selectedEffectIndex,
                 onSelectEffectIndex = { selectedEffectIndex = it },
@@ -1190,23 +1282,24 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 gridEnabled = gridEnabled,
                 onGridEnabledChange = { gridEnabled = it },
                 rulerEnabled = rulerEnabled,
-                onRulerEnabledChange = { rulerEnabled = it },
+                onRulerEnabledChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(enabled = value) else it } },
                 rulerOrientation = rulerOrientation,
-                onRulerOrientationChange = { rulerOrientation = it },
+                onRulerOrientationChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(orientation = value) else it } },
                 rulerPosition = rulerPosition,
-                onRulerPositionChange = { rulerPosition = it },
+                onRulerPositionChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(position = value) else it } },
                 gridColumns = gridColumns,
                 onGridColumnsChange = { gridColumns = it },
                 gridRows = gridRows,
                 onGridRowsChange = { gridRows = it },
                 rulerAngle = rulerAngle,
-                onRulerAngleChange = { rulerAngle = it },
+                onRulerAngleChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(angle = value) else it } },
                 rulerLocked = rulerLocked,
-                onRulerLockedChange = { rulerLocked = it },
+                onRulerLockedChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(locked = value) else it } },
                 snapToRuler = snapToRuler,
                 onSnapToRulerChange = { snapToRuler = it },
                 isLandscape = isLandscapeMode
             )
+            }
         }
 
         // App Workspace UI Grid Root
@@ -1335,7 +1428,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 gridEnabled = true
                                 isBottomPanelVisible = true
                             } else if (it == "Ruler") {
-                                rulerEnabled = true
+                                rulers = rulers.map { r -> if (r.id == selectedRulerId) r.copy(enabled = true) else r }
                                 isBottomPanelVisible = true
                             }
                         }
@@ -1474,26 +1567,16 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                         currentStrokePoints = emptyList()
                                                         var snappedStartX = localStartX
                                                         var snappedStartY = localStartY
-                                                        if (rulerEnabled && snapToRuler) {
-                                                            val angleRad = (rulerAngle * Math.PI / 180.0)
-                                                            val dX: Float
-                                                            val dY: Float
-                                                            val aX: Float
-                                                            val aY: Float
-                                                            if (rulerOrientation == "Horizontal") {
-                                                                dX = Math.cos(angleRad).toFloat()
-                                                                dY = Math.sin(angleRad).toFloat()
-                                                                aX = 0f
-                                                                aY = rulerPosition
-                                                            } else {
-                                                                dX = -Math.sin(angleRad).toFloat()
-                                                                dY = Math.cos(angleRad).toFloat()
-                                                                aX = rulerPosition
-                                                                aY = 0f
-                                                            }
-                                                            val t = (localStartX - aX) * dX + (localStartY - aY) * dY
-                                                            snappedStartX = aX + t * dX
-                                                            snappedStartY = aY + t * dY
+                                                        if (snapToRuler && currentRulersState.value.any { it.enabled }) {
+                                                            val snapped = snapPointToRulers(
+                                                                px = localStartX,
+                                                                py = localStartY,
+                                                                rulers = currentRulersState.value,
+                                                                canvasWidth = currentCanvasWidthState.value,
+                                                                canvasHeight = currentCanvasHeightState.value
+                                                            )
+                                                            snappedStartX = snapped.x
+                                                            snappedStartY = snapped.y
                                                         }
                                                         currentStrokePoints = currentStrokePoints + Offset(snappedStartX, snappedStartY)
                                                     } else {
@@ -1570,36 +1653,27 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 if (tool == "Brush" || tool == "Eraser") {
                                                     var snappedX = localChangeX
                                                     var snappedY = localChangeY
-                                                    if (rulerEnabled && snapToRuler) {
-                                                        val angleRad = (rulerAngle * Math.PI / 180.0)
-                                                        val dX: Float
-                                                        val dY: Float
-                                                        val aX: Float
-                                                        val aY: Float
-                                                        if (rulerOrientation == "Horizontal") {
-                                                            dX = Math.cos(angleRad).toFloat()
-                                                            dY = Math.sin(angleRad).toFloat()
-                                                            aX = 0f
-                                                            aY = rulerPosition
-                                                        } else {
-                                                            dX = -Math.sin(angleRad).toFloat()
-                                                            dY = Math.cos(angleRad).toFloat()
-                                                            aX = rulerPosition
-                                                            aY = 0f
-                                                        }
-                                                        val t = (localChangeX - aX) * dX + (localChangeY - aY) * dY
-                                                        snappedX = aX + t * dX
-                                                        snappedY = aY + t * dY
+                                                    if (snapToRuler && currentRulersState.value.any { it.enabled }) {
+                                                        val snapped = snapPointToRulers(
+                                                            px = localChangeX,
+                                                            py = localChangeY,
+                                                            rulers = currentRulersState.value,
+                                                            canvasWidth = currentCanvasWidthState.value,
+                                                            canvasHeight = currentCanvasHeightState.value
+                                                        )
+                                                        snappedX = snapped.x
+                                                        snappedY = snapped.y
                                                     }
                                                     currentStrokePoints = currentStrokePoints + Offset(snappedX, snappedY)
                                                     pathCache.remove(999999)
                                                     pathCache.remove(1999999)
                                                 } else if (tool == "Ruler") {
-                                                    if (!rulerLocked) {
-                                                        if (rulerOrientation == "Horizontal") {
-                                                            rulerPosition = localChangeY
-                                                        } else {
-                                                            rulerPosition = localChangeX
+                                                    val activeId = currentSelectedRulerIdState.value
+                                                    val activeR = currentRulersState.value.find { it.id == activeId }
+                                                    if (activeR != null && !activeR.locked) {
+                                                        val newPos = if (activeR.orientation == "Horizontal") localChangeY else localChangeX
+                                                        rulers = currentRulersState.value.map {
+                                                            if (it.id == activeId) it.copy(position = newPos) else it
                                                         }
                                                     }
                                                 } else {
@@ -6404,8 +6478,512 @@ fun Modifier.clickableValueEdit(
     }
 }
 
+// BRAND NEW REFACTORED WORKSPACE BOTTOM EFFECT PANEL BY GOOGLE AI STUDIO BUILD
 @Composable
 fun BottomEffectPanel(
+    selectedLayer: StudioLayer?,
+    selectedEffectIndex: Int,
+    onSelectEffectIndex: (Int) -> Unit,
+    onAddEffect: (StudioEffect) -> Unit,
+    onUpdateEffectParam: (String, String, Float) -> Unit,
+    onRemoveEffect: (String) -> Unit,
+    onToggleEffectEnabled: (String) -> Unit,
+    onUpdateLayer: (StudioLayer) -> Unit,
+    onCloseBottomPanel: () -> Unit,
+    onOpenEffectsGallery: () -> Unit,
+    onOpenBrushesLibrary: () -> Unit = {},
+    activeTool: String,
+    brushSize: Float,
+    onBrushSizeChange: (Float) -> Unit,
+    brushOpacity: Float,
+    onBrushOpacityChange: (Float) -> Unit,
+    brushColor: Color,
+    onBrushColorChange: (Color) -> Unit,
+    brushSmoothing: Boolean,
+    onBrushSmoothingChange: (Boolean) -> Unit,
+    brushPresetIndex: Int,
+    onBrushPresetIndexChange: (Int) -> Unit,
+    fontSearchQuery: String = "",
+    onFontSearchQueryChange: (String) -> Unit = {},
+    selectedCategoryFilter: String = "All",
+    onSelectedCategoryFilterChange: (String) -> Unit = {},
+    onImportFontClick: () -> Unit = {},
+    onExportCanvas: () -> Unit,
+    gridEnabled: Boolean = false,
+    onGridEnabledChange: (Boolean) -> Unit = {},
+    rulerEnabled: Boolean = false,
+    onRulerEnabledChange: (Boolean) -> Unit = {},
+    rulerOrientation: String = "Horizontal",
+    onRulerOrientationChange: (String) -> Unit = {},
+    rulerPosition: Float = 300f,
+    onRulerPositionChange: (Float) -> Unit = {},
+    gridColumns: Int = 8,
+    onGridColumnsChange: (Int) -> Unit = {},
+    gridRows: Int = 8,
+    onGridRowsChange: (Int) -> Unit = {},
+    rulerAngle: Float = 0f,
+    onRulerAngleChange: (Float) -> Unit = {},
+    rulerLocked: Boolean = false,
+    onRulerLockedChange: (Boolean) -> Unit = {},
+    snapToRuler: Boolean = true,
+    onSnapToRulerChange: (Boolean) -> Unit = {},
+    isLandscape: Boolean = false
+) {
+    var activeTabOfPanel by remember { mutableStateOf(0) } // 0: Transform, 1: Edit Shape, 2: Color, 3: Filters & FX Stack, 4: Stroke & Shadows
+    var isDetailViewActive by remember { mutableStateOf(false) }
+
+    val isBrushStudioActive = (activeTool == "Brush") || (selectedLayer?.type == LayerType.FREEHAND_DRAWING)
+
+    LaunchedEffect(selectedLayer, activeTool, isBrushStudioActive) {
+        if (selectedLayer == null || activeTool == "Grid" || activeTool == "Ruler" || isBrushStudioActive) {
+            isDetailViewActive = false
+        }
+    }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var activeValueEditConfig by remember { mutableStateOf<SliderValueEditConfig?>(null) }
+
+    val currentSize = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        config?.parameters?.get("Size")?.value ?: brushSize
+    } else {
+        brushSize
+    }
+
+    val currentOpacity = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        config?.parameters?.get("Opacity")?.value ?: brushOpacity
+    } else {
+        brushOpacity
+    }
+
+    val currentSmoothing = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        val valSmooth = config?.parameters?.get("Smoothing")?.value ?: 1.0f
+        valSmooth > 0.5f
+    } else {
+        brushSmoothing
+    }
+
+    val currentPreset = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        config?.parameters?.get("Preset")?.value?.toInt() ?: brushPresetIndex
+    } else {
+        brushPresetIndex
+    }
+
+    val currentColor = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        selectedLayer.baseColor
+    } else {
+        brushColor
+    }
+
+    val updateBrushParams = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color? ->
+        if (newSize != null) onBrushSizeChange(newSize)
+        if (newOpacity != null) onBrushOpacityChange(newOpacity)
+        if (newSmooth != null) onBrushSmoothingChange(newSmooth)
+        if (newPreset != null) onBrushPresetIndexChange(newPreset)
+        if (newColor != null) onBrushColorChange(newColor)
+
+        if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+            val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+            if (config != null) {
+                var updatedConfig = config
+                if (newSize != null) updatedConfig = updatedConfig.updateParameter("Size", newSize) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newOpacity != null) updatedConfig = updatedConfig.updateParameter("Opacity", newOpacity) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newSmooth != null) updatedConfig = updatedConfig.updateParameter("Smoothing", if (newSmooth) 1.0f else 0.0f) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newPreset != null) updatedConfig = updatedConfig.updateParameter("Preset", newPreset.toFloat()) as com.example.studio.model.StudioEffect.PhotoshopEffect
+
+                val updatedEffects = selectedLayer.effects.map { if (it.id == config.id) updatedConfig else it }
+                onUpdateLayer(
+                    selectedLayer.copy(
+                        baseColor = newColor ?: selectedLayer.baseColor,
+                        effects = updatedEffects
+                    )
+                )
+            } else {
+                onUpdateLayer(selectedLayer.copy(baseColor = newColor ?: selectedLayer.baseColor))
+            }
+        }
+    }
+
+    val panelModifier = if (isLandscape) {
+        Modifier
+            .width(360.dp)
+            .fillMaxHeight()
+            .padding(top = 8.dp, bottom = 8.dp, end = 8.dp)
+            .background(SlatePanel, RoundedCornerShape(16.dp))
+            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+            .padding(10.dp)
+    } else {
+        Modifier
+            .fillMaxWidth()
+            .height(260.dp)
+            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+            .background(SlatePanel, RoundedCornerShape(16.dp))
+            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+            .padding(12.dp)
+    }
+
+    CompositionLocalProvider(LocalSliderValueEditTrigger provides { activeValueEditConfig = it }) {
+        if (isBrushStudioActive || activeTool == "Grid" || activeTool == "Ruler") {
+            Row(
+                modifier = panelModifier,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                LeftTelemetryAndStatsColumn(
+                    activeTool = activeTool,
+                    selectedLayer = selectedLayer,
+                    gridEnabled = gridEnabled,
+                    gridColumns = gridColumns,
+                    gridRows = gridRows,
+                    rulerEnabled = rulerEnabled,
+                    rulerAngle = rulerAngle,
+                    snapToRuler = snapToRuler,
+                    isBrushStudioActive = isBrushStudioActive,
+                    currentPreset = currentPreset,
+                    currentSize = currentSize,
+                    currentOpacity = currentOpacity,
+                    activeTabOfPanel = activeTabOfPanel,
+                    onActiveTabOfPanelChange = { activeTabOfPanel = it },
+                    onCloseBottomPanel = onCloseBottomPanel,
+                    onNavigateToDetail = { isDetailViewActive = true }
+                )
+
+                Spacer(Modifier.width(8.dp))
+
+                // PANEL RIGHT TAB VIEW
+                if (activeTool == "Grid") {
+                    GridControlPane(
+                        gridEnabled = gridEnabled,
+                        onGridEnabledChange = onGridEnabledChange,
+                        gridColumns = gridColumns,
+                        onGridColumnsChange = onGridColumnsChange,
+                        gridRows = gridRows,
+                        onGridRowsChange = onGridRowsChange,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                } else if (activeTool == "Ruler") {
+                    RulerControlPane(
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                } else if (isBrushStudioActive) {
+                    BrushStudioControlPane(
+                        currentPreset = currentPreset,
+                        currentSize = currentSize,
+                        currentOpacity = currentOpacity,
+                        currentColor = currentColor,
+                        currentSmoothing = currentSmoothing,
+                        updateBrushParams = updateBrushParams,
+                        onOpenBrushesLibrary = onOpenBrushesLibrary,
+                        gridEnabled = gridEnabled,
+                        onGridEnabledChange = onGridEnabledChange,
+                        rulerEnabled = rulerEnabled,
+                        onRulerEnabledChange = onRulerEnabledChange,
+                        rulerOrientation = rulerOrientation,
+                        onRulerOrientationChange = onRulerOrientationChange,
+                        rulerPosition = rulerPosition,
+                        onRulerPositionChange = onRulerPositionChange,
+                        modifier = Modifier.weight(1f).fillMaxHeight()
+                    )
+                }
+            }
+        } else if (selectedLayer != null) {
+            Box(modifier = panelModifier) {
+                AnimatedContent(
+                    targetState = isDetailViewActive,
+                    transitionSpec = {
+                        if (targetState) {
+                            slideInHorizontally { width -> width } togetherWith
+                                    slideOutHorizontally { width -> -width }
+                        } else {
+                            slideInHorizontally { width -> -width } togetherWith
+                                    slideOutHorizontally { width -> width }
+                        }
+                    },
+                    label = "ZenithPanelNavigation"
+                ) { showDetail ->
+                    if (showDetail) {
+                        // Level 2 (Detail View)
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { isDetailViewActive = false },
+                                        modifier = Modifier.size(28.dp).testTag("panel_back_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowBack,
+                                            contentDescription = "Back to categories list",
+                                            tint = EnergeticYellow,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    val detailTitle = when (activeTabOfPanel) {
+                                        0 -> "Dimensional Transforms"
+                                        1 -> if (selectedLayer.type == LayerType.TEXT) "Typography & Font Styling" else "Parametric Shape Editor"
+                                        2 -> "Color Designer"
+                                        3 -> "Filters & FX Config"
+                                        4 -> "Stroke & Shadows"
+                                        else -> "Zenith Parameters"
+                                    }
+                                    Text(
+                                        text = detailTitle,
+                                        style = Typography.labelMedium,
+                                        color = EnergeticYellow,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .background(DarkOnyx.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                            .border(0.5.dp, HighslateOutline, RoundedCornerShape(12.dp))
+                                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = selectedLayer.name,
+                                            style = Typography.labelSmall,
+                                            fontSize = 8.sp,
+                                            color = MatteBlue,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+
+                                IconButton(
+                                    onClick = onCloseBottomPanel,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Collapse bottom panel",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                            ) {
+                                when (activeTabOfPanel) {
+                                    0 -> TransformDetailView(
+                                        selectedLayer = selectedLayer,
+                                        onUpdateLayer = onUpdateLayer
+                                    )
+                                    1 -> TypographyOrShapeDetailView(
+                                        selectedLayer = selectedLayer,
+                                        onUpdateLayer = onUpdateLayer,
+                                        fontSearchQuery = fontSearchQuery,
+                                        onFontSearchQueryChange = onFontSearchQueryChange,
+                                        selectedCategoryFilter = selectedCategoryFilter,
+                                        onSelectedCategoryFilterChange = onSelectedCategoryFilterChange,
+                                        onImportFontClick = onImportFontClick
+                                    )
+                                    2 -> {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                                .padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text("Color Designer 🎨", style = Typography.labelSmall, color = EnergeticYellow)
+                                            HsvColorPickerPanel(
+                                                currentColor = selectedLayer.baseColor,
+                                                currentOpacity = selectedLayer.opacity,
+                                                onColorChanged = { newColor ->
+                                                    onUpdateLayer(selectedLayer.copy(baseColor = newColor))
+                                                },
+                                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                                selectedLayer = selectedLayer,
+                                                onUpdateLayer = onUpdateLayer
+                                            )
+                                            if (selectedLayer.type == LayerType.TEXT) {
+                                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    Text("Source Text Content", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                                                    var txtInputBuf by remember(selectedLayer.id) { mutableStateOf(selectedLayer.textContent) }
+                                                    OutlinedTextField(
+                                                        value = txtInputBuf,
+                                                        onValueChange = {
+                                                            txtInputBuf = it
+                                                            onUpdateLayer(selectedLayer.copy(textContent = it))
+                                                        },
+                                                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                                                        textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                                                        singleLine = true,
+                                                        colors = OutlinedTextFieldDefaults.colors(
+                                                            focusedBorderColor = IndustrialAmber,
+                                                            unfocusedBorderColor = HighslateOutline,
+                                                            cursorColor = IndustrialAmber
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    3 -> FiltersAndFxDetailView(
+                                        selectedLayer = selectedLayer,
+                                        selectedEffectIndex = selectedEffectIndex,
+                                        onSelectEffectIndex = onSelectEffectIndex,
+                                        onRemoveEffect = onRemoveEffect,
+                                        onToggleEffectEnabled = onToggleEffectEnabled,
+                                        onUpdateEffectParam = onUpdateEffectParam,
+                                        onOpenEffectsGallery = onOpenEffectsGallery
+                                    )
+                                    4 -> BordersAndShadowsTabPanel(
+                                        selectedLayer = selectedLayer,
+                                        onAddEffect = onAddEffect,
+                                        onUpdateEffectParam = onUpdateEffectParam
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        // Level 1: Category Menu View
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("Zenith Parameters", style = Typography.labelMedium, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = selectedLayer.name,
+                                            style = Typography.bodyMedium,
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .background(DarkOnyx.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                                .border(0.5.dp, HighslateOutline, RoundedCornerShape(12.dp))
+                                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                                        ) {
+                                            Text(
+                                                text = selectedLayer.type.name,
+                                                style = Typography.labelSmall,
+                                                fontSize = 8.sp,
+                                                color = MatteBlue
+                                            )
+                                        }
+                                    }
+                                }
+                                IconButton(
+                                    onClick = onCloseBottomPanel,
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Collapse bottom panel",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                val categories = listOf(
+                                    Triple(0, "Transform", Icons.Default.Transform),
+                                    Triple(1, if (selectedLayer.type == LayerType.TEXT) "Type 🔤" else "Shape 📐", Icons.Default.Category),
+                                    Triple(2, "Color 🎨", Icons.Default.Palette),
+                                    Triple(3, "Filters & FX (${selectedLayer.effects.size})", Icons.Default.FilterFrames),
+                                    Triple(4, "Stroke & Shadows ✨", Icons.Default.Deblur)
+                                )
+
+                                categories.forEach { (index, label, icon) ->
+                                    Button(
+                                        onClick = {
+                                            activeTabOfPanel = index
+                                            isDetailViewActive = true
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (activeTabOfPanel == index && isDetailViewActive) IndustrialAmber else MidSlate
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(38.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = icon,
+                                                    contentDescription = label,
+                                                    tint = if (activeTabOfPanel == index && isDetailViewActive) DarkOnyx else EnergeticYellow,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Text(
+                                                    text = label,
+                                                    style = Typography.labelSmall,
+                                                    color = if (activeTabOfPanel == index && isDetailViewActive) DarkOnyx else TextPrimary,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = Icons.Default.ChevronRight,
+                                                contentDescription = "Open detail list of sliders",
+                                                tint = if (activeTabOfPanel == index && isDetailViewActive) DarkOnyx else TextSecondary,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            Box(modifier = panelModifier, contentAlignment = Alignment.Center) {
+                Text("Select Canvas Layer first", style = Typography.labelSmall, color = TextSecondary)
+            }
+        }
+    }
+
+    if (activeValueEditConfig != null) {
+        SliderValueEditDialog(
+            config = activeValueEditConfig!!,
+            onDismiss = { activeValueEditConfig = null }
+        )
+    }
+}
+
+@Composable
+fun OldBottomEffectPanel(
     selectedLayer: StudioLayer?,
     selectedEffectIndex: Int,
     onSelectEffectIndex: (Int) -> Unit,
@@ -6762,289 +7340,28 @@ fun BottomEffectPanel(
             )
         } else if (activeTool == "Ruler") {
             RulerControlPane(
+                modifier = Modifier.weight(1f).fillMaxHeight()
+            )
+        } else if (isBrushStudioActive) {
+            // Paint Brush Studio subpanels delegated to the separate top-level private Composable
+            BrushStudioControlPane(
+                currentPreset = currentPreset,
+                currentSize = currentSize,
+                currentOpacity = currentOpacity,
+                currentColor = currentColor,
+                currentSmoothing = currentSmoothing,
+                updateBrushParams = updateBrushParams,
+                onOpenBrushesLibrary = onOpenBrushesLibrary,
+                gridEnabled = gridEnabled,
+                onGridEnabledChange = onGridEnabledChange,
                 rulerEnabled = rulerEnabled,
                 onRulerEnabledChange = onRulerEnabledChange,
                 rulerOrientation = rulerOrientation,
                 onRulerOrientationChange = onRulerOrientationChange,
-                rulerLocked = rulerLocked,
-                onRulerLockedChange = onRulerLockedChange,
-                snapToRuler = snapToRuler,
-                onSnapToRulerChange = onSnapToRulerChange,
-                rulerAngle = rulerAngle,
-                onRulerAngleChange = onRulerAngleChange,
                 rulerPosition = rulerPosition,
                 onRulerPositionChange = onRulerPositionChange,
                 modifier = Modifier.weight(1f).fillMaxHeight()
             )
-        } else if (isBrushStudioActive) {
-            // Paint Brush Studio subpanels
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .horizontalScroll(androidx.compose.foundation.rememberScrollState())
-            ) {
-                // Preset Selector
-                Column(
-                    modifier = Modifier
-                        .width(220.dp)
-                        .fillMaxHeight()
-                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
-                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                        .padding(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Brush Library", style = Typography.labelSmall, color = EnergeticYellow)
-                        IconButton(
-                            onClick = onOpenBrushesLibrary,
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.OpenInNew,
-                                contentDescription = "Open Library",
-                                tint = IndustrialAmber,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
-                    }
-
-                    // Highly striking, premium button to trigger the fullscreen brushes picker
-                    Button(
-                        onClick = onOpenBrushesLibrary,
-                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
-                        shape = RoundedCornerShape(6.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(28.dp)
-                    ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Brush,
-                                contentDescription = "Brush",
-                                tint = DarkOnyx,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Text("BRUSHES (41) ⚡", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    val presets = listOf(
-                        Triple(0, "Solid Ink", "✎"),
-                        Triple(1, "Calligraphy", "✒"),
-                        Triple(2, "Neon Glow", "⚡"),
-                        Triple(3, "Airbrush", "☁"),
-                        Triple(4, "Felt Marker", "▮"),
-                        Triple(5, "Dotted Line", "⁏"),
-                        Triple(6, "Splatter Spray", "❖")
-                    )
-
-                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        items(presets.size) { index ->
-                            val p = presets[index]
-                            val isSel = currentPreset == p.first
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(30.dp)
-                                    .background(if (isSel) IndustrialAmber else SlatePanel, RoundedCornerShape(4.dp))
-                                    .clickable { updateBrushParams(null, null, null, p.first, null) }
-                                    .padding(horizontal = 4.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(p.third, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 11.sp)
-                                    Text(p.second, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.width(8.dp))
-
-                // Stroke Precision & Sliders
-                Column(
-                    modifier = Modifier
-                        .width(270.dp)
-                        .fillMaxHeight()
-                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
-                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Stroke Precision", style = Typography.labelSmall, color = EnergeticYellow)
-                        // Dynamic live preview line of the selected brush format
-                        Canvas(
-                            modifier = Modifier
-                                .width(80.dp)
-                                .height(20.dp)
-                                .background(Color(0xFF0C0C0E), RoundedCornerShape(3.dp))
-                                .border(0.5.dp, HighslateOutline, RoundedCornerShape(3.dp))
-                        ) {
-                            val w = size.width
-                            val h = size.height
-                            val pts = listOf(
-                                Offset(w * 0.15f, h * 0.5f),
-                                Offset(w * 0.35f, h * 0.25f),
-                                Offset(w * 0.65f, h * 0.75f),
-                                Offset(w * 0.85f, h * 0.5f)
-                            )
-                            drawBrushStroke(
-                                points = pts,
-                                color = currentColor,
-                                size = currentSize * 0.45f,
-                                opacity = currentOpacity,
-                                presetIndex = currentPreset,
-                                smoothing = currentSmoothing,
-                                originX = 0f,
-                                originY = 0f,
-                                composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
-                            )
-                        }
-                    }
-
-                    // Size Slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Size", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
-                        Slider(
-                            value = currentSize,
-                            onValueChange = { updateBrushParams(it, null, null, null, null) },
-                            valueRange = 3f..120f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.weight(1f).height(28.dp)
-                        )
-                        Text("${currentSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Size", currentSize, 3f..120f, isInt = true) { updateBrushParams(it, null, null, null, null) }, textAlign = TextAlign.End)
-                    }
-
-                    // Opacity Slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Flow", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
-                        Slider(
-                            value = currentOpacity,
-                            onValueChange = { updateBrushParams(null, it, null, null, null) },
-                            valueRange = 0.05f..1.0f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.weight(1f).height(28.dp)
-                        )
-                        Text("${(currentOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Flow", currentOpacity, 0.05f..1.0f, isPercent = true) { updateBrushParams(null, it, null, null, null) }, textAlign = TextAlign.End)
-                    }
-
-                    // Smoothing button switch
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(32.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Bezier Curves", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
-                        Button(
-                            onClick = { updateBrushParams(null, null, !currentSmoothing, null, null) },
-                            colors = ButtonDefaults.buttonColors(containerColor = if (currentSmoothing) IndustrialAmber else MidSlate),
-                            contentPadding = PaddingValues(horizontal = 8.dp),
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.height(26.dp)
-                        ) {
-                            Text(if (currentSmoothing) "SMOOTH: ON" else "SMOOTH: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (currentSmoothing) DarkOnyx else TextPrimary)
-                        }
-                    }
-
-                    // Technical Alignment Grid Switch
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(32.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Technical Grid", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66))
-                        Button(
-                            onClick = { onGridEnabledChange(!gridEnabled) },
-                            colors = ButtonDefaults.buttonColors(containerColor = if (gridEnabled) Color(0xFF00FF66) else MidSlate),
-                            contentPadding = PaddingValues(horizontal = 8.dp),
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.height(26.dp)
-                        ) {
-                            Text(if (gridEnabled) "GRID: ON" else "GRID: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (gridEnabled) DarkOnyx else TextPrimary)
-                        }
-                    }
-
-                    // Ruler Alignment Switch & Orientation Horizontal/Vertical
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(32.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Ruler Alignment", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66))
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Button(
-                                onClick = { onRulerEnabledChange(!rulerEnabled) },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (rulerEnabled) Color(0xFF00FF66) else MidSlate),
-                                contentPadding = PaddingValues(horizontal = 6.dp),
-                                shape = RoundedCornerShape(4.dp),
-                                modifier = Modifier.height(26.dp)
-                            ) {
-                                Text(if (rulerEnabled) "RULER: ON" else "RULER: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (rulerEnabled) DarkOnyx else TextPrimary)
-                             }
-                             if (rulerEnabled) {
-                                 Button(
-                                     onClick = { onRulerOrientationChange(if (rulerOrientation == "Horizontal") "Vertical" else "Horizontal") },
-                                     colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
-                                     contentPadding = PaddingValues(horizontal = 6.dp),
-                                     shape = RoundedCornerShape(4.dp),
-                                     modifier = Modifier.height(26.dp)
-                                 ) {
-                                     Text(if (rulerOrientation == "Horizontal") "HORIZ" else "VERT", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx)
-                                 }
-                             }
-                        }
-                    }
-
-                    if (rulerEnabled) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Ruler Pos", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
-                            Slider(
-                                value = rulerPosition,
-                                onValueChange = { onRulerPositionChange(it) },
-                                valueRange = 0f..2000f,
-                                colors = SliderDefaults.colors(activeTrackColor = Color(0xFF00FF66), thumbColor = Color(0xFF00FF66)),
-                                modifier = Modifier.weight(1f).height(28.dp)
-                            )
-                            Text("${rulerPosition.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
-                        }
-                    }
-                }
-
-                Spacer(Modifier.width(8.dp))
-
-                HsvColorPickerPanel(
-                    currentColor = currentColor,
-                    currentOpacity = currentOpacity,
-                    onColorChanged = { newColor ->
-                        updateBrushParams(null, null, null, null, newColor)
-                    },
-                    modifier = Modifier.width(360.dp)
-                )
-            }
         } else if (selectedLayer != null) {
             Row(modifier = Modifier.weight(1f)) {
                 if (activeTabOfPanel == 0) {
@@ -9709,10 +10026,43 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
     composeBlendMode: androidx.compose.ui.graphics.BlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
     pathCache: android.util.SparseArray<androidx.compose.ui.graphics.Path>? = null,
     pathPointsCountCache: android.util.SparseIntArray? = null,
-    cacheKey: Int? = null
+    cacheKey: Int? = null,
+    backdropBitmap: android.graphics.Bitmap? = null
 ) {
     if (points.isEmpty()) return
-    
+
+    // Preempt with OpenGLBrushRenderer for all requested advanced categories
+    val usesAdvancedBrush = presetIndex in listOf(
+        3, 28, 29, 30, 31, 32, 33, 34, // Airbrushes
+        8, 9,                           // Vector Brushes
+        10, 11, 12, 13,                 // Sketch/Pencil
+        21, 39,                         // Watercolor
+        14, 15, 16, 22, 23, 24, 25, 26, 27, 35, 38, 40 // Ink/Comic tapered paths & Digital Pen
+    )
+
+    if (usesAdvancedBrush) {
+        val cleanPoints = points.filter { it != androidx.compose.ui.geometry.Offset.Unspecified && !it.x.isNaN() && !it.y.isNaN() }
+        if (cleanPoints.isNotEmpty()) {
+            val rendered = OpenGLBrushRenderer.renderBrushToBitmap(
+                points = cleanPoints,
+                brushColor = color,
+                size = size,
+                opacity = opacity,
+                presetIndex = presetIndex,
+                smoothing = smoothing,
+                backdropBitmap = backdropBitmap
+            )
+            if (rendered != null) {
+                drawImage(
+                    image = rendered.bitmap.asImageBitmap(),
+                    topLeft = androidx.compose.ui.geometry.Offset(rendered.offsetX - originX, rendered.offsetY - originY),
+                    blendMode = composeBlendMode
+                )
+                return
+            }
+        }
+    }
+
     val currentPointsSize = points.size
     if (cacheKey != null && pathCache != null && pathPointsCountCache != null) {
         val cachedSize = pathPointsCountCache.get(cacheKey, -1)
@@ -10950,7 +11300,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                                         composeBlendMode = strokeBlend,
                                         pathCache = pathCache,
                                         pathPointsCountCache = pathPointsCountCache,
-                                        cacheKey = layer.id.hashCode() + stroke.hashCode()
+                                        cacheKey = layer.id.hashCode() + stroke.hashCode(),
+                                        backdropBitmap = backdropBitmap
                                     )
                                 }
                             }
@@ -14167,68 +14518,219 @@ private fun GridControlPane(
 
 @Composable
 private fun RulerControlPane(
-    rulerEnabled: Boolean,
-    onRulerEnabledChange: (Boolean) -> Unit,
-    rulerOrientation: String,
-    onRulerOrientationChange: (String) -> Unit,
-    rulerLocked: Boolean,
-    onRulerLockedChange: (Boolean) -> Unit,
-    snapToRuler: Boolean,
-    onSnapToRulerChange: (Boolean) -> Unit,
-    rulerAngle: Float,
-    onRulerAngleChange: (Float) -> Unit,
-    rulerPosition: Float,
-    onRulerPositionChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val settings = LocalRulerSettings.current
+    val rulers = settings.rulers
+    val onRulersChange = settings.onRulersChange
+    val selectedRulerId = settings.selectedRulerId
+    val onSelectedRulerIdChange = settings.onSelectedRulerIdChange
+    val snapToRuler = settings.snapToRuler
+    val onSnapToRulerChange = settings.onSnapToRulerChange
+
+    val activeRuler = rulers.find { it.id == selectedRulerId } ?: rulers.firstOrNull() ?: StudioRuler()
+    
     Row(
         modifier = modifier
             .background(Color(0xFF131317), RoundedCornerShape(8.dp))
             .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Left Column: Toggles
+        // --- COLUMN 1: Rulers Stack Manager (~180dp) ---
         Column(
-            modifier = Modifier.width(200.dp),
+            modifier = Modifier
+                .width(170.dp)
+                .fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("Ruler Controls", style = Typography.labelSmall, color = Color(0xFF00FF66))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Rulers Guides", style = Typography.labelSmall, color = Color(0xFF00FF66))
+                
+                // Add Ruler Guide ("+") Button
+                IconButton(
+                    onClick = {
+                        val currentActive = rulers.find { it.id == selectedRulerId }
+                        val newR = StudioRuler(
+                            name = "Ruler ${rulers.size + 1}",
+                            enabled = true,
+                            orientation = currentActive?.orientation ?: "Horizontal",
+                            position = currentActive?.position ?: 300f,
+                            angle = currentActive?.angle ?: 0f,
+                            locked = false
+                        )
+                        val updated = rulers + newR
+                        onRulersChange(updated)
+                        onSelectedRulerIdChange(newR.id)
+                    },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Add Ruler",
+                        tint = Color(0xFF00FF66),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
             
-            // Ruler ON/OFF & Orientation
+            // LazyColumn/Column list of rulers
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                rulers.forEach { ruler ->
+                    val isSelected = ruler.id == selectedRulerId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(32.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (isSelected) MidSlate else Color.Transparent)
+                            .border(
+                                1.dp,
+                                if (isSelected) IndustrialAmber else Color.Transparent,
+                                RoundedCornerShape(4.dp)
+                            )
+                            .clickable { onSelectedRulerIdChange(ruler.id) }
+                            .padding(horizontal = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            // Mini orientation visual badge icon
+                            Icon(
+                                imageVector = if (ruler.orientation == "Horizontal") Icons.Default.Menu else Icons.Default.MoreVert,
+                                contentDescription = if (ruler.orientation == "Horizontal") "Horizontal" else "Vertical",
+                                tint = if (ruler.enabled) Color(0xFF00FF66) else TextSecondary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = ruler.name,
+                                style = Typography.labelSmall,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                color = if (ruler.enabled) TextPrimary else TextSecondary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        
+                        // Close/Delete button if there are multiple rulers
+                        if (rulers.size > 1) {
+                            IconButton(
+                                onClick = {
+                                    val updated = rulers.filter { it.id != ruler.id }
+                                    onRulersChange(updated)
+                                    if (isSelected) {
+                                        onSelectedRulerIdChange(updated.first().id)
+                                    }
+                                },
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Delete Ruler",
+                                    tint = Color.Red.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Divider
+        Box(
+            modifier = Modifier
+                .width(0.5.dp)
+                .fillMaxHeight()
+                .background(HighslateOutline)
+        )
+        
+        // --- COLUMN 2: Selected Ruler Quick Controls (~180dp) ---
+        Column(
+            modifier = Modifier.width(170.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("Selected Controls", style = Typography.labelSmall, color = EnergeticYellow)
+            
+            // Editable Name Input
+            var nameText by remember(activeRuler.id, activeRuler.name) { mutableStateOf(activeRuler.name) }
+            OutlinedTextField(
+                value = nameText,
+                onValueChange = {
+                    nameText = it
+                    val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(name = it) else r }
+                    onRulersChange(updated)
+                },
+                textStyle = Typography.labelSmall.copy(fontSize = 10.sp, color = TextPrimary),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = IndustrialAmber,
+                    unfocusedBorderColor = HighslateOutline,
+                    focusedContainerColor = MidSlate,
+                    unfocusedContainerColor = Color.Transparent
+                ),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(34.dp)
+            )
+            
+            // Enabled & Orientation buttons
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Button(
-                    onClick = { onRulerEnabledChange(!rulerEnabled) },
-                    colors = ButtonDefaults.buttonColors(containerColor = if (rulerEnabled) Color(0xFF00FF66) else MidSlate),
+                    onClick = {
+                        val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(enabled = !r.enabled) else r }
+                        onRulersChange(updated)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (activeRuler.enabled) Color(0xFF00FF66) else MidSlate),
                     modifier = Modifier.weight(1.1f).height(28.dp),
                     contentPadding = PaddingValues(horizontal = 2.dp),
                     shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text(if (rulerEnabled) "RULER: ON" else "RULER: OFF", style = Typography.labelSmall, fontSize = 8.sp, color = if (rulerEnabled) DarkOnyx else TextPrimary)
+                    Text(if (activeRuler.enabled) "ACTIVE" else "DISABLED", style = Typography.labelSmall, fontSize = 8.sp, color = if (activeRuler.enabled) DarkOnyx else TextPrimary)
                 }
                 Button(
-                    onClick = { onRulerOrientationChange(if (rulerOrientation == "Horizontal") "Vertical" else "Horizontal") },
+                    onClick = {
+                        val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(orientation = if (r.orientation == "Horizontal") "Vertical" else "Horizontal") else r }
+                        onRulersChange(updated)
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
                     modifier = Modifier.weight(0.9f).height(28.dp),
                     contentPadding = PaddingValues(horizontal = 2.dp),
                     shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text(if (rulerOrientation == "Horizontal") "HORIZ" else "VERT", style = Typography.labelSmall, fontSize = 8.sp, color = DarkOnyx)
+                    Text(if (activeRuler.orientation == "Horizontal") "HORIZ" else "VERT", style = Typography.labelSmall, fontSize = 8.sp, color = DarkOnyx)
                 }
             }
             
-            // Lock Ruler Switch
+            // Lock State Switch button
             Button(
-                onClick = { onRulerLockedChange(!rulerLocked) },
-                colors = ButtonDefaults.buttonColors(containerColor = if (rulerLocked) Color.Red else MidSlate),
+                onClick = {
+                    val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(locked = !r.locked) else r }
+                    onRulersChange(updated)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = if (activeRuler.locked) Color.Red else MidSlate),
                 modifier = Modifier.fillMaxWidth().height(28.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp),
                 shape = RoundedCornerShape(4.dp)
             ) {
-                Text(if (rulerLocked) "🔒 LOCKED" else "🔓 DRAGGABLE", style = Typography.labelSmall, fontSize = 8.sp, color = if (rulerLocked) Color.White else TextPrimary)
+                Text(if (activeRuler.locked) "🔒 LOCKED" else "🔓 DRAGGABLE", style = Typography.labelSmall, fontSize = 8.sp, color = if (activeRuler.locked) Color.White else TextPrimary)
             }
             
-            // Snap Items Switch
+            // Global Snapping
             Button(
                 onClick = { onSnapToRulerChange(!snapToRuler) },
                 colors = ButtonDefaults.buttonColors(containerColor = if (snapToRuler) Color(0xFF00FF66) else MidSlate),
@@ -14240,25 +14742,36 @@ private fun RulerControlPane(
             }
         }
         
-        // Right Column: Sliders for Angle & Position
+        // Divider
+        Box(
+            modifier = Modifier
+                .width(0.5.dp)
+                .fillMaxHeight()
+                .background(HighslateOutline)
+        )
+        
+        // --- COLUMN 3: Sliders (Angle & Position) ---
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("Calibration and Sliders", style = Typography.labelSmall, color = EnergeticYellow)
+            Text("Calibration (Diagonal & Coordinates)", style = Typography.labelSmall, color = MatteBlue)
             
-            // Angle Slider
+            // Diagonal / Rotation Angle Slider
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Ruler Rotation Angle", style = Typography.labelSmall, color = TextPrimary)
+                    Text("Diagonal Angle (Shift/Rotate)", style = Typography.labelSmall, color = TextPrimary)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("${rulerAngle.toInt()}°", style = Typography.labelSmall, fontSize = 10.sp, color = IndustrialAmber, fontWeight = FontWeight.Bold)
+                        Text("${activeRuler.angle.toInt()}°", style = Typography.labelSmall, fontSize = 10.sp, color = IndustrialAmber, fontWeight = FontWeight.Bold)
                         Button(
-                            onClick = { onRulerAngleChange(0f) },
+                            onClick = {
+                                val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(angle = 0f) else r }
+                                onRulersChange(updated)
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
                             contentPadding = PaddingValues(horizontal = 2.dp),
                             modifier = Modifier.height(18.dp).width(32.dp),
@@ -14269,8 +14782,11 @@ private fun RulerControlPane(
                     }
                 }
                 Slider(
-                    value = rulerAngle,
-                    onValueChange = onRulerAngleChange,
+                    value = activeRuler.angle,
+                    onValueChange = { angleVal ->
+                        val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(angle = angleVal) else r }
+                        onRulersChange(updated)
+                    },
                     valueRange = -180f..180f,
                     colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                     modifier = Modifier.fillMaxWidth().height(24.dp)
@@ -14285,11 +14801,14 @@ private fun RulerControlPane(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Coordinate Position", style = Typography.labelSmall, color = TextPrimary)
-                    Text("${rulerPosition.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66), fontWeight = FontWeight.Bold)
+                    Text("${activeRuler.position.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66), fontWeight = FontWeight.Bold)
                 }
                 Slider(
-                    value = rulerPosition,
-                    onValueChange = onRulerPositionChange,
+                    value = activeRuler.position,
+                    onValueChange = { posVal ->
+                        val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(position = posVal) else r }
+                        onRulersChange(updated)
+                    },
                     valueRange = 0f..2000f,
                     colors = SliderDefaults.colors(activeTrackColor = Color(0xFF00FF66), thumbColor = Color(0xFF00FF66)),
                     modifier = Modifier.fillMaxWidth().height(24.dp)
@@ -14471,6 +14990,293 @@ private fun LeftTelemetryAndStatsColumn(
         }
 
         Spacer(Modifier.height(4.dp))
+    }
+}
+
+
+@Composable
+private fun BrushStudioControlPane(
+    currentPreset: Int,
+    currentSize: Float,
+    currentOpacity: Float,
+    currentColor: Color,
+    currentSmoothing: Boolean,
+    updateBrushParams: (Float?, Float?, Boolean?, Int?, Color?) -> Unit,
+    onOpenBrushesLibrary: () -> Unit,
+    gridEnabled: Boolean,
+    onGridEnabledChange: (Boolean) -> Unit,
+    rulerEnabled: Boolean,
+    onRulerEnabledChange: (Boolean) -> Unit,
+    rulerOrientation: String,
+    onRulerOrientationChange: (String) -> Unit,
+    rulerPosition: Float,
+    onRulerPositionChange: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .horizontalScroll(androidx.compose.foundation.rememberScrollState())
+    ) {
+        // Preset Selector
+        Column(
+            modifier = Modifier
+                .width(220.dp)
+                .fillMaxHeight()
+                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Brush Library", style = Typography.labelSmall, color = EnergeticYellow)
+                IconButton(
+                    onClick = onOpenBrushesLibrary,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.OpenInNew,
+                        contentDescription = "Open Library",
+                        tint = IndustrialAmber,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+
+            // Highly striking, premium button to trigger the fullscreen brushes picker
+            Button(
+                onClick = onOpenBrushesLibrary,
+                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                shape = RoundedCornerShape(6.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Brush,
+                        contentDescription = "Brush",
+                        tint = DarkOnyx,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text("BRUSHES (41) ⚡", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            val presets = listOf(
+                Triple(0, "Solid Ink", "✎"),
+                Triple(1, "Calligraphy", "✒"),
+                Triple(2, "Neon Glow", "⚡"),
+                Triple(3, "Airbrush", "☁"),
+                Triple(4, "Felt Marker", "▮"),
+                Triple(5, "Dotted Line", "⁏"),
+                Triple(6, "Splatter Spray", "❖")
+            )
+
+            androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                items(presets.size) { index ->
+                    val p = presets[index]
+                    val isSel = currentPreset == p.first
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(30.dp)
+                            .background(if (isSel) IndustrialAmber else SlatePanel, RoundedCornerShape(4.dp))
+                            .clickable { updateBrushParams(null, null, null, p.first, null) }
+                            .padding(horizontal = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(p.third, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 11.sp)
+                            Text(p.second, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        // Stroke Precision & Sliders
+        Column(
+            modifier = Modifier
+                .width(270.dp)
+                .fillMaxHeight()
+                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Stroke Precision", style = Typography.labelSmall, color = EnergeticYellow)
+                // Dynamic live preview line of the selected brush format
+                Canvas(
+                    modifier = Modifier
+                        .width(80.dp)
+                        .height(20.dp)
+                        .background(Color(0xFF0C0C0E), RoundedCornerShape(3.dp))
+                        .border(0.5.dp, HighslateOutline, RoundedCornerShape(3.dp))
+                ) {
+                    val w = size.width
+                    val h = size.height
+                    val pts = listOf(
+                        Offset(w * 0.15f, h * 0.5f),
+                        Offset(w * 0.35f, h * 0.25f),
+                        Offset(w * 0.65f, h * 0.75f),
+                        Offset(w * 0.85f, h * 0.5f)
+                    )
+                    drawBrushStroke(
+                        points = pts,
+                        color = currentColor,
+                        size = currentSize * 0.45f,
+                        opacity = currentOpacity,
+                        presetIndex = currentPreset,
+                        smoothing = currentSmoothing,
+                        originX = 0f,
+                        originY = 0f,
+                        composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
+                    )
+                }
+            }
+
+            // Size Slider
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Size", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                Slider(
+                    value = currentSize,
+                    onValueChange = { updateBrushParams(it, null, null, null, null) },
+                    valueRange = 3f..120f,
+                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                    modifier = Modifier.weight(1f).height(28.dp)
+                )
+                Text("${currentSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Size", currentSize, 3f..120f, isInt = true) { updateBrushParams(it, null, null, null, null) }, textAlign = TextAlign.End)
+            }
+
+            // Opacity Slider
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Flow", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                Slider(
+                    value = currentOpacity,
+                    onValueChange = { updateBrushParams(null, it, null, null, null) },
+                    valueRange = 0.05f..1.0f,
+                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                    modifier = Modifier.weight(1f).height(28.dp)
+                )
+                Text("${(currentOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Flow", currentOpacity, 0.05f..1.0f, isPercent = true) { updateBrushParams(null, it, null, null, null) }, textAlign = TextAlign.End)
+            }
+
+            // Smoothing button switch
+            Row(
+                modifier = Modifier.fillMaxWidth().height(32.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Bezier Curves", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                Button(
+                    onClick = { updateBrushParams(null, null, !currentSmoothing, null, null) },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (currentSmoothing) IndustrialAmber else MidSlate),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Text(if (currentSmoothing) "SMOOTH: ON" else "SMOOTH: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (currentSmoothing) DarkOnyx else TextPrimary)
+                }
+            }
+
+            // Technical Alignment Grid Switch
+            Row(
+                modifier = Modifier.fillMaxWidth().height(32.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Technical Grid", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66))
+                Button(
+                    onClick = { onGridEnabledChange(!gridEnabled) },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (gridEnabled) Color(0xFF00FF66) else MidSlate),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Text(if (gridEnabled) "GRID: ON" else "GRID: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (gridEnabled) DarkOnyx else TextPrimary)
+                }
+            }
+
+            // Ruler Alignment Switch & Orientation Horizontal/Vertical
+            Row(
+                modifier = Modifier.fillMaxWidth().height(32.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Ruler Alignment", style = Typography.labelSmall, fontSize = 10.sp, color = Color(0xFF00FF66))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Button(
+                        onClick = { onRulerEnabledChange(!rulerEnabled) },
+                        colors = ButtonDefaults.buttonColors(containerColor = if (rulerEnabled) Color(0xFF00FF66) else MidSlate),
+                        contentPadding = PaddingValues(horizontal = 6.dp),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Text(if (rulerEnabled) "RULER: ON" else "RULER: OFF", style = Typography.labelSmall, fontSize = 9.sp, color = if (rulerEnabled) DarkOnyx else TextPrimary)
+                    }
+                    if (rulerEnabled) {
+                        Button(
+                            onClick = { onRulerOrientationChange(if (rulerOrientation == "Horizontal") "Vertical" else "Horizontal") },
+                            colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                            contentPadding = PaddingValues(horizontal = 6.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Text(if (rulerOrientation == "Horizontal") "HORIZ" else "VERT", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx)
+                        }
+                    }
+                }
+            }
+
+            if (rulerEnabled) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Ruler Pos", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                    Slider(
+                        value = rulerPosition,
+                        onValueChange = { onRulerPositionChange(it) },
+                        valueRange = 0f..2000f,
+                        colors = SliderDefaults.colors(activeTrackColor = Color(0xFF00FF66), thumbColor = Color(0xFF00FF66)),
+                        modifier = Modifier.weight(1f).height(28.dp)
+                    )
+                    Text("${rulerPosition.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
+                }
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        HsvColorPickerPanel(
+            currentColor = currentColor,
+            currentOpacity = currentOpacity,
+            onColorChanged = { newColor ->
+                updateBrushParams(null, null, null, null, newColor)
+            },
+            modifier = Modifier.width(360.dp)
+        )
     }
 }
 
