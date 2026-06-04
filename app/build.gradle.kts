@@ -97,6 +97,7 @@ dependencies {
   implementation("jp.co.cyberagent.android:gpuimage:2.1.0")
   implementation("androidx.graphics:graphics-core:1.0.0-alpha05")
   implementation("androidx.graphics:graphics-path:1.0.1")
+  implementation("androidx.compose.ui:ui-android-stubs:1.7.0")
   // implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)
   implementation(libs.kotlinx.coroutines.android)

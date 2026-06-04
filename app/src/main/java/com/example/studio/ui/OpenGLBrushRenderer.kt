@@ -251,59 +251,36 @@ object OpenGLBrushRenderer {
             else -> 0.08f // Soft mist flow
         }
 
-        // Create an Alpha Accumulation Mask frame-buffer
-        val width = canvas.width
-        val height = canvas.height
-        val maskBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ALPHA_8)
-        val maskCanvas = Canvas(maskBitmap)
-        val maskPaint = Paint().apply {
-            isAntiAlias = true
-            isFilterBitmap = true
-        }
-
         // Build Gaussian Tip texture
         val tipSize = size.coerceAtLeast(4f)
         val tipTex = getCachedGaussianTexture(tipSize, hardness)
 
-        // Interpolate extra fine steps to achieve spacing of 1% - 5% (mist continuous brush)
-        val finePoints = interpolateDenseSpacing(points, tipSize * 0.03f)
+        // Use a color filter to colorize the grayscale/white Gaussian mask
+        val paint = Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+            colorFilter = android.graphics.PorterDuffColorFilter(brushColor.toArgb(), android.graphics.PorterDuff.Mode.SRC_IN)
+            alpha = (flow * opacity * 255).toInt().coerceIn(1, 255)
+        }
 
-        // Accumulate Alpha: draw overlapping soft tips onto accumulation buffer
+        // Spacing: spacing of 5% is standard for continuous soft flow. Space stamps by 5% of tip size.
+        val spacing = (tipSize * 0.05f).coerceAtLeast(1.0f)
+        val finePoints = interpolateDenseSpacing(points, spacing)
+
+        // Draw overlapping colorized soft tips directly
         for (pt in finePoints) {
-            // Apply flow to stamp
-            maskPaint.alpha = (flow * 255).toInt().coerceIn(1, 255)
-            maskCanvas.drawBitmap(
+            canvas.drawBitmap(
                 tipTex,
                 pt.x - tipTex.width / 2.0f,
                 pt.y - tipTex.height / 2.0f,
-                maskPaint
+                paint
             )
         }
-
-        // Apply final brush color onto the accumulated alpha mask
-        val finalPaint = Paint().apply {
-            isAntiAlias = true
-            color = brushColor.toArgb()
-            // Set accumulated opacity
-            alpha = (opacity * 255).toInt().coerceIn(0, 255)
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
-        }
-
-        // Draw color filtered mask onto final canvas
-        val colorBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val colorCanvas = Canvas(colorBmp)
-        colorCanvas.drawColor(brushColor.toArgb())
-        colorCanvas.drawBitmap(maskBitmap, 0f, 0f, finalPaint)
-
-        canvas.drawBitmap(colorBmp, 0f, 0f, Paint().apply { isAntiAlias = true })
-
-        // Recycle intermediate bitmaps to avoid memory leaks
-        maskBitmap.recycle()
-        colorBmp.recycle()
     }
 
     /**
-     * Builds and caches the Gaussian Blur texture mask to avoid rebuilding on every frame
+     * Builds and caches the Gaussian Blur texture mask to avoid rebuilding on every frame.
+     * Generates a high-quality ARGB_8888 gradient mask with completely transparent corners.
      */
     private fun getCachedGaussianTexture(size: Float, hardness: Float): Bitmap {
         val intSize = size.toInt().coerceAtLeast(8)
@@ -314,8 +291,8 @@ object OpenGLBrushRenderer {
         // Recycle old cache
         cachedBlurMask?.recycle()
 
-        // Draw Gaussian circle
-        val bmp = Bitmap.createBitmap(intSize, intSize, Bitmap.Config.ALPHA_8)
+        // Create ARGB_8888 bitmap to guarantee exact color filtering and transparency transitions
+        val bmp = Bitmap.createBitmap(intSize, intSize, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val paint = Paint().apply {
             isAntiAlias = true
@@ -337,7 +314,10 @@ object OpenGLBrushRenderer {
             // standard Gaussian function exp(-x^2 / (2 * sigma^2))
             val x = ratio * 1.5f
             val g = exp(- (x * x) / (2f * sigma * sigma))
-            colors[i] = AndroidColor.argb((g * 255).toInt().coerceIn(0, 255), 0, 0, 0)
+            
+            // Explicitly force ratio=1.0f (corners) to have an alpha of 0f (completely transparent)
+            val alphaVal = if (i == 9) 0 else (g * 255f).toInt().coerceIn(0, 255)
+            colors[i] = AndroidColor.argb(alphaVal, 255, 255, 255) // Grayscale base: White with Alpha
         }
 
         paint.shader = RadialGradient(
