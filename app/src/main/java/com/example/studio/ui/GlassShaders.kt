@@ -249,4 +249,57 @@ object GlassShaders {
             return null
         }
     }
+
+    val BEVEL_EMBOSS_SHADER_SRC = """
+        uniform shader inputShader;
+        uniform float depth;
+        uniform float size;
+        uniform float soften;
+
+        half4 main(float2 coords) {
+            half4 color = inputShader.eval(coords);
+            if (color.a <= 0.0) return color;
+            float d = max(1.0, size * 0.25);
+            float aL = inputShader.eval(coords + float2(-d, 0.0)).a;
+            float aR = inputShader.eval(coords + float2(d, 0.0)).a;
+            float aT = inputShader.eval(coords + float2(0.0, -d)).a;
+            float aB = inputShader.eval(coords + float2(0.0, d)).a;
+            float nx = aR - aL;
+            float ny = aB - aT;
+            float lx = -0.7071;
+            float ly = -0.7071;
+            float intensity = (nx * lx + ny * ly) * (depth / 100.0) * 0.25;
+            half3 lit = color.rgb + half3(intensity);
+            return half4(clamp(lit, 0.0, 1.0), color.a);
+        }
+    """
+
+    fun compileBevelEmbossEffect(
+        effect: com.example.studio.model.StudioEffect.PhotoshopEffect,
+        width: Float,
+        height: Float
+    ): Any? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+        try {
+            val shader = RuntimeShader(BEVEL_EMBOSS_SHADER_SRC)
+            val dp = effect.parameters["Depth"]?.value ?: 100f
+            val sz = effect.parameters["Size"]?.value ?: 5f
+            val sf = effect.parameters["Soften"]?.value ?: 0f
+
+            shader.setFloatUniform("depth", dp)
+            shader.setFloatUniform("size", sz)
+            shader.setFloatUniform("soften", sf)
+
+            val shaderEffect = RenderEffect.createRuntimeShaderEffect(shader, "inputShader")
+            return if (sf > 0.1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val blurEffect = RenderEffect.createBlurEffect(sf, sf, Shader.TileMode.CLAMP)
+                RenderEffect.createChainEffect(shaderEffect, blurEffect)
+            } else {
+                shaderEffect
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
+    }
 }

@@ -1640,6 +1640,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                  var locSnapVerticalLine: Float? = null
                                                                  var locSnapHorizontalLine: Float? = null
                                                                  var locSnapIndicatorMsg: String? = null
+                                                                 var matchedXVal: Float? = null
+                                                                 var matchedXLabel: String? = null
+                                                                 var matchedYVal: Float? = null
+                                                                 var matchedYLabel: String? = null
                                                                  var tempFinalX = layer.positionX + localDragX
                                                                  var tempFinalY = layer.positionY + localDragY
 
@@ -1685,7 +1689,14 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                      }
                                                                      if (closestGridX < snapThreshold) {
                                                                          tempFinalX = bestSnappedX
-                                                                         locSnapVerticalLine = bestSnappedX
+                                                                         val possibleLineL = Math.round(bestSnappedX / colWidth) * colWidth
+                                                                          val possibleLineR = Math.round((bestSnappedX + layer.width) / colWidth) * colWidth
+                                                                          val possibleLineM = Math.round((bestSnappedX + layer.width / 2f) / colWidth) * colWidth
+                                                                          locSnapVerticalLine = when {
+                                                                              Math.abs(bestSnappedX - possibleLineL) < 1f -> possibleLineL
+                                                                              Math.abs((bestSnappedX + layer.width) - possibleLineR) < 1f -> possibleLineR
+                                                                              else -> possibleLineM
+                                                                          }
                                                                          locSnapIndicatorMsg = "Snapped to Grid X"
                                                                      }
 
@@ -1711,7 +1722,14 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                      }
                                                                      if (closestGridY < snapThreshold) {
                                                                          tempFinalY = bestSnappedY
-                                                                         locSnapHorizontalLine = bestSnappedY
+                                                                         val possibleLineT = Math.round(bestSnappedY / rowHeight) * rowHeight
+                                                                          val possibleLineB = Math.round((bestSnappedY + layer.height) / rowHeight) * rowHeight
+                                                                          val possibleLineM = Math.round((bestSnappedY + layer.height / 2f) / rowHeight) * rowHeight
+                                                                          locSnapHorizontalLine = when {
+                                                                              Math.abs(bestSnappedY - possibleLineT) < 1f -> possibleLineT
+                                                                              Math.abs((bestSnappedY + layer.height) - possibleLineB) < 1f -> possibleLineB
+                                                                              else -> possibleLineM
+                                                                          }
                                                                          locSnapIndicatorMsg = if (locSnapVerticalLine != null) "Snapped to Grid Intersection" else "Snapped to Grid Y"
                                                                      }
                                                                  }
@@ -2846,6 +2864,113 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                         cacheKey = 999999
                                     )
                                 }
+
+                                // Draw Red Snapping / Alignment Guide Lines
+                                snapVerticalLine?.let { snapX ->
+                                    // Styled vertical line and inline badge
+                                    drawLine(
+                                        color = Color(0xFFFF3333),
+                                        start = Offset(snapX, 0f),
+                                        end = Offset(snapX, canvasHeight),
+                                        strokeWidth = 3f / ts.coerceAtLeast(0.5f)
+                                    )
+                                    
+                                    val textPaint = android.graphics.Paint().apply {
+                                        color = android.graphics.Color.WHITE
+                                        textSize = 13f / ts.coerceAtLeast(0.3f)
+                                        typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                                        isAntiAlias = true
+                                    }
+                                    
+                                    val bgPaint = android.graphics.Paint().apply {
+                                        color = android.graphics.Color.parseColor("#E53935")
+                                        style = android.graphics.Paint.Style.FILL
+                                        isAntiAlias = true
+                                    }
+                                    
+                                    val borderPaint = android.graphics.Paint().apply {
+                                        color = android.graphics.Color.WHITE
+                                        style = android.graphics.Paint.Style.STROKE
+                                        strokeWidth = 1.5f / ts.coerceAtLeast(0.5f)
+                                        isAntiAlias = true
+                                    }
+                                    
+                                    val text = snapIndicatorMsg ?: "Snapped"
+                                    val textWidth = textPaint.measureText(text)
+                                    val textHeight = textPaint.fontMetrics.descent - textPaint.fontMetrics.ascent
+                                     
+                                    val paddingX = 14f / ts.coerceAtLeast(0.5f)
+                                    val paddingY = 7f / ts.coerceAtLeast(0.5f)
+                                     
+                                    val badgeWidth = textWidth + paddingX * 2
+                                    val badgeHeight = textHeight + paddingY * 2
+                                     
+                                    val badgeX = snapX - badgeWidth / 2f
+                                    val badgeY = (canvasHeight * 0.15f) - badgeHeight / 2f
+                                    val safeBadgeX = badgeX.coerceIn(0f, canvasWidth - badgeWidth)
+                                     
+                                    val rectF = android.graphics.RectF(safeBadgeX, badgeY, safeBadgeX + badgeWidth, badgeY + badgeHeight)
+                                    val rx = 6f / ts.coerceAtLeast(0.5f)
+                                    drawContext.canvas.nativeCanvas.drawRoundRect(rectF, rx, rx, bgPaint)
+                                    drawContext.canvas.nativeCanvas.drawRoundRect(rectF, rx, rx, borderPaint)
+                                     
+                                    val textX = safeBadgeX + paddingX
+                                    val textY = badgeY + paddingY - textPaint.fontMetrics.ascent
+                                    drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaint)
+                                }
+                                snapHorizontalLine?.let { snapY ->
+                                    drawLine(
+                                        color = Color(0xFFFF3333),
+                                        start = Offset(0f, snapY),
+                                        end = Offset(canvasWidth, snapY),
+                                        strokeWidth = 3f / ts.coerceAtLeast(0.5f)
+                                    )
+                                    
+                                    if (snapVerticalLine == null) {
+                                         val textPaint = android.graphics.Paint().apply {
+                                             color = android.graphics.Color.WHITE
+                                             textSize = 13f / ts.coerceAtLeast(0.3f)
+                                             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                                             isAntiAlias = true
+                                         }
+                                         
+                                         val bgPaint = android.graphics.Paint().apply {
+                                             color = android.graphics.Color.parseColor("#E53935")
+                                             style = android.graphics.Paint.Style.FILL
+                                             isAntiAlias = true
+                                         }
+                                         
+                                         val borderPaint = android.graphics.Paint().apply {
+                                             color = android.graphics.Color.WHITE
+                                             style = android.graphics.Paint.Style.STROKE
+                                             strokeWidth = 1.5f / ts.coerceAtLeast(0.5f)
+                                             isAntiAlias = true
+                                         }
+                                         
+                                         val text = snapIndicatorMsg ?: "Snapped"
+                                         val textWidth = textPaint.measureText(text)
+                                         val textHeight = textPaint.fontMetrics.descent - textPaint.fontMetrics.ascent
+                                         
+                                         val paddingX = 14f / ts.coerceAtLeast(0.5f)
+                                         val paddingY = 7f / ts.coerceAtLeast(0.5f)
+                                         
+                                         val badgeWidth = textWidth + paddingX * 2
+                                         val badgeHeight = textHeight + paddingY * 2
+                                         
+                                         val badgeX = (canvasWidth * 0.15f) - badgeWidth / 2f
+                                         val badgeY = snapY - badgeHeight / 2f
+                                         val safeBadgeY = badgeY.coerceIn(0f, canvasHeight - badgeHeight)
+                                         
+                                         val rectF = android.graphics.RectF(badgeX.coerceAtLeast(0f), safeBadgeY, badgeX.coerceAtLeast(0f) + badgeWidth, safeBadgeY + badgeHeight)
+                                         val rx = 6f / ts.coerceAtLeast(0.5f)
+                                         drawContext.canvas.nativeCanvas.drawRoundRect(rectF, rx, rx, bgPaint)
+                                         drawContext.canvas.nativeCanvas.drawRoundRect(rectF, rx, rx, borderPaint)
+                                         
+                                         val textX = badgeX.coerceAtLeast(0f) + paddingX
+                                         val textY = safeBadgeY + paddingY - textPaint.fontMetrics.ascent
+                                         drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaint)
+                                    }
+                                }
                             }
                         } catch (e: Exception) {
                             // Fail-safe compilation error handler
@@ -2951,6 +3076,35 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 Icon(Icons.Default.Tune, "Show parameters", tint = TextPrimary, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("PARAMETERS", style = Typography.labelSmall.copy(fontSize = 10.sp), color = TextPrimary, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Elegant Snapping Indicator Badge Overlay
+                    snapIndicatorMsg?.let { msg ->
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(12.dp)
+                                .background(Color(0xFFCC0000).copy(alpha = 0.9f), RoundedCornerShape(8.dp))
+                                .border(1.2.dp, Color.Red, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.GridOn,
+                                    contentDescription = "Snapping Indicator",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = msg,
+                                    style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = Color.White
+                                )
                             }
                         }
                     }
@@ -5637,21 +5791,21 @@ fun TopControlShelf(
     onExitWorkspace: () -> Unit,
     onExportCanvas: () -> Unit
 ) {
-    Box(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 8.dp, top = 8.dp, end = 8.dp)
             .height(48.dp)
             .background(SlatePanel, RoundedCornerShape(12.dp))
             .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
         // Left Area: Back Button, Collapse/Expand Button, Divider, and UNDO/REDO!
         Row(
-            modifier = Modifier.align(Alignment.CenterStart),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             IconButton(
                 onClick = onExitWorkspace,
@@ -5683,6 +5837,7 @@ fun TopControlShelf(
 
             Box(
                 modifier = Modifier
+                    .padding(horizontal = 2.dp)
                     .width(1.dp)
                     .height(16.dp)
                     .background(HighslateOutline)
@@ -5715,9 +5870,8 @@ fun TopControlShelf(
 
         // Middle Area: Centered Layers and Parameters buttons with comfortable spacing
         Row(
-            modifier = Modifier.align(Alignment.Center),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // Layers Toggle Button with icon only
             IconButton(
@@ -5754,9 +5908,8 @@ fun TopControlShelf(
             }
         }
 
-        // Right Area: Control panels and EXPORT DESIGN button (where undo/redo used to be)!
+        // Right Area: Control panels and EXPORT DESIGN button
         Row(
-            modifier = Modifier.align(Alignment.CenterEnd),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -5764,7 +5917,7 @@ fun TopControlShelf(
             Button(
                 onClick = onExportCanvas,
                 colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
-                shape = RoundedCornerShape(4.dp),
+                shape = RoundedCornerShape(6.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 modifier = Modifier
                     .height(32.dp)
@@ -6302,10 +6455,18 @@ fun BottomEffectPanel(
     isLandscape: Boolean = false
 ) {
     var activeTabOfPanel by remember { mutableStateOf(0) } // 0: Transform, 1: Edit Shape, 2: Color, 3: Filters & FX Stack
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var activeValueEditConfig by remember { mutableStateOf<SliderValueEditConfig?>(null) }
+    var isDetailViewActive by remember { mutableStateOf(false) }
 
     val isBrushStudioActive = (activeTool == "Brush") || (selectedLayer?.type == LayerType.FREEHAND_DRAWING)
+
+    LaunchedEffect(selectedLayer, activeTool, isBrushStudioActive) {
+        if (selectedLayer == null || activeTool == "Grid" || activeTool == "Ruler" || isBrushStudioActive) {
+            isDetailViewActive = false
+        }
+    }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var activeValueEditConfig by remember { mutableStateOf<SliderValueEditConfig?>(null) }
 
     // Contextual values mapping: if a drawing layer is selected, reflect its state dynamically
     val currentSize = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
@@ -6373,6 +6534,180 @@ fun BottomEffectPanel(
     }
 
     CompositionLocalProvider(LocalSliderValueEditTrigger provides { activeValueEditConfig = it }) {
+    if (isDetailViewActive && selectedLayer != null && !isBrushStudioActive && activeTool != "Grid" && activeTool != "Ruler") {
+        Box(
+            modifier = if (isLandscape) {
+                Modifier
+                    .width(360.dp)
+                    .fillMaxHeight()
+                    .padding(top = 8.dp, bottom = 8.dp, end = 8.dp)
+                    .background(SlatePanel, RoundedCornerShape(16.dp))
+                    .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+                    .padding(10.dp)
+            } else {
+                Modifier
+                    .fillMaxWidth()
+                    .height(260.dp)
+                    .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+                    .background(SlatePanel, RoundedCornerShape(16.dp))
+                    .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+                    .padding(10.dp)
+            }
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        IconButton(
+                            onClick = { isDetailViewActive = false },
+                            modifier = Modifier.size(28.dp).testTag("panel_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Back to categories list",
+                                tint = EnergeticYellow,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        val detailTitle = when (activeTabOfPanel) {
+                            0 -> "Dimensional Transforms"
+                            1 -> if (selectedLayer.type == LayerType.TEXT) "Typography & Font Styling" else "Parametric Shape Editor"
+                            2 -> "Color Designer"
+                            3 -> "Filters & FX Config"
+                            4 -> "Stroke & Shadows"
+                            else -> "Zenith Parameters"
+                        }
+                        Text(
+                            text = detailTitle,
+                            style = Typography.labelMedium,
+                            color = EnergeticYellow,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(DarkOnyx.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                .border(0.5.dp, HighslateOutline, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = selectedLayer.name,
+                                style = Typography.labelSmall,
+                                fontSize = 8.sp,
+                                color = MatteBlue,
+                                maxLines = 1
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onCloseBottomPanel,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Collapse bottom panel",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    when (activeTabOfPanel) {
+                        0 -> TransformDetailView(
+                            selectedLayer = selectedLayer,
+                            onUpdateLayer = onUpdateLayer
+                        )
+                        1 -> TypographyOrShapeDetailView(
+                            selectedLayer = selectedLayer,
+                            onUpdateLayer = onUpdateLayer,
+                            fontSearchQuery = fontSearchQuery,
+                            onFontSearchQueryChange = onFontSearchQueryChange,
+                            selectedCategoryFilter = selectedCategoryFilter,
+                            onSelectedCategoryFilterChange = onSelectedCategoryFilterChange,
+                            onImportFontClick = onImportFontClick
+                        )
+                        2 -> {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .fillMaxHeight()
+                                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text("Color Designer 🎨", style = Typography.labelSmall, color = EnergeticYellow)
+                                    HsvColorPickerPanel(
+                                        currentColor = selectedLayer.baseColor,
+                                        currentOpacity = selectedLayer.opacity,
+                                        onColorChanged = { newColor ->
+                                            onUpdateLayer(selectedLayer.copy(baseColor = newColor))
+                                        },
+                                        modifier = Modifier.fillMaxWidth().weight(1f),
+                                        selectedLayer = selectedLayer,
+                                        onUpdateLayer = onUpdateLayer
+                                    )
+                                    if (selectedLayer.type == LayerType.TEXT) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("Source Text Content", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                                            var txtInputBuf by remember(selectedLayer.id) { mutableStateOf(selectedLayer.textContent) }
+                                            OutlinedTextField(
+                                                value = txtInputBuf,
+                                                onValueChange = {
+                                                    txtInputBuf = it
+                                                    onUpdateLayer(selectedLayer.copy(textContent = it))
+                                                },
+                                                modifier = Modifier.fillMaxWidth().height(46.dp),
+                                                textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                                                singleLine = true,
+                                                colors = OutlinedTextFieldDefaults.colors(
+                                                    focusedBorderColor = IndustrialAmber,
+                                                    unfocusedBorderColor = HighslateOutline,
+                                                    cursorColor = IndustrialAmber
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        3 -> FiltersAndFxDetailView(
+                            selectedLayer = selectedLayer,
+                            selectedEffectIndex = selectedEffectIndex,
+                            onSelectEffectIndex = onSelectEffectIndex,
+                            onRemoveEffect = onRemoveEffect,
+                            onToggleEffectEnabled = onToggleEffectEnabled,
+                            onUpdateEffectParam = onUpdateEffectParam,
+                            onOpenEffectsGallery = onOpenEffectsGallery
+                        )
+                        4 -> BordersAndShadowsTabPanel(
+                            selectedLayer = selectedLayer,
+                            onAddEffect = onAddEffect,
+                            onUpdateEffectParam = onUpdateEffectParam
+                        )
+                    }
+                }
+            }
+        }
+    } else {
     Row(
         modifier = if (isLandscape) {
             Modifier
@@ -6408,7 +6743,8 @@ fun BottomEffectPanel(
             currentOpacity = currentOpacity,
             activeTabOfPanel = activeTabOfPanel,
             onActiveTabOfPanelChange = { activeTabOfPanel = it },
-            onCloseBottomPanel = onCloseBottomPanel
+            onCloseBottomPanel = onCloseBottomPanel,
+            onNavigateToDetail = { isDetailViewActive = true }
         )
 
         Spacer(Modifier.width(8.dp))
@@ -7757,6 +8093,7 @@ fun BottomEffectPanel(
                 Text("Select a layer from the panel to adjust stacking effects.", style = Typography.labelSmall, color = TextSecondary)
             }
         }
+    }
     }
     }
 
@@ -10671,7 +11008,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     }
 
     // Shape/Geometry drawing helper with high-quality GPU BlurMaskFilter support
-    val drawGeometryWithBlur: (androidx.compose.ui.graphics.Color, Float, androidx.compose.ui.graphics.drawscope.DrawStyle, Float, android.graphics.BlurMaskFilter.Blur) -> Unit = { finalColor, finalOpacity, fillStyle, blurRadius, blurMode ->
+    val drawGeometryWithBlurAndOffset: (androidx.compose.ui.graphics.Color, Float, androidx.compose.ui.graphics.drawscope.DrawStyle, Float, android.graphics.BlurMaskFilter.Blur, Float, Float) -> Unit = { finalColor, finalOpacity, fillStyle, blurRadius, blurMode, offsetX, offsetY ->
         val finalComposeColor = finalColor.copy(alpha = finalOpacity * layerOpacity)
         val styleToUse = if (layer.strokeThickness > 0f && fillStyle is androidx.compose.ui.graphics.drawscope.Fill && layer.type !in listOf(com.example.studio.model.LayerType.FREEHAND_DRAWING, com.example.studio.model.LayerType.IMAGE_CARD, com.example.studio.model.LayerType.TEXT)) {
             androidx.compose.ui.graphics.drawscope.Stroke(width = layer.strokeThickness)
@@ -10679,7 +11016,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             fillStyle
         }
 
-        if (blurRadius <= 0.2f) {
+        if (blurRadius <= 0.2f && offsetX == 0f && offsetY == 0f) {
             drawGeometry(finalColor, finalOpacity, fillStyle)
         } else {
             val paint = androidx.compose.ui.graphics.Paint().apply {
@@ -10702,7 +11039,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     try {
                         val fwPaint = asFrameworkPaint()
                         val mSet = fwPaint.javaClass.getMethod("setRenderEffect", android.graphics.RenderEffect::class.java)
-                        mSet.invoke(fwPaint, android.graphics.RenderEffect.createBlurEffect(blurRadius, blurRadius, tileMode))
+                        val blurEffect = android.graphics.RenderEffect.createBlurEffect(blurRadius, blurRadius, tileMode)
+                        val chainEffect = if (offsetX != 0f || offsetY != 0f) {
+                            android.graphics.RenderEffect.createOffsetEffect(offsetX, offsetY, blurEffect)
+                        } else {
+                            blurEffect
+                        }
+                        mSet.invoke(fwPaint, chainEffect)
                     } catch (t: Throwable) {
                         asFrameworkPaint().maskFilter = android.graphics.BlurMaskFilter(blurRadius, blurMode)
                     }
@@ -10917,6 +11260,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                 }
             }
         }
+    }
+
+    val drawGeometryWithBlur: (androidx.compose.ui.graphics.Color, Float, androidx.compose.ui.graphics.drawscope.DrawStyle, Float, android.graphics.BlurMaskFilter.Blur) -> Unit = { finalColor, finalOpacity, fillStyle, blurRadius, blurMode ->
+        drawGeometryWithBlurAndOffset(finalColor, finalOpacity, fillStyle, blurRadius, blurMode, 0f, 0f)
     }
 
     // Brush/Gradient drawing helper
@@ -11325,14 +11672,22 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         val rads = Math.toRadians(dsAngle.toDouble())
         val dx = (dsDistance * Math.cos(rads)).toFloat()
         val dy = (dsDistance * -Math.sin(rads)).toFloat()
-        withTransform({
-            translate(left = dx, top = dy)
-            scale(scaleX = dsZoom, scaleY = dsZoom, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
-        }) {
-            if (dsSize > 0.1f && !dsSharpen) {
-                drawGeometryWithBlur(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
-            } else {
-                drawGeometry(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && dsSize > 0.1f && !dsSharpen) {
+            withTransform({
+                scale(scaleX = dsZoom, scaleY = dsZoom, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+            }) {
+                drawGeometryWithBlurAndOffset(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
+            }
+        } else {
+            withTransform({
+                translate(left = dx, top = dy)
+                scale(scaleX = dsZoom, scaleY = dsZoom, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+            }) {
+                if (dsSize > 0.1f && !dsSharpen) {
+                    drawGeometryWithBlur(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                } else {
+                    drawGeometry(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                }
             }
         }
     } else if (dropShadow != null) {
@@ -11343,13 +11698,17 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         val rads = Math.toRadians(dsAngle.toDouble())
         val dx = (dsDistance * Math.cos(rads)).toFloat()
         val dy = (dsDistance * -Math.sin(rads)).toFloat()
-        withTransform({
-            translate(left = dx, top = dy)
-        }) {
-            if (dsSize > 0.1f) {
-                drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
-            } else {
-                drawGeometry(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && dsSize > 0.1f) {
+            drawGeometryWithBlurAndOffset(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
+        } else {
+            withTransform({
+                translate(left = dx, top = dy)
+            }) {
+                if (dsSize > 0.1f) {
+                    drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                } else {
+                    drawGeometry(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                }
             }
         }
     }
@@ -11375,6 +11734,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                 globalX = globalX,
                 globalY = globalY,
                 zoomScale = totalScale
+            )
+        } else if (bevelStyle != null && bevelStyle.isEnabled) {
+            com.example.studio.ui.GlassShaders.compileBevelEmbossEffect(
+                effect = bevelStyle,
+                width = layer.width,
+                height = layer.height
             )
         } else {
             null
@@ -11641,13 +12006,21 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         val pathCachedObj = layerPath
         if (!pathCachedObj.asAndroidPath().isEmpty) {
             clipPath(pathCachedObj) {
-                withTransform({ translate(left = dx, top = dy) }) {
-                    drawGeometryWithBlur(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    drawGeometryWithBlurAndOffset(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
+                } else {
+                    withTransform({ translate(left = dx, top = dy) }) {
+                        drawGeometryWithBlur(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                    }
                 }
             }
         } else {
-            withTransform({ translate(left = dx, top = dy) }) {
-                drawGeometryWithBlur(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                drawGeometryWithBlurAndOffset(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
+            } else {
+                withTransform({ translate(left = dx, top = dy) }) {
+                    drawGeometryWithBlur(col, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
             }
         }
     } else if (innerShadow != null) {
@@ -11660,13 +12033,21 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         val pathCachedObj = layerPath
         if (!pathCachedObj.asAndroidPath().isEmpty) {
             clipPath(pathCachedObj) {
-                withTransform({ translate(left = dx, top = dy) }) {
-                    drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    drawGeometryWithBlurAndOffset(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
+                } else {
+                    withTransform({ translate(left = dx, top = dy) }) {
+                        drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize * 2f), isSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                    }
                 }
             }
         } else {
-            withTransform({ translate(left = dx, top = dy) }) {
-                drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                drawGeometryWithBlurAndOffset(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
+            } else {
+                withTransform({ translate(left = dx, top = dy) }) {
+                    drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, isOpacity, androidx.compose.ui.graphics.drawscope.Stroke(width = isSize), isSize * 0.5f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
             }
         }
     }
@@ -12286,7 +12667,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.generateBackdropFor
 fun BordersAndShadowsTabPanel(
     selectedLayer: com.example.studio.model.StudioLayer,
     onAddEffect: (com.example.studio.model.StudioEffect) -> Unit,
-    onUpdateEffectParam: (String, String, Float) -> Unit
+    onUpdateEffectParam: (String, String, Float) -> Unit,
+    isSingleColumn: Boolean = false
 ) {
     val bordersShadowsEff = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BordersAndShadows" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
 
@@ -12336,586 +12718,657 @@ fun BordersAndShadowsTabPanel(
     } else {
         var borderStrokeTypeToEdit by remember { mutableStateOf("InnerBorder") }
 
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            // CARD 1: DROP SHADOW
+        if (isSingleColumn) {
             Column(
                 modifier = Modifier
-                    .width(310.dp)
-                    .fillMaxHeight()
-                    .background(Color(0xFF131317), RoundedCornerShape(8.dp))
-                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .fillMaxSize()
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                val dsEnabled = (bordersShadowsEff.parameters["DropShadow_Enabled"]?.value ?: 0f) > 0.5f
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Drop Shadow", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
-                    Switch(
-                        checked = dsEnabled,
-                        onCheckedChange = {
-                            onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Enabled", if (it) 1f else 0f)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = IndustrialAmber,
-                            checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
-                        ),
-                        modifier = Modifier.scale(0.8f)
-                    )
-                }
-
-                if (dsEnabled) {
-                    // Distance
-                    val dsDist = bordersShadowsEff.parameters["DropShadow_Distance"]?.value ?: 10f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Distance", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${dsDist.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = dsDist,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Distance", it) },
-                            valueRange = 0f..100f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Size / Blur
-                    val dsSize = bordersShadowsEff.parameters["DropShadow_Size"]?.value ?: 15f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Blur / Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${dsSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = dsSize,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Size", it) },
-                            valueRange = 0f..120f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Angle
-                    val dsAngle = bordersShadowsEff.parameters["DropShadow_Angle"]?.value ?: 120f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Angle", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${dsAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = dsAngle,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Angle", it) },
-                            valueRange = 0f..360f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Hardness
-                    val dsHardness = bordersShadowsEff.parameters["DropShadow_Hardness"]?.value ?: 0f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Edge Hardness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${(dsHardness * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = dsHardness,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Hardness", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Glow / Flow / Spread
-                    val dsGlow = bordersShadowsEff.parameters["DropShadow_Glow"]?.value ?: 0f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Outer Glow / Spread", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${dsGlow.toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = dsGlow,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Glow", it) },
-                            valueRange = 0f..100f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Zoom / Scale
-                    val dsZoom = bordersShadowsEff.parameters["DropShadow_Zoom"]?.value ?: 1.0f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Shadow Scale / Zoom", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${"%.2f".format(dsZoom)}x", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = dsZoom,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Zoom", it) },
-                            valueRange = 0.5f..2.0f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Opacity / Alpha
-                    val dsOpacity = bordersShadowsEff.parameters["DropShadow_Opacity"]?.value ?: 0.5f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Shadow Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${(dsOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = dsOpacity,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Opacity", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Color R, G, B, Alpha Sliders
-                    val dsColR = bordersShadowsEff.parameters["DropShadow_Color_R"]?.value ?: 0f
-                    val dsColG = bordersShadowsEff.parameters["DropShadow_Color_G"]?.value ?: 0f
-                    val dsColB = bordersShadowsEff.parameters["DropShadow_Color_B"]?.value ?: 0f
-
-                    Text("Shadow Color Tint", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
-
-                    // Red channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(dsColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
-                        }
-                        Slider(
-                            value = dsColR,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_R", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-
-                    // Green channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(dsColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
-                        }
-                        Slider(
-                            value = dsColG,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_G", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-
-                    // Blue channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(dsColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
-                        }
-                        Slider(
-                            value = dsColB,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_B", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-                }
-            }
-
-            // CARD 2: INNER SHADOW
-            Column(
-                modifier = Modifier
-                    .width(310.dp)
-                    .fillMaxHeight()
-                    .background(Color(0xFF131317), RoundedCornerShape(8.dp))
-                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val isEnabled = (bordersShadowsEff.parameters["InnerShadow_Enabled"]?.value ?: 0f) > 0.5f
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Inner Shadow", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
-                    Switch(
-                        checked = isEnabled,
-                        onCheckedChange = {
-                            onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Enabled", if (it) 1f else 0f)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = IndustrialAmber,
-                            checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
-                        ),
-                        modifier = Modifier.scale(0.8f)
-                    )
-                }
-
-                if (isEnabled) {
-                    // Distance
-                    val isDist = bordersShadowsEff.parameters["InnerShadow_Distance"]?.value ?: 5f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Distance", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${isDist.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = isDist,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Distance", it) },
-                            valueRange = 0f..100f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Size / Blur
-                    val isSize = bordersShadowsEff.parameters["InnerShadow_Size"]?.value ?: 10f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Blur / Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${isSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = isSize,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Size", it) },
-                            valueRange = 0f..120f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Angle
-                    val isAngle = bordersShadowsEff.parameters["InnerShadow_Angle"]?.value ?: 120f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Angle", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${isAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = isAngle,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Angle", it) },
-                            valueRange = 0f..360f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Hardness
-                    val isHardness = bordersShadowsEff.parameters["InnerShadow_Hardness"]?.value ?: 0f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Edge Hardness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${(isHardness * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = isHardness,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Hardness", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Choke
-                    val isChoke = bordersShadowsEff.parameters["InnerShadow_Choke"]?.value ?: 0f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Inner Choke", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${isChoke.toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = isChoke,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Choke", it) },
-                            valueRange = 0f..100f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Opacity
-                    val isOpacity = bordersShadowsEff.parameters["InnerShadow_Opacity"]?.value ?: 0.5f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${(isOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = isOpacity,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Opacity", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Color R, G, B Sliders
-                    val isColR = bordersShadowsEff.parameters["InnerShadow_Color_R"]?.value ?: 0f
-                    val isColG = bordersShadowsEff.parameters["InnerShadow_Color_G"]?.value ?: 0f
-                    val isColB = bordersShadowsEff.parameters["InnerShadow_Color_B"]?.value ?: 0f
-
-                    Text("Inner Shadow Tint", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
-
-                    // Red channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(isColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
-                        }
-                        Slider(
-                            value = isColR,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_R", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-
-                    // Green channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(isColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
-                        }
-                        Slider(
-                            value = isColG,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_G", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-
-                    // Blue channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(isColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
-                        }
-                        Slider(
-                            value = isColB,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_B", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-                }
-            }
-
-            // CARD 3: BORDERS & STROKES
-            Column(
-                modifier = Modifier
-                    .width(320.dp)
-                    .fillMaxHeight()
-                    .background(Color(0xFF131317), RoundedCornerShape(8.dp))
-                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("Borders & Strokes Style", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
-
-                // Selector for stroke type
-                Row(
+                // CARD 1: DROP SHADOW
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MidSlate, RoundedCornerShape(4.dp))
-                        .padding(2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val optList = listOf(
-                        "InnerBorder" to "In-Brd", 
-                        "OuterBorder" to "Out-Brd", 
-                        "InnerStroke" to "In-Stk", 
-                        "OuterStroke" to "Out-Stk", 
-                        "CenterStroke" to "Ctr-Stk"
-                    )
-                    optList.forEach { (typeKey, typeLabel) ->
-                        val isSel = borderStrokeTypeToEdit == typeKey
-                        Button(
-                            onClick = { borderStrokeTypeToEdit = typeKey },
-                            colors = ButtonDefaults.buttonColors(containerColor = if (isSel) IndustrialAmber else Color.Transparent),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                            shape = RoundedCornerShape(3.dp),
-                            modifier = Modifier.weight(1f).height(24.dp)
-                        ) {
-                            Text(
-                                text = typeLabel, 
-                                style = Typography.labelSmall, 
-                                fontSize = 8.sp,
-                                color = if (isSel) DarkOnyx else TextPrimary,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1
-                            )
-                        }
-                    }
+                    DropShadowCardContent(bordersShadowsEff, onUpdateEffectParam)
                 }
 
-                val paramPrefix = borderStrokeTypeToEdit
-                val borderEnabled = (bordersShadowsEff.parameters["${paramPrefix}_Enabled"]?.value ?: 0f) > 0.5f
-
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                // CARD 2: INNER SHADOW
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val prettyLabel = when (paramPrefix) {
-                        "InnerBorder" -> "Inner Border Style"
-                        "OuterBorder" -> "Outer Border Style"
-                        "InnerStroke" -> "Inner Stroke Style"
-                        "OuterStroke" -> "Outer Stroke Style"
-                        else -> "Center Stroke Style"
-                    }
-                    Text(prettyLabel, style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary)
-                    Switch(
-                        checked = borderEnabled,
-                        onCheckedChange = {
-                            onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Enabled", if (it) 1f else 0f)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = IndustrialAmber,
-                            checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
-                        ),
-                        modifier = Modifier.scale(0.8f)
-                    )
+                    InnerShadowCardContent(bordersShadowsEff, onUpdateEffectParam)
                 }
 
-                if (borderEnabled) {
-                    // Size
-                    val bSize = bordersShadowsEff.parameters["${paramPrefix}_Size"]?.value ?: 0f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Thickness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${bSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = bSize,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Size", it) },
-                            valueRange = 0f..100f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Opacity
-                    val bOpacity = bordersShadowsEff.parameters["${paramPrefix}_Opacity"]?.value ?: 1f
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                            Text("${(bOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
-                        }
-                        Slider(
-                            value = bOpacity,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Opacity", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-
-                    // Preset Color Row and circular targets
-                    Text("Quick Color Presets", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        val presets = listOf(
-                            Color.White to "White", 
-                            Color.Black to "Black", 
-                            Color.Red to "Red", 
-                            Color.Yellow to "Yellow", 
-                            Color.Blue to "Blue", 
-                            Color.Green to "Green"
-                        )
-                        presets.forEach { (pColor, pName) ->
-                            Box(
-                                modifier = Modifier
-                                    .size(24.dp)
-                                    .clip(CircleShape)
-                                    .background(pColor)
-                                    .border(BorderStroke(1.dp, if (pColor == Color.White) Color.Black else Color.White), CircleShape)
-                                    .clickable {
-                                        onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_R", pColor.red)
-                                        onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_G", pColor.green)
-                                        onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_B", pColor.blue)
-                                    }
-                            )
-                        }
-                    }
-
-                    // R, G, B Custom sliders
-                    val bColR = bordersShadowsEff.parameters["${paramPrefix}_Color_R"]?.value ?: 1f
-                    val bColG = bordersShadowsEff.parameters["${paramPrefix}_Color_G"]?.value ?: 1f
-                    val bColB = bordersShadowsEff.parameters["${paramPrefix}_Color_B"]?.value ?: 1f
-
-                    // Red channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(bColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
-                        }
-                        Slider(
-                            value = bColR,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_R", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-
-                    // Green channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(bColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
-                        }
-                        Slider(
-                            value = bColG,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_G", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
-
-                    // Blue channel
-                    Column {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
-                            Text("${(bColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
-                        }
-                        Slider(
-                            value = bColB,
-                            onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_B", it) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
-                            modifier = Modifier.height(20.dp)
-                        )
-                    }
+                // CARD 3: BORDERS & STROKES
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    BordersCardContent(bordersShadowsEff, borderStrokeTypeToEdit, { borderStrokeTypeToEdit = it }, onUpdateEffectParam)
                 }
             }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // CARD 1: DROP SHADOW
+                Column(
+                    modifier = Modifier
+                        .width(310.dp)
+                        .fillMaxHeight()
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DropShadowCardContent(bordersShadowsEff, onUpdateEffectParam)
+                }
+
+                // CARD 2: INNER SHADOW
+                Column(
+                    modifier = Modifier
+                        .width(310.dp)
+                        .fillMaxHeight()
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    InnerShadowCardContent(bordersShadowsEff, onUpdateEffectParam)
+                }
+
+                // CARD 3: BORDERS & STROKES
+                Column(
+                    modifier = Modifier
+                        .width(320.dp)
+                        .fillMaxHeight()
+                        .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+                        .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    BordersCardContent(bordersShadowsEff, borderStrokeTypeToEdit, { borderStrokeTypeToEdit = it }, onUpdateEffectParam)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DropShadowCardContent(
+    bordersShadowsEff: com.example.studio.model.StudioEffect.PhotoshopEffect,
+    onUpdateEffectParam: (String, String, Float) -> Unit
+) {
+    val dsEnabled = (bordersShadowsEff.parameters["DropShadow_Enabled"]?.value ?: 0f) > 0.5f
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Drop Shadow", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+        Switch(
+            checked = dsEnabled,
+            onCheckedChange = {
+                onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Enabled", if (it) 1f else 0f)
+            },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = IndustrialAmber,
+                checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
+            ),
+            modifier = Modifier.scale(0.8f)
+        )
+    }
+
+    if (dsEnabled) {
+        // Distance
+        val dsDist = bordersShadowsEff.parameters["DropShadow_Distance"]?.value ?: 10f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Distance", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${dsDist.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = dsDist,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Distance", it) },
+                valueRange = 0f..100f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Size / Blur
+        val dsSize = bordersShadowsEff.parameters["DropShadow_Size"]?.value ?: 15f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Blur / Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${dsSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = dsSize,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Size", it) },
+                valueRange = 0f..120f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Angle
+        val dsAngle = bordersShadowsEff.parameters["DropShadow_Angle"]?.value ?: 120f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Angle", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${dsAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = dsAngle,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Angle", it) },
+                valueRange = 0f..360f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Hardness
+        val dsHardness = bordersShadowsEff.parameters["DropShadow_Hardness"]?.value ?: 0f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Edge Hardness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${(dsHardness * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = dsHardness,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Hardness", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Glow / Flow / Spread
+        val dsGlow = bordersShadowsEff.parameters["DropShadow_Glow"]?.value ?: 0f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Outer Glow / Spread", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${dsGlow.toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = dsGlow,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Glow", it) },
+                valueRange = 0f..100f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Zoom / Scale
+        val dsZoom = bordersShadowsEff.parameters["DropShadow_Zoom"]?.value ?: 1.0f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Shadow Scale / Zoom", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${"%.2f".format(dsZoom)}x", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = dsZoom,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Zoom", it) },
+                valueRange = 0.5f..2.0f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Opacity / Alpha
+        val dsOpacity = bordersShadowsEff.parameters["DropShadow_Opacity"]?.value ?: 0.5f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Shadow Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${(dsOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = dsOpacity,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Opacity", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Color R, G, B, Alpha Sliders
+        val dsColR = bordersShadowsEff.parameters["DropShadow_Color_R"]?.value ?: 0f
+        val dsColG = bordersShadowsEff.parameters["DropShadow_Color_G"]?.value ?: 0f
+        val dsColB = bordersShadowsEff.parameters["DropShadow_Color_B"]?.value ?: 0f
+
+        Text("Shadow Color Tint", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
+
+        // Red channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(dsColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
+            }
+            Slider(
+                value = dsColR,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_R", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+
+        // Green channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(dsColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
+            }
+            Slider(
+                value = dsColG,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_G", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+
+        // Blue channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(dsColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
+            }
+            Slider(
+                value = dsColB,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "DropShadow_Color_B", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun InnerShadowCardContent(
+    bordersShadowsEff: com.example.studio.model.StudioEffect.PhotoshopEffect,
+    onUpdateEffectParam: (String, String, Float) -> Unit
+) {
+    val isEnabled = (bordersShadowsEff.parameters["InnerShadow_Enabled"]?.value ?: 0f) > 0.5f
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Inner Shadow", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+        Switch(
+            checked = isEnabled,
+            onCheckedChange = {
+                onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Enabled", if (it) 1f else 0f)
+            },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = IndustrialAmber,
+                checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
+            ),
+            modifier = Modifier.scale(0.8f)
+        )
+    }
+
+    if (isEnabled) {
+        // Distance
+        val isDist = bordersShadowsEff.parameters["InnerShadow_Distance"]?.value ?: 5f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Distance", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${isDist.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = isDist,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Distance", it) },
+                valueRange = 0f..100f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Size / Blur
+        val isSize = bordersShadowsEff.parameters["InnerShadow_Size"]?.value ?: 10f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Blur / Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${isSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = isSize,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Size", it) },
+                valueRange = 0f..120f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Angle
+        val isAngle = bordersShadowsEff.parameters["InnerShadow_Angle"]?.value ?: 120f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Angle", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${isAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = isAngle,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Angle", it) },
+                valueRange = 0f..360f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Hardness
+        val isHardness = bordersShadowsEff.parameters["InnerShadow_Hardness"]?.value ?: 0f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Edge Hardness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${(isHardness * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = isHardness,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Hardness", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Choke
+        val isChoke = bordersShadowsEff.parameters["InnerShadow_Choke"]?.value ?: 0f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Inner Choke", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${isChoke.toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = isChoke,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Choke", it) },
+                valueRange = 0f..100f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Opacity
+        val isOpacity = bordersShadowsEff.parameters["InnerShadow_Opacity"]?.value ?: 0.5f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${(isOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = isOpacity,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Opacity", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Color R, G, B Sliders
+        val isColR = bordersShadowsEff.parameters["InnerShadow_Color_R"]?.value ?: 0f
+        val isColG = bordersShadowsEff.parameters["InnerShadow_Color_G"]?.value ?: 0f
+        val isColB = bordersShadowsEff.parameters["InnerShadow_Color_B"]?.value ?: 0f
+
+        Text("Inner Shadow Tint", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
+
+        // Red channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(isColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
+            }
+            Slider(
+                value = isColR,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_R", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+
+        // Green channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(isColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
+            }
+            Slider(
+                value = isColG,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_G", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+
+        // Blue channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(isColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
+            }
+            Slider(
+                value = isColB,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "InnerShadow_Color_B", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun BordersCardContent(
+    bordersShadowsEff: com.example.studio.model.StudioEffect.PhotoshopEffect,
+    borderStrokeTypeToEdit: String,
+    onStrokeTypeChange: (String) -> Unit,
+    onUpdateEffectParam: (String, String, Float) -> Unit
+) {
+    Text("Borders & Strokes Style", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+
+    // Selector for stroke type
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MidSlate, RoundedCornerShape(4.dp))
+            .padding(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        val optList = listOf(
+            "InnerBorder" to "In-Brd", 
+            "OuterBorder" to "Out-Brd", 
+            "InnerStroke" to "In-Stk", 
+            "OuterStroke" to "Out-Stk", 
+            "CenterStroke" to "Ctr-Stk"
+        )
+        optList.forEach { (typeKey, typeLabel) ->
+            val isSel = borderStrokeTypeToEdit == typeKey
+            Button(
+                onClick = { onStrokeTypeChange(typeKey) },
+                colors = ButtonDefaults.buttonColors(containerColor = if (isSel) IndustrialAmber else Color.Transparent),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(3.dp),
+                modifier = Modifier.weight(1f).height(24.dp)
+            ) {
+                Text(
+                    text = typeLabel, 
+                    style = Typography.labelSmall, 
+                    fontSize = 8.sp,
+                    color = if (isSel) DarkOnyx else TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+
+    val paramPrefix = borderStrokeTypeToEdit
+    val borderEnabled = (bordersShadowsEff.parameters["${paramPrefix}_Enabled"]?.value ?: 0f) > 0.5f
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val prettyLabel = when (paramPrefix) {
+            "InnerBorder" -> "Inner Border Style"
+            "OuterBorder" -> "Outer Border Style"
+            "InnerStroke" -> "Inner Stroke Style"
+            "OuterStroke" -> "Outer Stroke Style"
+            else -> "Center Stroke Style"
+        }
+        Text(prettyLabel, style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary)
+        Switch(
+            checked = borderEnabled,
+            onCheckedChange = {
+                onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Enabled", if (it) 1f else 0f)
+            },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = IndustrialAmber,
+                checkedTrackColor = IndustrialAmber.copy(alpha = 0.5f)
+            ),
+            modifier = Modifier.scale(0.8f)
+        )
+    }
+
+    if (borderEnabled) {
+        // Size
+        val bSize = bordersShadowsEff.parameters["${paramPrefix}_Size"]?.value ?: 0f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Thickness", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${bSize.toInt()} px", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = bSize,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Size", it) },
+                valueRange = 0f..100f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Opacity
+        val bOpacity = bordersShadowsEff.parameters["${paramPrefix}_Opacity"]?.value ?: 1f
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Opacity", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                Text("${(bOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+            }
+            Slider(
+                value = bOpacity,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Opacity", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                modifier = Modifier.height(24.dp)
+            )
+        }
+
+        // Preset Color Row and circular targets
+        Text("Quick Color Presets", style = Typography.labelSmall, fontSize = 8.sp, color = MatteBlue, fontWeight = FontWeight.Bold)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            val presets = listOf(
+                Color.White to "White", 
+                Color.Black to "Black", 
+                Color.Red to "Red", 
+                Color.Yellow to "Yellow", 
+                Color.Blue to "Blue", 
+                Color.Green to "Green"
+            )
+            presets.forEach { (pColor, pName) ->
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(pColor)
+                        .border(BorderStroke(1.dp, if (pColor == Color.White) Color.Black else Color.White), CircleShape)
+                        .clickable {
+                            onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_R", pColor.red)
+                            onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_G", pColor.green)
+                            onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_B", pColor.blue)
+                        }
+                )
+            }
+        }
+
+        // R, G, B Custom sliders
+        val bColR = bordersShadowsEff.parameters["${paramPrefix}_Color_R"]?.value ?: 1f
+        val bColG = bordersShadowsEff.parameters["${paramPrefix}_Color_G"]?.value ?: 1f
+        val bColB = bordersShadowsEff.parameters["${paramPrefix}_Color_B"]?.value ?: 1f
+
+        // Red channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Red", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(bColR * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Red)
+            }
+            Slider(
+                value = bColR,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_R", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Red, thumbColor = Color.Red),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+
+        // Green channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Green", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(bColG * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Green)
+            }
+            Slider(
+                value = bColG,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_G", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Green, thumbColor = Color.Green),
+                modifier = Modifier.height(20.dp)
+            )
+        }
+
+        // Blue channel
+        Column {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Color Blue", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                Text("${(bColB * 255).toInt()}", style = Typography.labelSmall, fontSize = 8.sp, color = Color.Blue)
+            }
+            Slider(
+                value = bColB,
+                onValueChange = { onUpdateEffectParam(bordersShadowsEff.id, "${paramPrefix}_Color_B", it) },
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(activeTrackColor = Color.Blue, thumbColor = Color.Blue),
+                modifier = Modifier.height(20.dp)
+            )
         }
     }
 }
@@ -13862,7 +14315,8 @@ private fun LeftTelemetryAndStatsColumn(
     currentOpacity: Float,
     activeTabOfPanel: Int,
     onActiveTabOfPanelChange: (Int) -> Unit,
-    onCloseBottomPanel: () -> Unit
+    onCloseBottomPanel: () -> Unit,
+    onNavigateToDetail: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -13941,7 +14395,10 @@ private fun LeftTelemetryAndStatsColumn(
 
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Button(
-                            onClick = { onActiveTabOfPanelChange(0) },
+                            onClick = { 
+                                onActiveTabOfPanelChange(0) 
+                                onNavigateToDetail?.invoke()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 0) IndustrialAmber else MidSlate),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             shape = RoundedCornerShape(4.dp),
@@ -13951,7 +14408,10 @@ private fun LeftTelemetryAndStatsColumn(
                         }
 
                         Button(
-                            onClick = { onActiveTabOfPanelChange(1) },
+                            onClick = { 
+                                onActiveTabOfPanelChange(1) 
+                                onNavigateToDetail?.invoke()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 1) IndustrialAmber else MidSlate),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             shape = RoundedCornerShape(4.dp),
@@ -13962,7 +14422,10 @@ private fun LeftTelemetryAndStatsColumn(
                         }
 
                         Button(
-                            onClick = { onActiveTabOfPanelChange(2) },
+                            onClick = { 
+                                onActiveTabOfPanelChange(2) 
+                                onNavigateToDetail?.invoke()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 2) IndustrialAmber else MidSlate),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             shape = RoundedCornerShape(4.dp),
@@ -13972,7 +14435,10 @@ private fun LeftTelemetryAndStatsColumn(
                         }
 
                         Button(
-                            onClick = { onActiveTabOfPanelChange(3) },
+                            onClick = { 
+                                onActiveTabOfPanelChange(3) 
+                                onNavigateToDetail?.invoke()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 3) IndustrialAmber else MidSlate),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             shape = RoundedCornerShape(4.dp),
@@ -13982,7 +14448,10 @@ private fun LeftTelemetryAndStatsColumn(
                         }
 
                         Button(
-                            onClick = { onActiveTabOfPanelChange(4) },
+                            onClick = { 
+                                onActiveTabOfPanelChange(4) 
+                                onNavigateToDetail?.invoke()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = if (activeTabOfPanel == 4) IndustrialAmber else MidSlate),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             shape = RoundedCornerShape(4.dp),
