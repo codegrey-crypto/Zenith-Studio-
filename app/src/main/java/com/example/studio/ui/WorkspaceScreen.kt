@@ -841,7 +841,9 @@ data class WorkspaceRulerSettings(
     val selectedRulerId: String = "",
     val onSelectedRulerIdChange: (String) -> Unit = {},
     val snapToRuler: Boolean = true,
-    val onSnapToRulerChange: (Boolean) -> Unit = {}
+    val onSnapToRulerChange: (Boolean) -> Unit = {},
+    val allRulersLocked: Boolean = false,
+    val onAllRulersLockedChange: (Boolean) -> Unit = {}
 )
 
 val LocalRulerSettings = androidx.compose.runtime.compositionLocalOf { WorkspaceRulerSettings() }
@@ -924,6 +926,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var gridEnabled by remember { mutableStateOf(false) }
     var showExportResolutionDialog by remember { mutableStateOf(false) }
     var snapToRuler by remember { mutableStateOf(true) }
+    var allRulersLocked by remember { mutableStateOf(false) }
     var gridColumns by remember { mutableStateOf(8) }
     var gridRows by remember { mutableStateOf(8) }
     var isLeftToolbarExpanded by remember { mutableStateOf(true) }
@@ -1284,14 +1287,16 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     } else {
         @Composable
         fun RenderBottomEffectPanel(isLandscapeMode: Boolean) {
-            val rulerSettings = remember(rulers, selectedRulerId, snapToRuler) {
+            val rulerSettings = remember(rulers, selectedRulerId, snapToRuler, allRulersLocked) {
                 WorkspaceRulerSettings(
                     rulers = rulers,
                     onRulersChange = { rulers = it },
                     selectedRulerId = selectedRulerId,
                     onSelectedRulerIdChange = { selectedRulerId = it },
                     snapToRuler = snapToRuler,
-                    onSnapToRulerChange = { snapToRuler = it }
+                    onSnapToRulerChange = { snapToRuler = it },
+                    allRulersLocked = allRulersLocked,
+                    onAllRulersLockedChange = { allRulersLocked = it }
                 )
             }
             CompositionLocalProvider(LocalRulerSettings provides rulerSettings) {
@@ -1508,6 +1513,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             activeTool = it
                             if (it == "Shapes") {
                                 showAddShapeDialog = true
+                            } else if (it == "Import") {
+                                imagePickerLauncher.launch("image/*")
+                                activeTool = "Move"
                             } else if (it == "Text") {
                                 val newL = StudioLayer(
                                     name = "Text Layer",
@@ -1842,7 +1850,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 } else if (tool == "Ruler" || tool == "Grid") {
                                                     val activeId = draggedRulerId ?: currentSelectedRulerIdState.value
                                                     val activeR = currentRulersState.value.find { it.id == activeId }
-                                                    if (activeR != null && !activeR.locked) {
+                                                    if (activeR != null && !activeR.locked && !allRulersLocked) {
                                                         val newPos = if (activeR.orientation == "Horizontal") localChangeY else localChangeX
                                                         rulers = currentRulersState.value.map {
                                                             if (it.id == activeId) it.copy(position = newPos) else it
@@ -3963,16 +3971,6 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 colors = ButtonDefaults.buttonColors(containerColor = MidSlate)
                             ) {
                                 Text("Freehand Drawing Canvas Layer", color = TextPrimary, style = Typography.labelSmall)
-                            }
-                        }
-                        // Row 7: Import Picture
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { imagePickerLauncher.launch("image/*") },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
-                            ) {
-                                Text("Import Picture from Device", color = DarkOnyx, fontWeight = FontWeight.Bold, style = Typography.labelSmall)
                             }
                         }
                     }
@@ -6372,6 +6370,7 @@ fun LeftsideToolDock(
             Triple("Ruler", Icons.Default.Straighten, "Ruler Calibration Tool"),
             Triple("Shapes", Icons.Default.Category, "Spawn circles/squares"),
             Triple("Text", Icons.Default.TextFields, "Add title typography"),
+            Triple("Import", Icons.Default.Image, "Import picture from device"),
             Triple("Visuals", Icons.Default.Palette, "Color modifiers")
         )
         tools.forEach { tool ->
@@ -15105,6 +15104,8 @@ private fun RulerControlPane(
     val onSelectedRulerIdChange = settings.onSelectedRulerIdChange
     val snapToRuler = settings.snapToRuler
     val onSnapToRulerChange = settings.onSnapToRulerChange
+    val allRulersLocked = settings.allRulersLocked
+    val onAllRulersLockedChange = settings.onAllRulersLockedChange
 
     val activeRuler = rulers.find { it.id == selectedRulerId } ?: rulers.firstOrNull() ?: StudioRuler()
     
@@ -15344,21 +15345,33 @@ private fun RulerControlPane(
                 }
             }
             
-            // Lock State Switch button
-            Button(
-                onClick = {
-                    val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(locked = !r.locked) else r }
-                    onRulersChange(updated)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = if (activeRuler.locked) Color.Red else MidSlate),
-                modifier = Modifier.fillMaxWidth().height(28.dp),
-                contentPadding = PaddingValues(horizontal = 4.dp),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Text(if (activeRuler.locked) "🔒 LOCKED" else "🔓 DRAGGABLE", style = Typography.labelSmall, fontSize = 8.sp, color = if (activeRuler.locked) Color.White else TextPrimary)
+            // Lock state for current selected ruler & global lock-all
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Button(
+                    onClick = {
+                        val updated = rulers.map { r -> if (r.id == activeRuler.id) r.copy(locked = !r.locked) else r }
+                        onRulersChange(updated)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (activeRuler.locked) Color.Red.copy(alpha = 0.8f) else MidSlate),
+                    modifier = Modifier.weight(1f).height(28.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(if (activeRuler.locked) "🔒 LOCK" else "🔓 FREE", style = Typography.labelSmall, fontSize = 8.sp, color = if (activeRuler.locked) Color.White else TextPrimary)
+                }
+                
+                Button(
+                    onClick = { onAllRulersLockedChange(!allRulersLocked) },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (allRulersLocked) Color.Red else MidSlate),
+                    modifier = Modifier.weight(1f).height(28.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(if (allRulersLocked) "🔒 LOCK ALL" else "🔓 ALL FREE", style = Typography.labelSmall, fontSize = 8.sp, color = if (allRulersLocked) Color.White else TextPrimary)
+                }
             }
             
-            // Global Snapping
+            // Magnet Snapping Feature toggle
             Button(
                 onClick = { onSnapToRulerChange(!snapToRuler) },
                 colors = ButtonDefaults.buttonColors(containerColor = if (snapToRuler) Color(0xFF00FF66) else MidSlate),
@@ -15366,7 +15379,7 @@ private fun RulerControlPane(
                 contentPadding = PaddingValues(horizontal = 4.dp),
                 shape = RoundedCornerShape(4.dp)
             ) {
-                Text(if (snapToRuler) "🎯 SNAPPING: ON" else "🎯 SNAPPING: OFF", style = Typography.labelSmall, fontSize = 8.sp, color = if (snapToRuler) DarkOnyx else TextPrimary)
+                Text(if (snapToRuler) "🧲 MAGNET SNAP: ON" else "🧲 MAGNET SNAP: OFF", style = Typography.labelSmall, fontSize = 8.sp, color = if (snapToRuler) DarkOnyx else TextPrimary)
             }
         }
         
@@ -15506,14 +15519,14 @@ private fun LeftTelemetryAndStatsColumn(
                 }
             } else if (activeTool == "Ruler") {
                 Column {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Live Guide", style = Typography.labelSmall, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                     Spacer(Modifier.height(6.dp))
-                    Text("Guideline Rule", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(10.dp))
-                    Text("Status: ${if (rulerEnabled) "ACTIVE" else "OFF"}", style = Typography.labelSmall, color = if (rulerEnabled) Color(0xFF00FF66) else TextSecondary)
-                    Text("Angle: ${rulerAngle.toInt()}°", style = Typography.labelSmall, color = TextSecondary)
-                    Text("Snapping: ${if (snapToRuler) "ON" else "OFF"}", style = Typography.labelSmall, color = TextSecondary)
-                    Spacer(Modifier.height(12.dp))
-                    Text("Draw vectors, straight strokes, or slide layers along custom angles.", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
+                    Text("Status: ${if (rulerEnabled) "ACTIVE" else "OFF"}", style = Typography.labelSmall, fontSize = 9.sp, color = if (rulerEnabled) Color(0xFF00FF66) else TextSecondary)
+                    Text("Angle: ${rulerAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                    Text("Snap Mode: ${if (snapToRuler) "ON" else "OFF"}", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Strokes follow guide angle.", style = Typography.labelSmall, fontSize = 8.sp, color = IndustrialAmber)
                 }
             } else if (isBrushStudioActive) {
                 Column {
