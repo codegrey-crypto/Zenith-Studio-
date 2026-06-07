@@ -997,6 +997,20 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 
                 android.widget.Toast.makeText(context, "Font imported: ${destFile.nameWithoutExtension}", android.widget.Toast.LENGTH_SHORT).show()
                 
+                val cleanName = destFile.nameWithoutExtension.replace("_", " ").replace("-", " ")
+                val category = if (cleanName.contains("script", ignoreCase = true)) {
+                    "Script"
+                } else if (cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true)) {
+                    "Handwritten"
+                } else if (cleanName.contains("mono", ignoreCase = true)) {
+                    "Monospace"
+                } else if (cleanName.contains("serif", ignoreCase = true)) {
+                    "Serif"
+                } else {
+                    "Display"
+                }
+                workspaceViewModel.addCustomFont(cleanName, destFile.absolutePath, category)
+
                 if (selectedLayerId.isNotEmpty()) {
                     val targetL = layers.find { it.id == selectedLayerId }
                     if (targetL != null && targetL.type == LayerType.TEXT) {
@@ -8180,7 +8194,17 @@ fun OldBottomEffectPanel(
                                 )
                                 
                                 // Dynamic query to list directory
-                                val importedFonts = try {
+                                val workspaceVm: WorkspaceViewModel = viewModel()
+                                val customFontEntities by workspaceVm.customFonts.collectAsStateWithLifecycle()
+                                val importedFonts = customFontEntities.map { entity ->
+                                    FontResource(
+                                        name = entity.name,
+                                        category = entity.category,
+                                        path = entity.path,
+                                        isImported = true
+                                    )
+                                }
+                                val importedFonts_dummy = try {
                                     val fontsDir = java.io.File(context.filesDir, "fonts")
                                     if (!fontsDir.exists()) fontsDir.mkdirs()
                                     val files = fontsDir.listFiles { file ->
@@ -10507,6 +10531,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
     }
 
     val drawColor = color.copy(alpha = color.alpha * opacity)
+
+    val isEraser = (composeBlendMode == androidx.compose.ui.graphics.BlendMode.DstOut)
+    if (isEraser) {
+        // High Performance Clear / DstOut Drawing for Eraser
+        // Sweep single optimized GPU-friendly stroke cap round miter line path
+        drawPath(
+            path = smoothedPath,
+            color = drawColor,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = size,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                join = androidx.compose.ui.graphics.StrokeJoin.Round
+            ),
+            blendMode = composeBlendMode
+        )
+        return
+    }
 
     when (presetIndex) {
         1 -> { // Calligraphy / Calligraphy Wedge
@@ -15518,15 +15559,58 @@ private fun LeftTelemetryAndStatsColumn(
                     Text("Align drawings and shapes perfectly with the live layout grid.", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber)
                 }
             } else if (activeTool == "Ruler") {
-                Column {
-                    Spacer(Modifier.height(4.dp))
-                    Text("Live Guide", style = Typography.labelSmall, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                    Spacer(Modifier.height(6.dp))
-                    Text("Status: ${if (rulerEnabled) "ACTIVE" else "OFF"}", style = Typography.labelSmall, fontSize = 9.sp, color = if (rulerEnabled) Color(0xFF00FF66) else TextSecondary)
-                    Text("Angle: ${rulerAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                    Text("Snap Mode: ${if (snapToRuler) "ON" else "OFF"}", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Strokes follow guide angle.", style = Typography.labelSmall, fontSize = 8.sp, color = IndustrialAmber)
+                val settings = LocalRulerSettings.current
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Spacer(Modifier.height(2.dp))
+                    Text("Live Guide: ${if (rulerEnabled) "ACTIVE" else "OFF"} | ${rulerAngle.toInt()}°", style = Typography.labelSmall, fontSize = 9.sp, color = if (rulerEnabled) Color(0xFF00FF66) else TextSecondary, fontWeight = FontWeight.Bold)
+                    
+                    // Snap switch row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(26.dp)
+                            .clickable { settings.onSnapToRulerChange(!settings.snapToRuler) },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Magnet Snap", style = Typography.labelSmall, fontSize = 8.5.sp, color = TextPrimary)
+                        androidx.compose.material3.Switch(
+                            checked = settings.snapToRuler,
+                            onCheckedChange = { settings.onSnapToRulerChange(it) },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF00FF66),
+                                checkedTrackColor = Color(0xFF00FF66).copy(alpha = 0.3f),
+                                uncheckedThumbColor = TextSecondary,
+                                uncheckedTrackColor = MidSlate
+                            ),
+                            modifier = Modifier.graphicsLayer(scaleX = 0.6f, scaleY = 0.6f)
+                        )
+                    }
+
+                    // Lock switch row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(26.dp)
+                            .clickable { settings.onAllRulersLockedChange(!settings.allRulersLocked) },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Lock Guides", style = Typography.labelSmall, fontSize = 8.5.sp, color = TextPrimary)
+                        androidx.compose.material3.Switch(
+                            checked = settings.allRulersLocked,
+                            onCheckedChange = { settings.onAllRulersLockedChange(it) },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = Color.Red,
+                                checkedTrackColor = Color.Red.copy(alpha = 0.3f),
+                                uncheckedThumbColor = TextSecondary,
+                                uncheckedTrackColor = MidSlate
+                            ),
+                            modifier = Modifier.graphicsLayer(scaleX = 0.6f, scaleY = 0.6f)
+                        )
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Text("Slide along guide angle.", style = Typography.labelSmall, fontSize = 8.sp, color = IndustrialAmber)
                 }
             } else if (isBrushStudioActive) {
                 Column {
@@ -15843,11 +15927,11 @@ private fun BrushStudioControlPane(
                     Slider(
                         value = eraserSize,
                         onValueChange = onEraserSizeChange,
-                        valueRange = 3f..120f,
+                        valueRange = 1f..1000f,
                         colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                         modifier = Modifier.weight(1f).height(28.dp)
                     )
-                    Text("${eraserSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Eraser Size", eraserSize, 3f..120f, isInt = true) { onEraserSizeChange(it) }, textAlign = TextAlign.End)
+                    Text("${eraserSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Eraser Size", eraserSize, 1f..1000f, isInt = true) { onEraserSizeChange(it) }, textAlign = TextAlign.End)
                 } else {
                     Slider(
                         value = currentSize,

@@ -16,17 +16,59 @@ import java.util.UUID
 
 class WorkspaceViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: ProjectRepository
+    private val database = StudioDatabase.getDatabase(application)
+    private val fontDao = database.customFontDao()
 
     val previousProjects: StateFlow<List<ProjectEntity>>
+    private val _customFonts = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.studio.database.CustomFontEntity>>(emptyList())
+    val customFonts: StateFlow<List<com.example.studio.database.CustomFontEntity>> = _customFonts
 
     init {
-        val database = StudioDatabase.getDatabase(application)
         repository = ProjectRepository(database.projectDao())
         previousProjects = repository.allProjects.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+        viewModelScope.launch {
+            loadCustomFonts()
+        }
+    }
+
+    suspend fun loadCustomFonts() {
+        try {
+            val fonts = fontDao.getAllCustomFonts()
+            _customFonts.value = fonts
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun addCustomFont(name: String, path: String, category: String) {
+        viewModelScope.launch {
+            try {
+                fontDao.insertCustomFont(com.example.studio.database.CustomFontEntity(path = path, name = name, category = category))
+                loadCustomFonts()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun deleteCustomFont(path: String) {
+        viewModelScope.launch {
+            try {
+                fontDao.deleteCustomFont(path)
+                // Also delete actual file
+                val file = java.io.File(path)
+                if (file.exists()) {
+                    file.delete()
+                }
+                loadCustomFonts()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun saveProject(
