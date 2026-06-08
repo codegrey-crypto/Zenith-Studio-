@@ -77,6 +77,7 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
         width: Float,
         height: Float,
         layers: List<StudioLayer>,
+        dpi: Int = 300,
         onComplete: (String) -> Unit = {}
     ) {
         viewModelScope.launch {
@@ -90,7 +91,8 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
                     width = width,
                     height = height,
                     timestamp = System.currentTimeMillis(),
-                    layersJson = json
+                    layersJson = json,
+                    dpi = dpi
                 )
             }
             repository.saveProject(entity)

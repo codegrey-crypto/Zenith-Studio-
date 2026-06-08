@@ -10,5 +10,6 @@ data class ProjectEntity(
     val width: Float,
     val height: Float,
     val timestamp: Long,
-    val layersJson: String
+    val layersJson: String,
+    val dpi: Int = 300
 )

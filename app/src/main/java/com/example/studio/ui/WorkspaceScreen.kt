@@ -935,6 +935,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var selectedCategoryFilter by remember { mutableStateOf("All") }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+    var favoriteFontsList by remember { mutableStateOf(getFavoriteFonts(context)) }
     val imagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
     ) { uri: android.net.Uri? ->
@@ -1118,6 +1119,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var isProjectInitialized by remember { mutableStateOf(false) }
     var canvasWidthInput by remember { mutableStateOf("1080") }
     var canvasHeightInput by remember { mutableStateOf(defaultHeightStr) }
+    var projectDpi by remember { mutableStateOf(300) }
     var selectedPresetIndex by remember { mutableStateOf(0) }
     
     var showExportSettingsDialog by remember { mutableStateOf(false) }
@@ -1127,8 +1129,90 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var canvasWidth by remember { mutableStateOf(1080f) }
     var canvasHeight by remember { mutableStateOf(1080f * deviceAspect) }
 
+    var showDownscalePsdDialog by remember { mutableStateOf<PsdImportEngine.ParsedPsd?>(null) }
+    var isPsdImporting by remember { mutableStateOf(false) }
+    var psdImportProgressState by remember { mutableStateOf("") }
+    var psdImportErrorMsg by remember { mutableStateOf<String?>(null) }
+
+    val loadParsedPsd: (PsdImportEngine.ParsedPsd, Boolean) -> Unit = { psd, downscale ->
+        val scaleFactor = if (downscale) {
+            val maxDim = maxOf(psd.canvasWidth, psd.canvasHeight)
+            val limit = 2048f
+            if (maxDim > limit) limit / maxDim else 1.0f
+        } else {
+            1.0f
+        }
+
+        val designWidth = psd.canvasWidth * scaleFactor
+        val designHeight = psd.canvasHeight * scaleFactor
+
+        val scaledLayers = psd.layers.map { layer ->
+            layer.copy(
+                width = layer.width * scaleFactor,
+                height = layer.height * scaleFactor,
+                positionX = layer.positionX * scaleFactor,
+                positionY = layer.positionY * scaleFactor
+            )
+        }
+
+        canvasWidth = designWidth
+        canvasHeight = designHeight
+        canvasWidthInput = designWidth.toInt().toString()
+        canvasHeightInput = designHeight.toInt().toString()
+        projectDpi = psd.projectDpi
+
+        val nid = UUID.randomUUID().toString()
+        projectId = nid
+        projectName = "PSD Import ${designWidth.toInt()}x${designHeight.toInt()}"
+        layers = scaledLayers
+        selectedLayerId = if (scaledLayers.isNotEmpty()) scaledLayers[0].id else ""
+        isProjectInitialized = true
+
+        workspaceViewModel.saveProject(nid, projectName, designWidth, designHeight, scaledLayers, dpi = psd.projectDpi)
+        android.widget.Toast.makeText(context, "PSD imported successfully with ${scaledLayers.size} layers!", android.widget.Toast.LENGTH_LONG).show()
+    }
+
+    val psdPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        uri?.let { psdUri ->
+            isPsdImporting = true
+            psdImportProgressState = "Opening document..."
+            psdImportErrorMsg = null
+            
+            scope.launch {
+                try {
+                    context.contentResolver.openInputStream(psdUri)?.use { inputStream ->
+                        val parsed = PsdImportEngine.parsePsdStream(context, inputStream) { text ->
+                            scope.launch(Dispatchers.Main) {
+                                psdImportProgressState = text
+                            }
+                        }
+                        if (parsed.layers.isEmpty()) {
+                            isPsdImporting = false
+                            psdImportErrorMsg = "No compatible layers found in PSD document. Keep in mind vector/shape layers are not raw pixels."
+                            return@launch
+                        }
+
+                        if (parsed.canvasWidth > 3500f || parsed.canvasHeight > 3500f) {
+                            showDownscalePsdDialog = parsed
+                        } else {
+                            loadParsedPsd(parsed, false)
+                        }
+                    }
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                    isPsdImporting = false
+                    psdImportErrorMsg = "PSD Parsing Failure: " + (e.localizedMessage ?: e.javaClass.simpleName)
+                } finally {
+                    isPsdImporting = false
+                }
+            }
+        }
+    }
+
     // Background Auto-Save Side-Effect
-    LaunchedEffect(layers, canvasWidth, canvasHeight, projectName, projectId) {
+    LaunchedEffect(layers, canvasWidth, canvasHeight, projectName, projectId, projectDpi) {
         if (isProjectInitialized && projectId.isNotEmpty()) {
             kotlinx.coroutines.delay(1000)
             workspaceViewModel.saveProject(
@@ -1136,7 +1220,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 name = projectName,
                 width = canvasWidth,
                 height = canvasHeight,
-                layers = layers
+                layers = layers,
+                dpi = projectDpi
             )
         }
     }
@@ -1219,7 +1304,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 
                 val filename = (if (projectName.isBlank()) "Masterpiece" else projectName) + "_" + (if (cmyk) "CMYK_" else "RGB_") + targetW.toInt() + "x" + targetH.toInt() + "_" + System.currentTimeMillis()
                 val uri = withContext(Dispatchers.IO) {
-                    saveBitmapToGallery(context, exportedBitmap, filename)
+                    saveBitmapToGallery(context, exportedBitmap, filename, projectDpi)
                 }
                 
                 if (uri != null) {
@@ -1229,6 +1314,31 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 }
             } catch (e: Throwable) {
                 android.widget.Toast.makeText(context, "Export error: ${e.localizedMessage ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val executePsdExport: () -> Unit = {
+        android.widget.Toast.makeText(context, "Packing multi-layer PSD document...", android.widget.Toast.LENGTH_SHORT).show()
+        scope.launch {
+            try {
+                val filename = (if (projectName.isBlank()) "Masterpiece" else projectName) + "_" + System.currentTimeMillis()
+                val uri = PsdExportEngine.savePsdToGallery(
+                    context = context,
+                    layers = layers,
+                    canvasWidth = canvasWidth,
+                    canvasHeight = canvasHeight,
+                    imageBitmapCache = imageBitmapCache,
+                    filename = filename,
+                    projectDpi = projectDpi
+                )
+                if (uri != null) {
+                    android.widget.Toast.makeText(context, "Exported PSD layered successfully to Pictures/PhotoshopExports!", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    android.widget.Toast.makeText(context, "Export failed. Please check device state.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                android.widget.Toast.makeText(context, "PSD Export error: ${e.localizedMessage ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1260,7 +1370,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     6 -> { /* Custom size - let user adjust manually */ }
                 }
             },
-            onInitialize = {
+            onInitialize = { dpiChosen ->
+                projectDpi = dpiChosen
                 val w = canvasWidthInput.toFloatOrNull() ?: 1080f
                 val h = canvasHeightInput.toFloatOrNull() ?: 1350f
                 val finalW = w.coerceIn(100f, 8000f)
@@ -1272,7 +1383,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 projectName = "Design ${finalW.toInt()}x${finalH.toInt()}"
                 layers = emptyList()
                 isProjectInitialized = true
-                workspaceViewModel.saveProject(nid, projectName, finalW, finalH, emptyList())
+                workspaceViewModel.saveProject(nid, projectName, finalW, finalH, emptyList(), dpi = dpiChosen)
             },
             previousProjects = previousProjects,
             onLoadProject = { proj ->
@@ -1282,6 +1393,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 canvasHeight = proj.height
                 canvasWidthInput = proj.width.toInt().toString()
                 canvasHeightInput = proj.height.toInt().toString()
+                projectDpi = try { proj.dpi } catch (e: Exception) { 300 }
                 scope.launch {
                     val decoded = withContext(Dispatchers.Default) {
                         LayerSerializer.deserialize(proj.layersJson)
@@ -1296,8 +1408,146 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             },
             onRenameProject = { proj, newName ->
                 workspaceViewModel.renameProject(proj, newName)
+            },
+            onImportPsdRequest = {
+                psdPickerLauncher.launch("*/*")
             }
         )
+
+        // Render PSD importing dialogs during Setup Phase
+        if (showDownscalePsdDialog != null) {
+            val psd = showDownscalePsdDialog!!
+            AlertDialog(
+                onDismissRequest = { showDownscalePsdDialog = null },
+                title = {
+                    Text(
+                        text = "⚠️ HIGH RESOLUTION WARNING",
+                        style = Typography.titleMedium,
+                        color = Color(0xFFFF8A80),
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = "This Photoshop file has a high-resolution canvas size of ${psd.rawWidth} × ${psd.rawHeight} px.\n\n" +
+                               "High-resolution multi-layer files can easily exceed mobile GPU texture size limits and cause Out-Of-Memory crashing. " +
+                               "To ensure smooth performance, we recommend downscaling the document canvas and layers appropriately.",
+                        style = Typography.bodyMedium,
+                        color = TextPrimary
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val parsed = showDownscalePsdDialog
+                            showDownscalePsdDialog = null
+                            if (parsed != null) {
+                                loadParsedPsd(parsed, true)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow)
+                    ) {
+                        Text("Recommend Downscale (2048px Max)", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            val parsed = showDownscalePsdDialog
+                            showDownscalePsdDialog = null
+                            if (parsed != null) {
+                                loadParsedPsd(parsed, false)
+                            }
+                        }
+                    ) {
+                        Text("Import Original (Risk of Crashes)", style = Typography.labelSmall, color = TextSecondary)
+                    }
+                },
+                containerColor = SlatePanel,
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
+
+        if (isPsdImporting) {
+            AlertDialog(
+                onDismissRequest = {},
+                title = {
+                    Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = EnergeticYellow,
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.5.dp
+                        )
+                        Text(
+                            text = "IMPORTING PSD DOCUMENT",
+                            style = Typography.titleMedium.copy(fontSize = 14.sp),
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                text = {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "We're parsing the Adobe layered structure and converting images safely.",
+                            style = Typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(DarkOnyx, RoundedCornerShape(6.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = psdImportProgressState,
+                                style = Typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 11.sp),
+                                color = EnergeticYellow
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                containerColor = SlatePanel,
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
+
+        if (psdImportErrorMsg != null) {
+            AlertDialog(
+                onDismissRequest = { psdImportErrorMsg = null },
+                title = {
+                    Text(
+                        text = "❌ PSD IMPORT ERROR",
+                        style = Typography.titleMedium,
+                        color = Color(0xFFFF8A80),
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = psdImportErrorMsg!!,
+                        style = Typography.bodyMedium,
+                        color = TextPrimary
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { psdImportErrorMsg = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow)
+                    ) {
+                        Text("Dismiss", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                    }
+                },
+                containerColor = SlatePanel,
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
     } else {
         @Composable
         fun RenderBottomEffectPanel(isLandscapeMode: Boolean) {
@@ -1512,6 +1762,140 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 )
             }
 
+            if (showDownscalePsdDialog != null) {
+                val psd = showDownscalePsdDialog!!
+                AlertDialog(
+                    onDismissRequest = { showDownscalePsdDialog = null },
+                    title = {
+                        Text(
+                            text = "⚠️ HIGH RESOLUTION WARNING",
+                            style = Typography.titleMedium,
+                            color = Color(0xFFFF8A80),
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "This Photoshop file has a high-resolution canvas size of ${psd.rawWidth} × ${psd.rawHeight} px.\n\n" +
+                                   "High-resolution multi-layer files can easily exceed mobile GPU texture size limits and cause Out-Of-Memory crashing. " +
+                                   "To ensure smooth performance, we recommend downscaling the document canvas and layers appropriately.",
+                            style = Typography.bodyMedium,
+                            color = TextPrimary
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val parsed = showDownscalePsdDialog
+                                showDownscalePsdDialog = null
+                                if (parsed != null) {
+                                    loadParsedPsd(parsed, true)
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow)
+                        ) {
+                            Text("Recommend Downscale (2048px Max)", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                val parsed = showDownscalePsdDialog
+                                showDownscalePsdDialog = null
+                                if (parsed != null) {
+                                    loadParsedPsd(parsed, false)
+                                }
+                            }
+                        ) {
+                            Text("Import Original (Risk of Crashes)", style = Typography.labelSmall, color = TextSecondary)
+                        }
+                    },
+                    containerColor = SlatePanel,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+
+            if (isPsdImporting) {
+                AlertDialog(
+                    onDismissRequest = {}, // Modal, cannot be dismissed while parsing is in progress
+                    title = {
+                        Row(
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = EnergeticYellow,
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.5.dp
+                            )
+                            Text(
+                                text = "IMPORTING PSD DOCUMENT",
+                                style = Typography.titleMedium.copy(fontSize = 14.sp),
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    },
+                    text = {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "We're parsing the Adobe layered structure and converting images safely.",
+                                style = Typography.bodyMedium,
+                                color = TextSecondary
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(DarkOnyx, RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = psdImportProgressState,
+                                    style = Typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 11.sp),
+                                    color = EnergeticYellow
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {}, // None, forced active modal
+                    containerColor = SlatePanel,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+
+            if (psdImportErrorMsg != null) {
+                AlertDialog(
+                    onDismissRequest = { psdImportErrorMsg = null },
+                    title = {
+                        Text(
+                            text = "❌ PSD IMPORT ERROR",
+                            style = Typography.titleMedium,
+                            color = Color(0xFFFF8A80),
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = psdImportErrorMsg!!,
+                            style = Typography.bodyMedium,
+                            color = TextPrimary
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = { psdImportErrorMsg = null },
+                            colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow)
+                        ) {
+                            Text("Dismiss", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    containerColor = SlatePanel,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+
             // -- MAIN CREATIVE CORE GRID --
             Row(
                 modifier = Modifier
@@ -1690,7 +2074,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                             selectedLayerId = currentSelected.id
                                                         }
 
-                                                        val needsNewLayer = if (tool == "Brush" || tool == "Eraser") {
+                                                        val needsNewLayer = if (tool == "Brush") {
                                                             currentSelected == null || currentSelected.type != LayerType.FREEHAND_DRAWING
                                                         } else {
                                                             currentSelected == null
@@ -3180,7 +3564,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
                                 if (OpenGLBrushRenderer.WetInkRenderer.isInitialized()) {
                                     val isFreehandSelected = layers.any { it.id == selectedLayerId && it.type == com.example.studio.model.LayerType.FREEHAND_DRAWING }
-                                    if (!isFreehandSelected) {
+                                    if (!isFreehandSelected && activeTool != "Eraser") {
                                         OpenGLBrushRenderer.WetInkRenderer.getWetInkBitmap()?.let { b ->
                                             drawImage(
                                                 image = b.asImageBitmap(),
@@ -3882,14 +4266,32 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     }
                 },
                 confirmButton = {
-                    Button(
-                        onClick = {
-                            showExportSettingsDialog = false
-                            executeArtworkExport(exportMultiplier, exportIsCmyk)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Export Canvas", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        Button(
+                            onClick = {
+                                showExportSettingsDialog = false
+                                executePsdExport()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.testTag("psd_export_button")
+                        ) {
+                            Text("Export as PSD (Layered)", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        }
+                        
+                        Button(
+                            onClick = {
+                                showExportSettingsDialog = false
+                                executeArtworkExport(exportMultiplier, exportIsCmyk)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66)),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text("Export Flat Canvas", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        }
                     }
                 },
                 dismissButton = {
@@ -6124,7 +6526,93 @@ fun exportCanvasToBitmap(
     return finalBitmap
 }
 
-fun saveBitmapToGallery(context: android.content.Context, bitmap: android.graphics.Bitmap, filename: String): android.net.Uri? {
+fun injectPngDpi(pngBytes: ByteArray, dpi: Int): ByteArray {
+    val signatureSize = 8
+    val ihdrTotalSize = 25 // 4 (length) + 4 (type) + 13 (data) + 4 (crc)
+    val insertOffset = signatureSize + ihdrTotalSize
+    
+    if (pngBytes.size < insertOffset) return pngBytes
+    
+    val isPng = pngBytes[0] == 0x89.toByte() && pngBytes[1] == 0x50.toByte() && pngBytes[2] == 0x4E.toByte() && pngBytes[3] == 0x47.toByte()
+    if (!isPng) return pngBytes
+    
+    val pixelsPerMeter = (dpi * 39.3700787f).toInt()
+    
+    val chunkData = ByteArray(9)
+    chunkData[0] = ((pixelsPerMeter shr 24) and 0xFF).toByte()
+    chunkData[1] = ((pixelsPerMeter shr 16) and 0xFF).toByte()
+    chunkData[2] = ((pixelsPerMeter shr 8) and 0xFF).toByte()
+    chunkData[3] = (pixelsPerMeter and 0xFF).toByte()
+    chunkData[4] = ((pixelsPerMeter shr 24) and 0xFF).toByte()
+    chunkData[5] = ((pixelsPerMeter shr 16) and 0xFF).toByte()
+    chunkData[6] = ((pixelsPerMeter shr 8) and 0xFF).toByte()
+    chunkData[7] = (pixelsPerMeter and 0xFF).toByte()
+    chunkData[8] = 1.toByte()
+    
+    val crc = java.util.zip.CRC32()
+    crc.update('p'.code)
+    crc.update('H'.code)
+    crc.update('Y'.code)
+    crc.update('s'.code)
+    crc.update(chunkData)
+    val crcValue = crc.value.toInt()
+    
+    val byteStream = java.io.ByteArrayOutputStream()
+    byteStream.write(pngBytes, 0, insertOffset)
+    
+    byteStream.write(0)
+    byteStream.write(0)
+    byteStream.write(0)
+    byteStream.write(9)
+    byteStream.write('p'.code)
+    byteStream.write('H'.code)
+    byteStream.write('Y'.code)
+    byteStream.write('s'.code)
+    byteStream.write(chunkData)
+    byteStream.write((crcValue shr 24) and 0xFF)
+    byteStream.write((crcValue shr 16) and 0xFF)
+    byteStream.write((crcValue shr 8) and 0xFF)
+    byteStream.write(crcValue and 0xFF)
+    
+    byteStream.write(pngBytes, insertOffset, pngBytes.size - insertOffset)
+    return byteStream.toByteArray()
+}
+
+fun injectJfifDpi(jpegBytes: ByteArray, dpi: Int): ByteArray {
+    if (jpegBytes.size < 20) return jpegBytes
+    if (jpegBytes[0] != 0xFF.toByte() || jpegBytes[1] != 0xD8.toByte()) return jpegBytes
+    
+    var index = 2
+    while (index < jpegBytes.size - 10) {
+        val marker1 = jpegBytes[index]
+        val marker2 = jpegBytes[index + 1]
+        
+        if (marker1 == 0xFF.toByte()) {
+            if (marker2 == 0xE0.toByte()) {
+                val app0Length = ((jpegBytes[index + 2].toInt() and 0xFF) shl 8) or (jpegBytes[index + 3].toInt() and 0xFF)
+                if (jpegBytes[index + 4] == 'J'.toByte() && jpegBytes[index + 5] == 'F'.toByte() && jpegBytes[index + 6] == 'I'.toByte() && jpegBytes[index + 7] == 'F'.toByte()) {
+                    val mutatedBytes = jpegBytes.clone()
+                    mutatedBytes[index + 11] = 1.toByte()
+                    mutatedBytes[index + 12] = ((dpi shr 8) and 0xFF).toByte()
+                    mutatedBytes[index + 13] = (dpi and 0xFF).toByte()
+                    mutatedBytes[index + 14] = ((dpi shr 8) and 0xFF).toByte()
+                    mutatedBytes[index + 15] = (dpi and 0xFF).toByte()
+                    return mutatedBytes
+                }
+            }
+            if (marker2 == 0xDA.toByte() || marker2 == 0xD9.toByte()) {
+                break
+            }
+            val length = ((jpegBytes[index + 2].toInt() and 0xFF) shl 8) or (jpegBytes[index + 3].toInt() and 0xFF)
+            index += 2 + length
+        } else {
+            index++
+        }
+    }
+    return jpegBytes
+}
+
+fun saveBitmapToGallery(context: android.content.Context, bitmap: android.graphics.Bitmap, filename: String, customDpi: Int = 300): android.net.Uri? {
     val resolver = context.contentResolver
     val imageCollection = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
         android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -6146,7 +6634,11 @@ fun saveBitmapToGallery(context: android.content.Context, bitmap: android.graphi
         try {
             resolver.openOutputStream(imageUri).use { outputStream ->
                 if (outputStream != null) {
-                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, outputStream)
+                    val bos = java.io.ByteArrayOutputStream()
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bos)
+                    val pngBytes = bos.toByteArray()
+                    val dpiInjectedBytes = injectPngDpi(pngBytes, customDpi)
+                    outputStream.write(dpiInjectedBytes)
                 }
             }
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
@@ -8158,7 +8650,7 @@ fun OldBottomEffectPanel(
                                 )
 
                                 // Category selection horizontal filters
-                                val categories = listOf("All", "Sans-Serif", "Serif", "Monospace", "Display", "Script", "Handwritten")
+                                val categories = listOf("All", "Imported", "Sans-Serif", "Serif", "Monospace", "Display", "Script", "Handwritten")
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -8235,17 +8727,107 @@ fun OldBottomEffectPanel(
                                 }
 
                                 val consolidatedFonts = allFonts + importedFonts
-                                val filteredFonts = consolidatedFonts.filter { font ->
+                                var favoriteFontsList = FontFavoritesState.favoriteFontsList
+                                val filteredFonts = if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) emptyList() else consolidatedFonts.filter { font ->
                                     val matchesQuery = font.name.contains(fontSearchQuery, ignoreCase = true)
-                                    val matchesCategory = selectedCategoryFilter == "All" || font.category == selectedCategoryFilter
+                                    val matchesCategory = when (selectedCategoryFilter) {
+                                        "All" -> true
+                                        "Imported" -> font.isImported
+                                        else -> font.category == selectedCategoryFilter
+                                    }
                                     matchesQuery && matchesCategory
                                 }
 
                                 if (filteredFonts.isEmpty()) {
-                                    Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                                    if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) {
+                                        val favorites = consolidatedFonts.filter { FontFavoritesState.favoriteFontsList.contains(it.name) }
+                                        val imported = consolidatedFonts.filter { it.isImported }
+                                        val system = consolidatedFonts.filter { !it.isImported }
+
+                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            // 1. Favorites Section
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically, 
+                                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Favorite, null, modifier = Modifier.size(12.dp), tint = Color(0xFFFF4D4D))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("FAVORITE FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = Color(0xFFFF4D4D), fontWeight = FontWeight.Bold)
+                                                }
+                                                if (favorites.isEmpty()) {
+                                                    Text("No favorite fonts yet. Tap the heart next to any font to save it here!", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
+                                                } else {
+                                                    favorites.forEach { font ->
+                                                         RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+                                                     }
+                                                     if (false) favorites.forEach { font ->
+                                                        RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
+                                                            favoriteFontsList = it
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
+
+                                            // 2. Imported Section
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically, 
+                                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Folder, null, modifier = Modifier.size(12.dp), tint = EnergeticYellow)
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("IMPORTED FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                                                }
+                                                if (imported.isEmpty()) {
+                                                    Text("No imported fonts yet. Tap 'Import Font' above to load custom TTF/OTF files.", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
+                                                } else {
+                                                    imported.forEach { font ->
+                                                         RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+                                                     }
+                                                     if (false) imported.forEach { font ->
+                                                        RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
+                                                            favoriteFontsList = it
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
+
+                                            // 3. System Fonts Section
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically, 
+                                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Star, null, modifier = Modifier.size(12.dp), tint = TextSecondary)
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("SYSTEM FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
+                                                }
+                                                system.forEach { font ->
+                                                     RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+                                                 }
+                                                 if (false) system.forEach { font ->
+                                                    RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
+                                                        favoriteFontsList = it
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                                    }
                                 } else {
                                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         filteredFonts.forEach { font ->
+                                             RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
+                                                 favoriteFontsList = it
+                                             }
+                                         }
+                                         if (false) filteredFonts.forEach { font ->
                                             val isSelected = if (font.isImported) {
                                                 selectedLayer.fontPath == font.path
                                             } else {
@@ -9128,13 +9710,47 @@ fun CanvasSetupScreen(
     onWidthChange: (String) -> Unit,
     onHeightChange: (String) -> Unit,
     onPresetSelect: (Int) -> Unit,
-    onInitialize: () -> Unit,
+    onInitialize: (Int) -> Unit,
     previousProjects: List<ProjectEntity>,
     onLoadProject: (ProjectEntity) -> Unit,
     onDeleteProject: (String) -> Unit,
-    onRenameProject: (ProjectEntity, String) -> Unit
+    onRenameProject: (ProjectEntity, String) -> Unit,
+    onImportPsdRequest: () -> Unit
 ) {
     var activeMenuTab by remember { mutableStateOf(0) } // 0 for Create Canvas, 1 for Previous Projects
+    var activeUnit by remember { mutableStateOf("Pixels") }
+    var physicalWidthInput by remember { mutableStateOf("8.5") }
+    var physicalHeightInput by remember { mutableStateOf("11.0") }
+    var targetDpiOption by remember { mutableStateOf(300) } // 72, 150, 300, 0 (custom)
+    var customDpiText by remember { mutableStateOf("300") }
+
+    val evaluatedDpi = if (targetDpiOption > 0) targetDpiOption else (customDpiText.toIntOrNull() ?: 300).coerceIn(1, 1200)
+
+    androidx.compose.runtime.LaunchedEffect(
+        activeUnit, physicalWidthInput, physicalHeightInput, targetDpiOption, customDpiText
+    ) {
+        if (activeUnit == "Inches") {
+            val wValue = physicalWidthInput.toFloatOrNull() ?: 8.5f
+            val hValue = physicalHeightInput.toFloatOrNull() ?: 11.0f
+            val computedW = (wValue * evaluatedDpi).toInt().coerceIn(100, 8000)
+            val computedH = (hValue * evaluatedDpi).toInt().coerceIn(100, 8000)
+            onWidthChange(computedW.toString())
+            onHeightChange(computedH.toString())
+        } else if (activeUnit == "Centimeters") {
+            val wValue = physicalWidthInput.toFloatOrNull() ?: 21.0f
+            val hValue = physicalHeightInput.toFloatOrNull() ?: 29.7f
+            val computedW = ((wValue / 2.54f) * evaluatedDpi).toInt().coerceIn(100, 8000)
+            val computedH = ((hValue / 2.54f) * evaluatedDpi).toInt().coerceIn(100, 8000)
+            onWidthChange(computedW.toString())
+            onHeightChange(computedH.toString())
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(selectedPresetIndex) {
+        if (selectedPresetIndex != 6) {
+            activeUnit = "Pixels"
+        }
+    }
 
     val layerCounts = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
     androidx.compose.runtime.LaunchedEffect(previousProjects) {
@@ -9315,7 +9931,7 @@ fun CanvasSetupScreen(
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                listOf("Create Canvas", "Previous Projects").forEachIndexed { tabIdx, tabTitle ->
+                listOf("Create Canvas", "Previous Projects", "Import PSD").forEachIndexed { tabIdx, tabTitle ->
                     val isTabSelected = activeMenuTab == tabIdx
                     Box(
                         modifier = Modifier
@@ -9331,16 +9947,21 @@ fun CanvasSetupScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Icon(
-                                imageVector = if (tabIdx == 0) Icons.Default.AddCircleOutline else Icons.Default.FolderSpecial,
+                                imageVector = when (tabIdx) {
+                                    0 -> Icons.Default.AddCircleOutline
+                                    1 -> Icons.Default.FolderSpecial
+                                    else -> Icons.Default.FileOpen
+                                },
                                 contentDescription = null,
                                 tint = if (isTabSelected) DarkOnyx else TextSecondary,
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
                                 text = tabTitle,
-                                style = Typography.bodyMedium,
+                                style = Typography.bodyMedium.copy(fontSize = 11.sp),
                                 fontWeight = if (isTabSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isTabSelected) DarkOnyx else TextSecondary
+                                color = if (isTabSelected) DarkOnyx else TextSecondary,
+                                maxLines = 1
                             )
                             if (tabIdx == 1 && previousProjects.isNotEmpty()) {
                                 Box(
@@ -9499,11 +10120,63 @@ fun CanvasSetupScreen(
                         // Divider helper
                         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(HighslateOutline.copy(alpha = 0.5f)))
 
-                        // Width & Height Pixels Inputs with Aspect Link Button
+                        // Unit Selector Tab Row
                         Text(
-                            text = "DIMENSION CONFIGURATION (PX)",
+                            text = "MEASUREMENT UNIT PLANE",
                             style = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = TextPrimary
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(SlatePanel.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                                .padding(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            listOf("Pixels", "Inches", "Centimeters").forEach { u ->
+                                val isSelected = activeUnit == u
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .background(if (isSelected) IndustrialAmber else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            activeUnit = u
+                                            if (u != "Pixels") {
+                                                if (u == "Inches") {
+                                                    physicalWidthInput = "8.5"
+                                                    physicalHeightInput = "11.0"
+                                                } else {
+                                                    physicalWidthInput = "21.0"
+                                                    physicalHeightInput = "29.7"
+                                                }
+                                                val wF = physicalWidthInput.toFloatOrNull() ?: 8.5f
+                                                val hF = physicalHeightInput.toFloatOrNull() ?: 11f
+                                                lockedRatio = if (hF > 0f) wF / hF else 1f
+                                            } else {
+                                                val wF = canvasWidthInput.toFloatOrNull() ?: 1080f
+                                                val hF = canvasHeightInput.toFloatOrNull() ?: 1350f
+                                                lockedRatio = if (hF > 0f) wF / hF else 1f
+                                            }
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = u.uppercase(),
+                                        style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                                        color = if (isSelected) DarkOnyx else TextSecondary
+                                    )
+                                }
+                            }
+                        }
+
+                        // Width & Height inputs based on selected measurement plane
+                        Text(
+                            text = "DIMENSION CONFIGURATION (" + activeUnit.uppercase() + ")",
+                            style = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary,
+                            modifier = Modifier.padding(top = 4.dp)
                         )
 
                         Row(
@@ -9518,33 +10191,63 @@ fun CanvasSetupScreen(
                                     color = TextSecondary,
                                     modifier = Modifier.padding(bottom = 4.dp)
                                 )
-                                OutlinedTextField(
-                                    value = canvasWidthInput,
-                                    onValueChange = { newVal ->
-                                        onWidthChange(newVal)
-                                        if (isRatioLocked) {
-                                            val wFloat = newVal.toFloatOrNull()
-                                            if (wFloat != null) {
-                                                val calcH = (wFloat / lockedRatio).toInt().coerceIn(100, 8000)
-                                                onHeightChange(calcH.toString())
+                                if (activeUnit == "Pixels") {
+                                    OutlinedTextField(
+                                        value = canvasWidthInput,
+                                        onValueChange = { newVal ->
+                                            onWidthChange(newVal)
+                                            if (isRatioLocked) {
+                                                val wFloat = newVal.toFloatOrNull()
+                                                if (wFloat != null) {
+                                                    val calcH = (wFloat / lockedRatio).toInt().coerceIn(100, 8000)
+                                                    onHeightChange(calcH.toString())
+                                                }
                                             }
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth().testTag("canvas_width_input"),
-                                    textStyle = Typography.bodyMedium.copy(color = TextPrimary),
-                                    singleLine = true,
-                                    suffix = { Text("px", color = TextSecondary, fontSize = 11.sp) },
-                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-                                    ),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = IndustrialAmber,
-                                        unfocusedBorderColor = HighslateOutline,
-                                        cursorColor = IndustrialAmber,
-                                        focusedContainerColor = MidSlate.copy(0.3f),
-                                        unfocusedContainerColor = Color.Transparent
+                                        },
+                                        modifier = Modifier.fillMaxWidth().testTag("canvas_width_input"),
+                                        textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                                        singleLine = true,
+                                        suffix = { Text("px", color = TextSecondary, fontSize = 11.sp) },
+                                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                        ),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = IndustrialAmber,
+                                            unfocusedBorderColor = HighslateOutline,
+                                            cursorColor = IndustrialAmber,
+                                            focusedContainerColor = MidSlate.copy(0.3f),
+                                            unfocusedContainerColor = Color.Transparent
+                                        )
                                     )
-                                )
+                                } else {
+                                    OutlinedTextField(
+                                        value = physicalWidthInput,
+                                        onValueChange = { newVal ->
+                                            physicalWidthInput = newVal
+                                            if (isRatioLocked) {
+                                                val wFloat = newVal.toFloatOrNull()
+                                                if (wFloat != null) {
+                                                    val calcH = (wFloat / lockedRatio)
+                                                    physicalHeightInput = String.format(java.util.Locale.US, "%.2f", calcH)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().testTag("physical_width_input"),
+                                        textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                                        singleLine = true,
+                                        suffix = { Text(if (activeUnit == "Inches") "in" else "cm", color = TextSecondary, fontSize = 11.sp) },
+                                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                        ),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = IndustrialAmber,
+                                            unfocusedBorderColor = HighslateOutline,
+                                            cursorColor = IndustrialAmber,
+                                            focusedContainerColor = MidSlate.copy(0.3f),
+                                            unfocusedContainerColor = Color.Transparent
+                                        )
+                                    )
+                                }
                             }
 
                             // Dynamic aspect lock toggling link button
@@ -9552,9 +10255,15 @@ fun CanvasSetupScreen(
                                 onClick = {
                                     isRatioLocked = !isRatioLocked
                                     if (isRatioLocked) {
-                                        val w = canvasWidthInput.toFloatOrNull() ?: 1080f
-                                        val h = canvasHeightInput.toFloatOrNull() ?: 1350f
-                                        lockedRatio = if (h > 0f) w / h else 1f
+                                        if (activeUnit == "Pixels") {
+                                            val w = canvasWidthInput.toFloatOrNull() ?: 1080f
+                                            val h = canvasHeightInput.toFloatOrNull() ?: 1350f
+                                            lockedRatio = if (h > 0f) w / h else 1f
+                                        } else {
+                                            val w = physicalWidthInput.toFloatOrNull() ?: 8.5f
+                                            val h = physicalHeightInput.toFloatOrNull() ?: 11.0f
+                                            lockedRatio = if (h > 0f) w / h else 1f
+                                        }
                                     }
                                 },
                                 modifier = Modifier
@@ -9578,32 +10287,204 @@ fun CanvasSetupScreen(
                                     color = TextSecondary,
                                     modifier = Modifier.padding(bottom = 4.dp)
                                 )
-                                OutlinedTextField(
-                                    value = canvasHeightInput,
-                                    onValueChange = { newVal ->
-                                        onHeightChange(newVal)
-                                        if (isRatioLocked) {
-                                            val hFloat = newVal.toFloatOrNull()
-                                            if (hFloat != null) {
-                                                val calcW = (hFloat * lockedRatio).toInt().coerceIn(100, 8000)
-                                                onWidthChange(calcW.toString())
+                                if (activeUnit == "Pixels") {
+                                    OutlinedTextField(
+                                        value = canvasHeightInput,
+                                        onValueChange = { newVal ->
+                                            onHeightChange(newVal)
+                                            if (isRatioLocked) {
+                                                val hFloat = newVal.toFloatOrNull()
+                                                if (hFloat != null) {
+                                                    val calcW = (hFloat * lockedRatio).toInt().coerceIn(100, 8000)
+                                                    onWidthChange(calcW.toString())
+                                                }
                                             }
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth().testTag("canvas_height_input"),
-                                    textStyle = Typography.bodyMedium.copy(color = TextPrimary),
-                                    singleLine = true,
-                                    suffix = { Text("px", color = TextSecondary, fontSize = 11.sp) },
-                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-                                    ),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = IndustrialAmber,
-                                        unfocusedBorderColor = HighslateOutline,
-                                        cursorColor = IndustrialAmber,
-                                        focusedContainerColor = MidSlate.copy(0.3f),
-                                        unfocusedContainerColor = Color.Transparent
+                                        },
+                                        modifier = Modifier.fillMaxWidth().testTag("canvas_height_input"),
+                                        textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                                        singleLine = true,
+                                        suffix = { Text("px", color = TextSecondary, fontSize = 11.sp) },
+                                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                        ),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = IndustrialAmber,
+                                            unfocusedBorderColor = HighslateOutline,
+                                            cursorColor = IndustrialAmber,
+                                            focusedContainerColor = MidSlate.copy(0.3f),
+                                            unfocusedContainerColor = Color.Transparent
+                                        )
                                     )
+                                } else {
+                                    OutlinedTextField(
+                                        value = physicalHeightInput,
+                                        onValueChange = { newVal ->
+                                            physicalHeightInput = newVal
+                                            if (isRatioLocked) {
+                                                val hFloat = newVal.toFloatOrNull()
+                                                if (hFloat != null) {
+                                                    val calcW = (hFloat * lockedRatio)
+                                                    physicalWidthInput = String.format(java.util.Locale.US, "%.2f", calcW)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().testTag("physical_height_input"),
+                                        textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                                        singleLine = true,
+                                        suffix = { Text(if (activeUnit == "Inches") "in" else "cm", color = TextSecondary, fontSize = 11.sp) },
+                                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                        ),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = IndustrialAmber,
+                                            unfocusedBorderColor = HighslateOutline,
+                                            cursorColor = IndustrialAmber,
+                                            focusedContainerColor = MidSlate.copy(0.3f),
+                                            unfocusedContainerColor = Color.Transparent
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        // DPI Configuration Matrix
+                        Text(
+                            text = "TARGET RESOLUTION DENSITY (DPI)",
+                            style = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                72 to "72 DPI\n(Digital/Web)",
+                                150 to "150 DPI\n(Draft Print)",
+                                300 to "300 DPI\n(Pro HD Print)"
+                            ).forEach { (dpi, label) ->
+                                val isSelected = targetDpiOption == dpi
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            targetDpiOption = dpi
+                                        },
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isSelected) MidSlate.copy(alpha = 0.65f) else SlatePanel.copy(alpha = 0.3f)
+                                    ),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSelected) IndustrialAmber else HighslateOutline.copy(alpha = 0.3f)
+                                    ),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            style = Typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                                            color = if (isSelected) TextPrimary else TextSecondary,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                }
+                            }
+                            
+                            val isCustomSelected = targetDpiOption == 0
+                            Card(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        targetDpiOption = 0
+                                    },
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isCustomSelected) MidSlate.copy(alpha = 0.65f) else SlatePanel.copy(alpha = 0.3f)
+                                ),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isCustomSelected) IndustrialAmber else HighslateOutline.copy(alpha = 0.3f)
+                                ),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Custom\nDPI",
+                                        style = Typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                                        color = if (isCustomSelected) TextPrimary else TextSecondary,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+
+                        if (targetDpiOption == 0) {
+                            OutlinedTextField(
+                                value = customDpiText,
+                                onValueChange = { customDpiText = it },
+                                label = { Text("Custom Target DPI Density", color = TextSecondary) },
+                                textStyle = Typography.bodyMedium.copy(color = TextPrimary),
+                                singleLine = true,
+                                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                                ),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = IndustrialAmber,
+                                    unfocusedBorderColor = HighslateOutline,
+                                    focusedContainerColor = MidSlate.copy(0.3f),
+                                    unfocusedContainerColor = Color.Transparent
+                                ),
+                                modifier = Modifier.fillMaxWidth().testTag("custom_dpi_input")
+                            )
+                        }
+
+                        // Live Conversion Explanation Block
+                        val explanationText = when (activeUnit) {
+                            "Inches" -> {
+                                val wIn = physicalWidthInput.toFloatOrNull() ?: 8.5f
+                                val hIn = physicalHeightInput.toFloatOrNull() ?: 11.0f
+                                val wPx = (wIn * evaluatedDpi).toInt()
+                                val hPx = (hIn * evaluatedDpi).toInt()
+                                "📐 CONVERSION FORMULA:\nWidth: $wIn in × $evaluatedDpi DPI = $wPx px\nHeight: $hIn in × $evaluatedDpi DPI = $hPx px"
+                            }
+                            "Centimeters" -> {
+                                val wCm = physicalWidthInput.toFloatOrNull() ?: 21.0f
+                                val hCm = physicalHeightInput.toFloatOrNull() ?: 29.7f
+                                val wIn = wCm / 2.54f
+                                val hIn = hCm / 2.54f
+                                val wPx = (wIn * evaluatedDpi).toInt()
+                                val hPx = (hIn * evaluatedDpi).toInt()
+                                "📐 CONVERSION FORMULA (cm → in → px):\nWidth: ($wCm cm ÷ 2.54) × $evaluatedDpi DPI = $wPx px\nHeight: ($hCm cm ÷ 2.54) × $evaluatedDpi DPI = $hPx px"
+                            }
+                            else -> {
+                                "Direct Pixel Plane Mapping Configured."
+                            }
+                        }
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF161922).copy(alpha = 0.5f)),
+                            border = BorderStroke(1.dp, HighslateOutline.copy(0.3f)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "📏 PHYSICAL RESOLUTION TRANSLATION",
+                                    style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = EnergeticYellow)
+                                )
+                                Text(
+                                    text = explanationText,
+                                    style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, color = TextSecondary),
+                                    lineHeight = 16.sp
                                 )
                             }
                         }
@@ -9624,7 +10505,7 @@ fun CanvasSetupScreen(
                             .padding(10.dp)
                     ) {
                         Text(
-                            text = "Warning: Dimensions must be active integers between 100px and 8000px limit.",
+                            text = "Warning: Calculated dimensions must resolve between 100px and 8000px threshold.",
                             style = Typography.labelSmall,
                             color = Color(0xFFFF8A80),
                             modifier = Modifier.align(Alignment.Center)
@@ -9634,7 +10515,7 @@ fun CanvasSetupScreen(
 
                 // Start Workspace CTA Button
                 Button(
-                    onClick = onInitialize,
+                    onClick = { onInitialize(evaluatedDpi) },
                     enabled = isInputValid,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -9663,7 +10544,7 @@ fun CanvasSetupScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
-            } else {
+            } else if (activeMenuTab == 1) {
                 // Recent Projects Tab
                 if (previousProjects.isEmpty()) {
                     Card(
@@ -9924,7 +10805,7 @@ fun CanvasSetupScreen(
                                                         
                                                         val filename = proj.name + "_Direct_" + System.currentTimeMillis()
                                                         val uri = withContext(Dispatchers.IO) {
-                                                            saveBitmapToGallery(homeContext, exportedBitmap, filename)
+                                                            saveBitmapToGallery(homeContext, exportedBitmap, filename, try { proj.dpi } catch (e: Exception) { 300 })
                                                         }
                                                         
                                                         if (uri != null) {
@@ -9977,6 +10858,82 @@ fun CanvasSetupScreen(
                             }
                             }
                         }
+                    }
+                }
+            } else {
+                // PSD Import Tab (activeMenuTab == 2)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                    border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
+                        Canvas(modifier = Modifier.size(100.dp)) {
+                            val gold = EnergeticYellow
+                            val blueAccent = Color(0xFF29B6F6)
+                            val stroke = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f))
+                            
+                            drawRoundRect(
+                                color = blueAccent.copy(0.4f),
+                                topLeft = Offset(10.dp.toPx(), 10.dp.toPx()),
+                                size = Size(80.dp.toPx(), 80.dp.toPx()),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx()),
+                                style = stroke
+                            )
+                            
+                            drawRect(color = gold.copy(0.15f), topLeft = Offset(25.dp.toPx(), 25.dp.toPx()), size = Size(50.dp.toPx(), 15.dp.toPx()))
+                            drawRect(color = blueAccent.copy(0.15f), topLeft = Offset(25.dp.toPx(), 45.dp.toPx()), size = Size(50.dp.toPx(), 15.dp.toPx()))
+                            drawRect(color = gold.copy(0.15f), topLeft = Offset(25.dp.toPx(), 65.dp.toPx()), size = Size(50.dp.toPx(), 15.dp.toPx()))
+                        }
+
+                        Text(
+                            text = "ADOBE PHOTOSHOP PSD ENGINE",
+                            style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary
+                        )
+
+                        Text(
+                            text = "Extract and reassemble layered PSD compositions directly into fully editable vector/image layers. Supports RAW/RLE channels, transparencies, bounds, custom blend modes, opacity scaling, and resolution checks.",
+                            style = Typography.bodyMedium,
+                            color = TextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Button(
+                            onClick = { onImportPsdRequest() },
+                            colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth(0.9f)
+                                .testTag("psd_launcher_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileOpen,
+                                    contentDescription = "Select Photoshop File",
+                                    tint = DarkOnyx
+                                )
+                                Text(
+                                    "BROWSE AND IMPORT LAYERED PSD",
+                                    color = DarkOnyx,
+                                    fontWeight = FontWeight.Bold,
+                                    style = Typography.labelLarge
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
                     }
                 }
             }
@@ -10406,14 +11363,16 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
 ) {
     if (points.isEmpty()) return
 
-    // Preempt with OpenGLBrushRenderer for all requested advanced categories
-    val usesAdvancedBrush = presetIndex in listOf(
+    val isEraser = (composeBlendMode == androidx.compose.ui.graphics.BlendMode.DstOut)
+
+    // Preempt with OpenGLBrushRenderer for all requested advanced categories (unless this is an eraser)
+    val usesAdvancedBrush = !isEraser && (presetIndex in listOf(
         3, 28, 29, 30, 31, 32, 33, 34,  // Soft Airbrush, Normal Airbrush, Triangle, Trapezoids, and Particles
         8, 9,                           // Vector Brushes
         10, 11, 12, 13,                 // Sketch/Pencil
         21, 39,                         // Watercolor
         14, 15, 16, 22, 23, 24, 25, 26, 27, 35, 38, 40 // Ink/Comic tapered paths & Digital Pen
-    )
+    ))
 
     if (usesAdvancedBrush) {
         if (cacheKey != null) {
@@ -10532,7 +11491,6 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
 
     val drawColor = color.copy(alpha = color.alpha * opacity)
 
-    val isEraser = (composeBlendMode == androidx.compose.ui.graphics.BlendMode.DstOut)
     if (isEraser) {
         // High Performance Clear / DstOut Drawing for Eraser
         // Sweep single optimized GPU-friendly stroke cap round miter line path
@@ -11090,6 +12048,110 @@ data class FontResource(
     val isImported: Boolean = false
 )
 
+fun getFavoriteFonts(context: android.content.Context): Set<String> {
+    val prefs = context.getSharedPreferences("favorite_fonts", android.content.Context.MODE_PRIVATE)
+    return prefs.getStringSet("favorites", emptySet()) ?: emptySet()
+}
+
+fun toggleFavoriteFont(context: android.content.Context, fontName: String): Set<String> {
+    val prefs = context.getSharedPreferences("favorite_fonts", android.content.Context.MODE_PRIVATE)
+    val favorites = prefs.getStringSet("favorites", emptySet())?.toMutableSet() ?: mutableSetOf()
+    if (favorites.contains(fontName)) {
+        favorites.remove(fontName)
+    } else {
+        favorites.add(fontName)
+    }
+    prefs.edit().putStringSet("favorites", favorites).apply()
+    return favorites
+}
+
+@Composable
+fun RenderFontRow(
+    font: FontResource,
+    selectedLayer: com.example.studio.model.StudioLayer,
+    favoriteFontsList: Set<String>,
+    onUpdateLayer: (com.example.studio.model.StudioLayer) -> Unit,
+    context: android.content.Context,
+    onFavoriteToggle: (Set<String>) -> Unit
+) {
+    RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+}
+
+object FontFavoritesState {
+    val favoriteFontsState = androidx.compose.runtime.mutableStateOf(emptySet<String>())
+    var favoriteFontsList: Set<String>
+        get() = favoriteFontsState.value
+        set(value) { favoriteFontsState.value = value }
+}
+
+@Composable
+fun RenderFontRow(
+    font: FontResource,
+    selectedLayer: com.example.studio.model.StudioLayer,
+    onUpdateLayer: (com.example.studio.model.StudioLayer) -> Unit,
+    context: android.content.Context
+) {
+    if (FontFavoritesState.favoriteFontsList.isEmpty()) {
+        FontFavoritesState.favoriteFontsList = getFavoriteFonts(context)
+    }
+    val isSelected = if (font.isImported) {
+        selectedLayer.fontPath == font.path
+    } else {
+        selectedLayer.fontFamilyName == font.name && selectedLayer.fontPath == null
+    }
+    val isFavorited = FontFavoritesState.favoriteFontsList.contains(font.name)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (isSelected) androidx.compose.ui.graphics.Color(0xFFFFB300).copy(alpha = 0.2f) else androidx.compose.ui.graphics.Color.Transparent, androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+            .border(androidx.compose.foundation.BorderStroke(0.5.dp, if (isSelected) androidx.compose.ui.graphics.Color(0xFFFFB300) else androidx.compose.ui.graphics.Color.Transparent), androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+            .clickable {
+                if (font.isImported) {
+                    onUpdateLayer(selectedLayer.copy(fontPath = font.path, fontFamilyName = font.name))
+                } else {
+                    onUpdateLayer(selectedLayer.copy(fontPath = null, fontFamilyName = font.name))
+                }
+            }
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(font.name, style = androidx.compose.material3.MaterialTheme.typography.labelSmall, fontSize = 11.sp, color = androidx.compose.ui.graphics.Color.White, fontWeight = if (isSelected) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal)
+            Text(
+                text = if (font.isImported) "Imported • ${font.category}" else "System Font • ${font.category}",
+                style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+                fontSize = 9.sp,
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.6f)
+            )
+        }
+        
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+        ) {
+            androidx.compose.material3.IconButton(
+                onClick = {
+                    val updated = toggleFavoriteFont(context, font.name)
+                    FontFavoritesState.favoriteFontsList = updated
+                },
+                modifier = Modifier.size(28.dp)
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Default.Favorite,
+                    contentDescription = if (isFavorited) "Remove from favorites" else "Add to favorites",
+                    tint = if (isFavorited) androidx.compose.ui.graphics.Color(0xFFFF4D4D) else androidx.compose.ui.graphics.Color.White.copy(alpha = 0.25f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            if (isSelected) {
+                androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Default.Check, "Selected", modifier = Modifier.size(14.dp), tint = androidx.compose.ui.graphics.Color(0xFFFFB300))
+            }
+        }
+    }
+}
+
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPreviewPathWithCornerRadius(
     path: androidx.compose.ui.graphics.Path,
     color: androidx.compose.ui.graphics.Color,
@@ -11299,7 +12361,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             null
         }
 
-        val hasEraserOrBrush = layer.brushPoints.isNotEmpty() && layer.type != com.example.studio.model.LayerType.FREEHAND_DRAWING
+        val hasEraserOrBrush = (layer.brushPoints.isNotEmpty() || (layer.id == selectedLayerId && activeTool == "Eraser")) && layer.type != com.example.studio.model.LayerType.FREEHAND_DRAWING
         var canvasSaved = false
         if (hasEraserOrBrush) {
             try {
@@ -11917,6 +12979,17 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                                 cacheKey = layer.id.hashCode() + stroke.hashCode(),
                                 backdropBitmap = backdropBitmap,
                                 customHardness = stroke.hardness
+                            )
+                        }
+                    }
+
+                    // Render active real-time Wet Ink stroke on top separately if this layer is currently being erased
+                    if (layer.id == selectedLayerId && OpenGLBrushRenderer.WetInkRenderer.isInitialized() && activeTool == "Eraser") {
+                        OpenGLBrushRenderer.WetInkRenderer.getWetInkBitmap()?.let { b ->
+                            drawImage(
+                                image = b.asImageBitmap(),
+                                topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                                blendMode = androidx.compose.ui.graphics.BlendMode.DstOut
                             )
                         }
                     }
@@ -15936,11 +17009,11 @@ private fun BrushStudioControlPane(
                     Slider(
                         value = currentSize,
                         onValueChange = { updateBrushParams(it, null, null, null, null) },
-                        valueRange = 3f..120f,
+                        valueRange = 1f..1000f,
                         colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                         modifier = Modifier.weight(1f).height(28.dp)
                     )
-                    Text("${currentSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Size", currentSize, 3f..120f, isInt = true) { updateBrushParams(it, null, null, null, null) }, textAlign = TextAlign.End)
+                    Text("${currentSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Size", currentSize, 1f..1000f, isInt = true) { updateBrushParams(it, null, null, null, null) }, textAlign = TextAlign.End)
                 }
             }
 

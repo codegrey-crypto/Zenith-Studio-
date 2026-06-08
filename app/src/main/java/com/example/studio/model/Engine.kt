@@ -228,7 +228,7 @@ object PhotoshopEffectTemplates {
                 category = "Layer Styles (fx)",
                 effectType = effectType,
                 parameters = mapOf(
-                    "Size" to EffectParameter("Size", 16f, 2f, 200f, "px"),
+                    "Size" to EffectParameter("Size", 24f, 1f, 1000f, "px"),
                     "Opacity" to EffectParameter("Opacity", 1.0f, 0.05f, 1.0f),
                     "Smoothing" to EffectParameter("Smoothing", 1.0f, 0f, 1f),
                     "Preset" to EffectParameter("Preset", 0f, 0f, 10f)
