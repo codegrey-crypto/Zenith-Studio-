@@ -518,7 +518,8 @@ private fun applyGPUImageFilters(
                             hasFilters = true
                         }
                         "ColorHalftone" -> {
-                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageHalftoneFilter())
+                            val maxRadius = effect.parameters["MaxRadius"]?.value ?: 8f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageHalftoneFilter(maxRadius / 1000f))
                             hasFilters = true
                         }
                         "Sketch" -> {
@@ -597,8 +598,9 @@ private fun applyGPUImageFilters(
                             })
                             hasFilters = true
                         }
-                        "Crystallize", "Pointillize", "ColorHalftone" -> {
-                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageHalftoneFilter())
+                        "Crystallize", "Pointillize" -> {
+                            val cellSize = effect.parameters["CellSize"]?.value ?: 10f
+                            filterGroup.addFilter(jp.co.cyberagent.android.gpuimage.filter.GPUImageHalftoneFilter(cellSize / 1000f))
                             hasFilters = true
                         }
                         "OilPaint", "Artistic", "BrushStrokes" -> {
@@ -1227,7 +1229,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(activeTool, rulerEnabled) {
-        if (activeTool == "Ruler" || activeTool == "Grid" || (rulerEnabled && rulers.size <= 1)) {
+        if (activeTool == "Ruler" || (rulerEnabled && rulers.size <= 1)) {
             if (rulers.size <= 1 || (rulers.size == 1 && rulers[0].id == "default_ruler")) {
                 val h = if (canvasHeight > 0) canvasHeight else 1000f
                 val w = if (canvasWidth > 0) canvasWidth else 1000f
@@ -1999,7 +2001,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     val localStartY = localStartOffset.y
 
                                     var draggedRulerId: String? = null
-                                    if (tool == "Ruler" || tool == "Grid") {
+                                    if (tool == "Ruler") {
                                         val threshold = 35f / ts.coerceAtLeast(0.3f)
                                         var nearestRuler: StudioRuler? = null
                                         var minDistance = Float.MAX_VALUE
@@ -2245,7 +2247,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                     strokeDrawTrigger.value++
                                                     pathCache.remove(999999)
                                                     pathCache.remove(1999999)
-                                                } else if (tool == "Ruler" || tool == "Grid") {
+                                                } else if (tool == "Ruler") {
                                                     val activeId = draggedRulerId ?: currentSelectedRulerIdState.value
                                                     val activeR = currentRulersState.value.find { it.id == activeId }
                                                     if (activeR != null && !activeR.locked && !allRulersLocked) {
@@ -3485,19 +3487,19 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     for (i in 0..cols) {
                                         val x = i * colWidth
                                         drawLine(
-                                            color = Color(0xFF00FF66).copy(alpha = 0.25f),
+                                            color = Color(0xFF00E5FF).copy(alpha = 0.55f),
                                             start = Offset(x, 0f),
                                             end = Offset(x, h),
-                                            strokeWidth = 1f / totalScale.coerceAtLeast(0.5f)
+                                            strokeWidth = 1.6f / totalScale.coerceAtLeast(0.5f)
                                         )
                                     }
                                     for (j in 0..rows) {
                                         val y = j * rowHeight
                                         drawLine(
-                                            color = Color(0xFF00FF66).copy(alpha = 0.25f),
+                                            color = Color(0xFF00E5FF).copy(alpha = 0.55f),
                                             start = Offset(0f, y),
                                             end = Offset(w, y),
-                                            strokeWidth = 1f / totalScale.coerceAtLeast(0.5f)
+                                            strokeWidth = 1.6f / totalScale.coerceAtLeast(0.5f)
                                         )
                                     }
                                 }
@@ -3505,8 +3507,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 if (rulerEnabled) {
                                     val w = canvasWidth
                                     val h = canvasHeight
-                                    val rulerColor = Color(0xFF00FF66)
-                                    val strokeW = 1.8f / totalScale.coerceAtLeast(0.5f)
+                                    val rulerColor = Color(0xFFFF00FF)
+                                    val strokeW = 2.4f / totalScale.coerceAtLeast(0.5f)
                                     
                                     if (rulerOrientation == "Horizontal") {
                                         withTransform({
@@ -3525,10 +3527,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 val isMajor = xCoordinate.toInt() % 100 == 0
                                                 val tickLen = if (isMajor) 15f else 7f
                                                 drawLine(
-                                                    color = rulerColor.copy(alpha = if (isMajor) 0.8f else 0.5f),
+                                                    color = rulerColor.copy(alpha = if (isMajor) 0.9f else 0.6f),
                                                     start = Offset(xCoordinate, rulerPosition - tickLen / totalScale.coerceAtLeast(0.5f)),
                                                     end = Offset(xCoordinate, rulerPosition + tickLen / totalScale.coerceAtLeast(0.5f)),
-                                                    strokeWidth = (if (isMajor) 1.2f else 0.7f) / totalScale.coerceAtLeast(0.5f)
+                                                    strokeWidth = (if (isMajor) 1.6f else 1.0f) / totalScale.coerceAtLeast(0.5f)
                                                 )
                                             }
                                         }
@@ -3549,10 +3551,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 val isMajor = yCoordinate.toInt() % 100 == 0
                                                 val tickLen = if (isMajor) 15f else 7f
                                                 drawLine(
-                                                    color = rulerColor.copy(alpha = if (isMajor) 0.8f else 0.5f),
+                                                    color = rulerColor.copy(alpha = if (isMajor) 0.9f else 0.6f),
                                                     start = Offset(rulerPosition - tickLen / totalScale.coerceAtLeast(0.5f), yCoordinate),
                                                     end = Offset(rulerPosition + tickLen / totalScale.coerceAtLeast(0.5f), yCoordinate),
-                                                    strokeWidth = (if (isMajor) 1.2f else 0.7f) / totalScale.coerceAtLeast(0.5f)
+                                                    strokeWidth = (if (isMajor) 1.6f else 1.0f) / totalScale.coerceAtLeast(0.5f)
                                                 )
                                             }
                                         }
@@ -3690,7 +3692,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     // Live, independent high-performance guides rendering overlay
                     val currentRulersVal = rulers
                     val currentSelectedRulerIdVal = selectedRulerId
-                    val currentRulerEnabledVal = rulerEnabled || activeTool == "Ruler" || activeTool == "Grid"
+                    val currentRulerEnabledVal = rulerEnabled || activeTool == "Ruler"
 
                     if (currentRulerEnabledVal) {
                         Canvas(
@@ -3718,12 +3720,12 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     val isSnappedY = snapHorizontalLine != null && ruler.orientation == "Horizontal" && Math.abs(ruler.position - (snapHorizontalLine ?: -999f)) < 1f
 
                                     val rulerColor = when {
-                                        isSnappedX || isSnappedY -> Color(0xFFFF3333) // Snapped highlight
-                                        isSelected -> IndustrialAmber // Selected highlight
-                                        else -> Color(0xFF00FF66).copy(alpha = 0.5f) // Normal guide path
+                                        isSnappedX || isSnappedY -> Color(0xFFFF1744) // Snapped highlight
+                                        isSelected -> Color(0xFFFF00FF) // Selected highlight
+                                        else -> Color(0xFFFF00FF).copy(alpha = 0.65f) // Normal guide path
                                     }
 
-                                    val strokeW = (if (isSelected || isSnappedX || isSnappedY) 2.5f else 1.2f) / ts.coerceAtLeast(0.5f)
+                                    val strokeW = (if (isSelected || isSnappedX || isSnappedY) 3.2f else 2.0f) / ts.coerceAtLeast(0.5f)
 
                                     if (ruler.orientation == "Horizontal") {
                                         drawLine(
@@ -3740,10 +3742,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                             val isMajor = xCoordinate.toInt() % 100 == 0
                                             val tickLen = if (isMajor) 15f else 7f
                                             drawLine(
-                                                color = rulerColor.copy(alpha = if (isMajor) 0.6f else 0.3f),
+                                                color = rulerColor.copy(alpha = if (isMajor) 0.85f else 0.55f),
                                                 start = Offset(xCoordinate, ruler.position - tickLen / ts.coerceAtLeast(0.5f)),
                                                 end = Offset(xCoordinate, ruler.position + tickLen / ts.coerceAtLeast(0.5f)),
-                                                strokeWidth = (if (isMajor) 1.2f else 0.7f) / ts.coerceAtLeast(0.5f)
+                                                strokeWidth = (if (isMajor) 1.6f else 0.9f) / ts.coerceAtLeast(0.5f)
                                             )
                                         }
                                     } else {
@@ -3761,10 +3763,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                             val isMajor = yCoordinate.toInt() % 100 == 0
                                             val tickLen = if (isMajor) 15f else 7f
                                             drawLine(
-                                                color = rulerColor.copy(alpha = if (isMajor) 0.6f else 0.3f),
+                                                color = rulerColor.copy(alpha = if (isMajor) 0.85f else 0.55f),
                                                 start = Offset(ruler.position - tickLen / ts.coerceAtLeast(0.5f), yCoordinate),
                                                 end = Offset(ruler.position + tickLen / ts.coerceAtLeast(0.5f), yCoordinate),
-                                                strokeWidth = (if (isMajor) 1.2f else 0.7f) / ts.coerceAtLeast(0.5f)
+                                                strokeWidth = (if (isMajor) 1.6f else 0.9f) / ts.coerceAtLeast(0.5f)
                                             )
                                         }
                                     }
@@ -9848,40 +9850,63 @@ fun CanvasSetupScreen(
                         .padding(vertical = 20.dp, horizontal = 24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Logo Canvas Vector Representation
-                    Canvas(modifier = Modifier.size(52.dp).padding(bottom = 12.dp)) {
-                        val strokeZ = Stroke(width = 3.dp.toPx())
-                        val fillZ = Color(0xFFFFB300)
-                        val wireColor = Color(0x33FFB300)
-                        
-                        // Thin grid background circles for mechanical engineering vibe
-                        drawCircle(color = wireColor, radius = size.minDimension / 2f, style = Stroke(width = 1f))
-                        drawCircle(color = wireColor, radius = size.minDimension / 3f, style = Stroke(width = 1f))
-                        
-                        // Z vector path nodes
-                        val path = Path().apply {
-                            moveTo(size.width * 0.28f, size.height * 0.25f)
-                            lineTo(size.width * 0.72f, size.height * 0.25f)
-                            lineTo(size.width * 0.28f, size.height * 0.75f)
-                            lineTo(size.width * 0.72f, size.height * 0.75f)
+                    // Zenith Studio Brand Logo & Wordmark
+                    Row(
+                        modifier = Modifier
+                            .padding(bottom = 12.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Canvas(modifier = Modifier.size(56.dp)) {
+                            val w = size.width
+                            val h = size.height
+                            val strokeZ = androidx.compose.ui.graphics.drawscope.Stroke(
+                                width = 5.dp.toPx(),
+                                join = androidx.compose.ui.graphics.StrokeJoin.Miter,
+                                cap = androidx.compose.ui.graphics.StrokeCap.Square
+                            )
+                            val pathZ = Path().apply {
+                                moveTo(w * 0.15f, h * 0.22f)
+                                lineTo(w * 0.65f, h * 0.22f)
+                                lineTo(w * 0.25f, h * 0.78f)
+                                lineTo(w * 0.60f, h * 0.78f)
+                            }
+                            drawPath(pathZ, color = Color.White, style = strokeZ)
+
+                            val pathS = Path().apply {
+                                moveTo(w * 0.42f, h * 0.42f)
+                                lineTo(w * 0.85f, h * 0.42f)
+                                lineTo(w * 0.45f, h * 0.60f)
+                                lineTo(w * 0.85f, h * 0.60f)
+                                lineTo(w * 0.85f, h * 0.78f)
+                                lineTo(w * 0.40f, h * 0.78f)
+                            }
+                            drawPath(pathS, color = Color.White, style = strokeZ)
                         }
-                        drawPath(path = path, color = fillZ, style = strokeZ)
-                        
-                        // Floating control points
-                        drawCircle(color = Color.White, radius = 4f.dp.toPx(), center = Offset(size.width * 0.28f, size.height * 0.25f))
-                        drawCircle(color = Color.White, radius = 4f.dp.toPx(), center = Offset(size.width * 0.72f, size.height * 0.75f))
-                        drawCircle(color = IndustrialAmber, radius = 4f.dp.toPx(), center = Offset(size.width * 0.72f, size.height * 0.25f))
-                        drawCircle(color = IndustrialAmber, radius = 4f.dp.toPx(), center = Offset(size.width * 0.28f, size.height * 0.75f))
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "ZENITH",
+                                style = Typography.displaySmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 24.sp,
+                                    letterSpacing = 2.sp,
+                                    color = Color.White
+                                )
+                            )
+                            Text(
+                                text = "STUDIO",
+                                style = Typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.W300,
+                                    fontSize = 20.sp,
+                                    letterSpacing = 2.sp,
+                                    color = Color.White
+                                )
+                            )
+                        }
                     }
-                    
-                    Text(
-                        text = "Z E N I T H",
-                        style = Typography.displaySmall.copy(
-                            fontWeight = FontWeight.W300,
-                            letterSpacing = 10.sp,
-                            color = EnergeticYellow
-                        )
-                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "NEON VECTOR DESIGN SUITE",
@@ -9944,7 +9969,7 @@ fun CanvasSetupScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.Center
                         ) {
                             Icon(
                                 imageVector = when (tabIdx) {
@@ -9956,6 +9981,7 @@ fun CanvasSetupScreen(
                                 tint = if (isTabSelected) DarkOnyx else TextSecondary,
                                 modifier = Modifier.size(18.dp)
                             )
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = tabTitle,
                                 style = Typography.bodyMedium.copy(fontSize = 11.sp),
@@ -9964,6 +9990,7 @@ fun CanvasSetupScreen(
                                 maxLines = 1
                             )
                             if (tabIdx == 1 && previousProjects.isNotEmpty()) {
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Box(
                                     modifier = Modifier
                                         .background(if (isTabSelected) DarkOnyx else IndustrialAmber, RoundedCornerShape(10.dp))
@@ -13684,23 +13711,15 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
 
         val rads = Math.toRadians(dsAngle.toDouble())
         val dx = (dsDistance * Math.cos(rads)).toFloat()
-        val dy = (dsDistance * -Math.sin(rads)).toFloat()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && dsSize > 0.1f && !dsSharpen) {
-            withTransform({
-                scale(scaleX = dsZoom, scaleY = dsZoom, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
-            }) {
-                drawGeometryWithBlurAndOffset(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
-            }
-        } else {
-            withTransform({
-                translate(left = dx, top = dy)
-                scale(scaleX = dsZoom, scaleY = dsZoom, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
-            }) {
-                if (dsSize > 0.1f && !dsSharpen) {
-                    drawGeometryWithBlur(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
-                } else {
-                    drawGeometry(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
-                }
+        val dy = (dsDistance * Math.sin(rads)).toFloat()
+        withTransform({
+            translate(left = dx, top = dy)
+            scale(scaleX = dsZoom, scaleY = dsZoom, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+        }) {
+            if (dsSize > 0.1f && !dsSharpen) {
+                drawGeometryWithBlur(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            } else {
+                drawGeometry(col, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
             }
         }
     } else if (dropShadow != null) {
@@ -13710,18 +13729,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         val dsOpacity = dropShadow.parameters["Opacity"]?.value ?: 0.5f
         val rads = Math.toRadians(dsAngle.toDouble())
         val dx = (dsDistance * Math.cos(rads)).toFloat()
-        val dy = (dsDistance * -Math.sin(rads)).toFloat()
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && dsSize > 0.1f) {
-            drawGeometryWithBlurAndOffset(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL, dx, dy)
-        } else {
-            withTransform({
-                translate(left = dx, top = dy)
-            }) {
-                if (dsSize > 0.1f) {
-                    drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
-                } else {
-                    drawGeometry(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
-                }
+        val dy = (dsDistance * Math.sin(rads)).toFloat()
+        withTransform({
+            translate(left = dx, top = dy)
+        }) {
+            if (dsSize > 0.1f) {
+                drawGeometryWithBlur(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill, dsSize, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            } else {
+                drawGeometry(androidx.compose.ui.graphics.Color.Black, dsOpacity, androidx.compose.ui.graphics.drawscope.Fill)
             }
         }
     }
@@ -14015,7 +14030,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
 
         val rads = Math.toRadians(isAngle.toDouble())
         val dx = (isDistance * Math.cos(rads)).toFloat()
-        val dy = (isDistance * -Math.sin(rads)).toFloat()
+        val dy = (isDistance * Math.sin(rads)).toFloat()
         val pathCachedObj = layerPath
         if (!pathCachedObj.asAndroidPath().isEmpty) {
             clipPath(pathCachedObj) {
@@ -14037,12 +14052,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             }
         }
     } else if (innerShadow != null) {
+        val isDistance = innerShadow.parameters["Distance"]?.value ?: 5f
         val isSize = innerShadow.parameters["Size"]?.value ?: 10f
         val isAngle = innerShadow.parameters["Angle"]?.value ?: 120f
         val isOpacity = innerShadow.parameters["Opacity"]?.value ?: 0.5f
         val rads = Math.toRadians(isAngle.toDouble())
-        val dx = (3f * Math.cos(rads)).toFloat()
-        val dy = (3f * -Math.sin(rads)).toFloat()
+        val dx = (isDistance * Math.cos(rads)).toFloat()
+        val dy = (isDistance * Math.sin(rads)).toFloat()
         val pathCachedObj = layerPath
         if (!pathCachedObj.asAndroidPath().isEmpty) {
             clipPath(pathCachedObj) {

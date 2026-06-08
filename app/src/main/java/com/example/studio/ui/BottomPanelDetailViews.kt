@@ -502,7 +502,7 @@ fun TypographyOrShapeDetailView(
                     )
                 )
 
-                val categories = listOf("All", "Sans-Serif", "Serif", "Monospace", "Display", "Script", "Handwritten")
+                val categories = listOf("All", "Imported", "Sans-Serif", "Serif", "Monospace", "Display", "Script", "Handwritten")
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -523,7 +523,7 @@ fun TypographyOrShapeDetailView(
                     }
                 }
 
-                val consolidatedFonts = remember(fontSearchQuery, selectedCategoryFilter) {
+                val consolidatedFonts = remember(fontSearchQuery, selectedCategoryFilter, FontFavoritesState.favoriteFontsList) {
                     val allFonts = listOf(
                         FontResource(name = "Roboto (Sans-serif)", category = "Sans-Serif", systemFamily = "sans-serif"),
                         FontResource(name = "Noto Serif (Serif)", category = "Serif", systemFamily = "serif"),
@@ -554,50 +554,90 @@ fun TypographyOrShapeDetailView(
                     } catch (e: Exception) {
                         emptyList()
                     }
-                    val fullList = allFonts + importedFonts
-                    fullList.filter { font ->
-                        val matchesQuery = font.name.contains(fontSearchQuery, ignoreCase = true)
-                        val matchesCategory = selectedCategoryFilter == "All" || font.category == selectedCategoryFilter
-                        matchesQuery && matchesCategory
-                    }
+                    allFonts + importedFonts
                 }
 
-                if (consolidatedFonts.isEmpty()) {
-                    Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
-                } else {
-                    consolidatedFonts.forEach { font ->
-                        val isSelected = if (font.isImported) {
-                            selectedLayer.fontPath == font.path
-                        } else {
-                            selectedLayer.fontFamilyName == font.name && selectedLayer.fontPath == null
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(if (isSelected) IndustrialAmber.copy(alpha = 0.15f) else Color.Transparent, RoundedCornerShape(4.dp))
-                                .border(BorderStroke(0.5.dp, if (isSelected) IndustrialAmber else Color.Transparent), RoundedCornerShape(4.dp))
-                                .clickable {
-                                    if (font.isImported) {
-                                        onUpdateLayer(selectedLayer.copy(fontPath = font.path, fontFamilyName = font.name))
-                                    } else {
-                                        onUpdateLayer(selectedLayer.copy(fontPath = null, fontFamilyName = font.name))
+                val filteredFonts = if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) emptyList() else consolidatedFonts.filter { font ->
+                    val matchesQuery = font.name.contains(fontSearchQuery, ignoreCase = true)
+                    val matchesCategory = when (selectedCategoryFilter) {
+                        "All" -> true
+                        "Imported" -> font.isImported
+                        else -> font.category == selectedCategoryFilter
+                    }
+                    matchesQuery && matchesCategory
+                }
+
+                if (filteredFonts.isEmpty()) {
+                    if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) {
+                        val favorites = consolidatedFonts.filter { FontFavoritesState.favoriteFontsList.contains(it.name) }
+                        val imported = consolidatedFonts.filter { it.isImported }
+                        val system = consolidatedFonts.filter { !it.isImported }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            // 1. Favorites Section
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically, 
+                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
+                                ) {
+                                    Icon(Icons.Default.Favorite, null, modifier = Modifier.size(12.dp), tint = Color(0xFFFF4D4D))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("FAVORITE FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = Color(0xFFFF4D4D), fontWeight = FontWeight.Bold)
+                                }
+                                if (favorites.isEmpty()) {
+                                    Text("No favorite fonts yet. Tap the heart next to any font to save it here!", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
+                                } else {
+                                    favorites.forEach { font ->
+                                        RenderFontRow(font, selectedLayer, onUpdateLayer, context)
                                     }
                                 }
-                                .padding(horizontal = 8.dp, vertical = 6.dp)
-                                .testTag("font_item_${font.name}"),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(font.name, style = Typography.labelSmall, fontSize = 11.sp, color = TextPrimary, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
-                                Text(
-                                    text = if (font.isImported) "Imported • ${font.category}" else "System Font • ${font.category}",
-                                    style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary
-                                )
                             }
-                            if (isSelected) {
-                                Icon(Icons.Default.Check, "Selected", modifier = Modifier.size(14.dp), tint = IndustrialAmber)
+
+                            Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
+
+                            // 2. Imported Section
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically, 
+                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
+                                ) {
+                                    Icon(Icons.Default.Folder, null, modifier = Modifier.size(12.dp), tint = EnergeticYellow)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("IMPORTED FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                                }
+                                if (imported.isEmpty()) {
+                                    Text("No imported fonts yet. Tap 'Import Font' above to load custom TTF/OTF files.", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
+                                } else {
+                                    imported.forEach { font ->
+                                        RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+                                    }
+                                }
                             }
+
+                            Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
+
+                            // 3. System Fonts Section
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically, 
+                                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
+                                ) {
+                                    Icon(Icons.Default.Star, null, modifier = Modifier.size(12.dp), tint = TextSecondary)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("SYSTEM FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
+                                }
+                                system.forEach { font ->
+                                    RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+                                }
+                            }
+                        }
+                    } else {
+                        Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        filteredFonts.forEach { font ->
+                            RenderFontRow(font, selectedLayer, onUpdateLayer, context)
                         }
                     }
                 }
