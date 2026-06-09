@@ -1117,6 +1117,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var canvasPanY by remember { mutableStateOf(0f) }
     var canvasRotation by remember { mutableStateOf(0f) }
     var isCanvasLocked by remember { mutableStateOf(false) }
+    var isCanvasControlMinimized by remember { mutableStateOf(false) }
+    var isMultiSelectMode by remember { mutableStateOf(false) }
+    var selectedLayersSet by remember { mutableStateOf(setOf<String>()) }
+    var collapsedGroupIds by remember { mutableStateOf(setOf<String>()) }
 
     // Collapsible Panel States
     var isLayersPanelVisible by remember { mutableStateOf(true) }
@@ -2867,7 +2871,20 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
                                     val beneathLayer = if (index + 1 < layers.size) layers[index + 1] else null
 
-                                    var rootBaseLayer: com.example.studio.model.StudioLayer? = null
+                                                                         val clippedLayers = mutableListOf<com.example.studio.model.StudioLayer>()
+                                     for (i in (index - 1) downTo 0) {
+                                         if (i >= 0 && i < layers.size) {
+                                             val prospect = layers[i]
+                                             if (!prospect.isVisible) continue
+                                             if (prospect.isClippingMask) {
+                                                 clippedLayers.add(prospect)
+                                             } else {
+                                                 break
+                                             }
+                                         }
+                                     }
+                                     if (originalLayer.isClippingMask) continue
+                                     var rootBaseLayer: com.example.studio.model.StudioLayer? = null
                                     if (layer.isClippingMask) {
                                         for (i in (index + 1) until layers.size) {
                                             val prospect = layers[i]
@@ -3486,48 +3503,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     }
 
                                     // Invoke drawing lambda, constraining within Clipping Mask boundaries if enabled
-                                    if (layer.isClippingMask && rootBaseLayer != null) {
+                                    if (clippedLayers.isNotEmpty()) {
                                         try {
-                                            val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, canvasWidth, canvasHeight)
-                                            drawContext.canvas.saveLayer(bounds, androidx.compose.ui.graphics.Paint())
-                                            // 1. Draw rootBaseLayer (Base/Destination Alpha) first with SrcOver (without selection highlights)
-                                            drawSingleConnectedLayer(
-                                                layer = rootBaseLayer,
-                                                layerOpacity = rootBaseLayer.opacity,
-                                                selectedLayerId = null,
-                                                pathCache = pathCache,
-                                                pathPointsCountCache = pathPointsCountCache,
-                                                totalScale = totalScale,
-                                                dashEffect = dashEffect8,
-                                                imageBitmapCache = imageBitmapCache,
-                                                composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
-                                                sharedTransformMatrix = sharedTransformMatrix,
-                                                backdropBitmap = null,
-                                                globalX = rootBaseLayer.positionX,
-                                                globalY = rootBaseLayer.positionY,
-                                                activeTool = activeTool,
-                                                allLayers = layers
-                                            )
-                                        
-                                        // 2. Draw current clipped layer (Source) second with SrcIn
-                                        drawSingleConnectedLayer(
-                                            layer = layer,
-                                            layerOpacity = layerOpacity,
-                                            selectedLayerId = selectedLayerId,
-                                            pathCache = pathCache,
-                                            pathPointsCountCache = pathPointsCountCache,
-                                            totalScale = totalScale,
-                                            dashEffect = dashEffect8,
-                                            imageBitmapCache = imageBitmapCache,
-                                            composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcIn,
-                                            sharedTransformMatrix = sharedTransformMatrix,
-                                            backdropBitmap = currentBackdrop,
-                                            globalX = layer.positionX,
-                                            globalY = layer.positionY,
-                                            activeTool = activeTool,
-                                            allLayers = layers
-                                        )
-                                        } catch (e: Exception) {
+                                            // 1. Draw the base shape layer first (with standard selection highlights if selected)
                                             drawSingleConnectedLayer(
                                                 layer = layer,
                                                 layerOpacity = layerOpacity,
@@ -3545,13 +3523,67 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 activeTool = activeTool,
                                                 allLayers = layers
                                             )
-                                        } finally {
-                                            try {
-                                                drawContext.canvas.restore()
-                                            } catch (t: Throwable) {}
-                                        }
-                                    } else {
-                                        drawSingleConnectedLayer(
+
+                                            // 2. Perform Advanced multi-layer clipping composition
+                                            val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, canvasWidth, canvasHeight)
+                                            
+                                            // Outer saveLayer (to hold the destination mask shape)
+                                            drawContext.canvas.saveLayer(bounds, androidx.compose.ui.graphics.Paint())
+
+                                            // Draw base shape AGAIN (this becomes the destination alpha)
+                                            drawSingleConnectedLayer(
+                                                layer = layer,
+                                                layerOpacity = layer.opacity,
+                                                selectedLayerId = null,
+                                                pathCache = pathCache,
+                                                pathPointsCountCache = pathPointsCountCache,
+                                                totalScale = totalScale,
+                                                dashEffect = dashEffect8,
+                                                imageBitmapCache = imageBitmapCache,
+                                                composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+                                                sharedTransformMatrix = sharedTransformMatrix,
+                                                backdropBitmap = null,
+                                                globalX = layer.positionX,
+                                                globalY = layer.positionY,
+                                                activeTool = activeTool,
+                                                allLayers = layers
+                                            )
+
+                                            // Inner saveLayer (groups all consecutive clipped layers together using BlendMode.SrcIn)
+                                            val groupPaint = androidx.compose.ui.graphics.Paint().apply {
+                                                blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn
+                                             }
+                                             drawContext.canvas.saveLayer(bounds, groupPaint)
+
+                                             // Draw all consecutive clipped layers on top of each other inside the clip-group
+                                             for (clipped in clippedLayers) {
+                                                 drawSingleConnectedLayer(
+                                                     layer = clipped,
+                                                     layerOpacity = clipped.opacity,
+                                                     selectedLayerId = selectedLayerId,
+                                                     pathCache = pathCache,
+                                                     pathPointsCountCache = pathPointsCountCache,
+                                                     totalScale = totalScale,
+                                                     dashEffect = dashEffect8,
+                                                     imageBitmapCache = imageBitmapCache,
+                                                     composeBlendMode = clipped.blendMode.toComposeBlendMode(),
+                                                     sharedTransformMatrix = sharedTransformMatrix,
+                                                     backdropBitmap = null,
+                                                     globalX = clipped.positionX,
+                                                     globalY = clipped.positionY,
+                                                     activeTool = activeTool,
+                                                     allLayers = layers
+                                                 )
+                                             }
+
+                                             drawContext.canvas.restore() // Restore Inner saveLayer (composites clipped content with base shape)
+                                             drawContext.canvas.restore() // Restore Outer saveLayer (composites onto canvas)
+                                         } catch (e: Exception) {
+                                             e.printStackTrace()
+                                         }
+                                     } else {
+                                         // Draw single normal layer
+                                         drawSingleConnectedLayer(
                                              layer = layer,
                                              layerOpacity = layerOpacity,
                                              selectedLayerId = selectedLayerId,
@@ -3568,7 +3600,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                              activeTool = activeTool,
                                              allLayers = layers
                                          )
-                                    }
+                                     }
                                 }
 
                                 if (gridEnabled) {
@@ -3929,34 +3961,64 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             .align(Alignment.BottomStart)
                             .padding(8.dp)
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            IconButton(
-                                onClick = { scaleFactor += 0.1f },
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(MidSlate, RoundedCornerShape(4.dp)),
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = !isCanvasControlMinimized,
+                                enter = androidx.compose.animation.expandHorizontally() + androidx.compose.animation.fadeIn(),
+                                exit = androidx.compose.animation.shrinkHorizontally() + androidx.compose.animation.fadeOut()
                             ) {
-                                Icon(Icons.Default.Add, "Zoom In", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { scaleFactor += 0.1f },
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(MidSlate, RoundedCornerShape(4.dp)),
+                                    ) {
+                                        Icon(Icons.Default.Add, "Zoom In", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { if (scaleFactor > 0.3f) scaleFactor -= 0.1f },
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(MidSlate, RoundedCornerShape(4.dp)),
+                                    ) {
+                                        Icon(Icons.Default.Remove, "Zoom Out", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { isCanvasLocked = !isCanvasLocked },
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(if (isCanvasLocked) IndustrialAmber else MidSlate, RoundedCornerShape(4.dp))
+                                            .testTag("lock_canvas_button"),
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isCanvasLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                            contentDescription = "Lock Canvas Viewport",
+                                            tint = if (isCanvasLocked) DarkOnyx else TextPrimary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
                             }
+
+                            // Minimalistic Arrow toggle button on the right edge
                             IconButton(
-                                onClick = { if (scaleFactor > 0.3f) scaleFactor -= 0.1f },
+                                onClick = { isCanvasControlMinimized = !isCanvasControlMinimized },
                                 modifier = Modifier
                                     .size(36.dp)
-                                    .background(MidSlate, RoundedCornerShape(4.dp)),
-                            ) {
-                                Icon(Icons.Default.Remove, "Zoom Out", tint = TextPrimary, modifier = Modifier.size(16.dp))
-                            }
-                            IconButton(
-                                onClick = { isCanvasLocked = !isCanvasLocked },
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(if (isCanvasLocked) IndustrialAmber else MidSlate, RoundedCornerShape(4.dp))
-                                    .testTag("lock_canvas_button"),
+                                    .background(MidSlate, RoundedCornerShape(4.dp))
+                                    .testTag("canvas_minimizer_button"),
                             ) {
                                 Icon(
-                                    imageVector = if (isCanvasLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                                    contentDescription = "Lock Canvas Viewport",
-                                    tint = if (isCanvasLocked) DarkOnyx else TextPrimary,
+                                    imageVector = if (isCanvasControlMinimized) Icons.Default.KeyboardArrowRight else Icons.Default.KeyboardArrowLeft,
+                                    contentDescription = "Toggle Canvas Controls",
+                                    tint = TextPrimary,
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
@@ -4125,9 +4187,89 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 renamingLayerName = currentName
                             },
                             onCloseDrawer = { isLayersPanelVisible = false },
+                            isMultiSelectMode = isMultiSelectMode,
+                            onToggleMultiSelect = {
+                                isMultiSelectMode = !isMultiSelectMode
+                                if (!isMultiSelectMode) {
+                                    selectedLayersSet = emptySet()
+                                }
+                            },
+                            selectedLayersSet = selectedLayersSet,
+                            onToggleSelectLayerMulti = { id ->
+                                selectedLayersSet = if (selectedLayersSet.contains(id)) {
+                                    selectedLayersSet - id
+                                } else {
+                                    selectedLayersSet + id
+                                }
+                            },
+                            onGroupSelected = {
+                                if (selectedLayersSet.size >= 2) {
+                                    val newGroupId = UUID.randomUUID().toString()
+                                    val selectedIndices = layers.indices.filter { layers[it].id in selectedLayersSet }
+                                    val topIndex = selectedIndices.minOrNull() ?: 0
+                                    
+                                    val newGroupLayer = com.example.studio.model.StudioLayer(
+                                        id = newGroupId,
+                                        name = "Group ${layers.filter { it.type == com.example.studio.model.LayerType.GROUP }.size + 1}",
+                                        type = com.example.studio.model.LayerType.GROUP,
+                                        positionX = 0f,
+                                        positionY = 0f,
+                                        width = canvasWidth,
+                                        height = canvasHeight,
+                                        isVisible = true,
+                                        opacity = 1.0f
+                                    )
+                                    
+                                    val updatedLayers = layers.map { 
+                                        if (it.id in selectedLayersSet) {
+                                            it.copy(parentGroupId = newGroupId)
+                                        } else {
+                                            it
+                                        }
+                                    }.toMutableList()
+                                    
+                                    updatedLayers.add(topIndex, newGroupLayer)
+                                    
+                                    undoStack.add(layers)
+                                    redoStack.clear()
+                                    
+                                    layers = updatedLayers
+                                    selectedLayerId = newGroupId
+                                    
+                                    selectedLayersSet = emptySet()
+                                    isMultiSelectMode = false
+                                }
+                            },
+                            onMergeDown = { id ->
+                                val activeIndex = layers.indexOfFirst { it.id == id }
+                                if (activeIndex != -1 && activeIndex < layers.size - 1) {
+                                    undoStack.add(layers)
+                                    redoStack.clear()
+                                    mergeDownLayer(
+                                        activeLayerIndex = activeIndex,
+                                        layers = layers,
+                                        canvasWidth = canvasWidth,
+                                        canvasHeight = canvasHeight,
+                                        context = context,
+                                        imageBitmapCache = imageBitmapCache,
+                                        pathCache = pathCache,
+                                        pathPointsCountCache = pathPointsCountCache,
+                                        dashEffect8 = dashEffect8,
+                                        onLayersChanged = { 
+                                            layers = it
+                                        }
+                                    )
+                                }
+                            },
+                            collapsedGroupIds = collapsedGroupIds,
+                            onToggleGroupCollapse = { id ->
+                                collapsedGroupIds = if (collapsedGroupIds.contains(id)) {
+                                    collapsedGroupIds - id
+                                } else {
+                                    collapsedGroupIds + id
+                                }
+                            },
                             modifier = Modifier
-                                .fillMaxHeight(0.6f)
-                                .width(280.dp)
                         )
                     }
                 }
@@ -7034,19 +7176,67 @@ fun RightsideLayerDrawer(
     onOpacityChange: (String, Float) -> Unit,
     onTriggerRename: (String, String) -> Unit,
     onCloseDrawer: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isMultiSelectMode: Boolean = false,
+    onToggleMultiSelect: () -> Unit = {},
+    selectedLayersSet: Set<String> = emptySet(),
+    onToggleSelectLayerMulti: (String) -> Unit = {},
+    onGroupSelected: () -> Unit = {},
+    onMergeDown: (String) -> Unit = {},
+    collapsedGroupIds: Set<String> = emptySet(),
+    onToggleGroupCollapse: (String) -> Unit = {}
 ) {
     var expandedBlendList by remember { mutableStateOf(false) }
     val selLayer = layers.find { it.id == selectedLayerId }
 
-    Column(
+    var panelWidth by remember { mutableStateOf(275.dp) }
+    var panelHeight by remember { mutableStateOf(530.dp) }
+    val currentDensity = androidx.compose.ui.platform.LocalDensity.current
+
+    Box(
         modifier = Modifier
-            .background(SlatePanel, RoundedCornerShape(16.dp))
-            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+            .size(panelWidth, panelHeight)
             .then(modifier)
-            .padding(12.dp)
-            .testTag("layers_panel")
     ) {
+        // Drag handle on the LEFT edge (vertical track)
+        Box(
+            modifier = Modifier
+                .width(8.dp)
+                .fillMaxHeight()
+                .align(Alignment.CenterStart)
+                .pointerInput(Unit) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        val deltaDp = with(currentDensity) { dragAmount.x.toDp() }
+                        panelWidth = (panelWidth - deltaDp).coerceIn(240.dp, 400.dp)
+                    }
+                }
+        )
+
+        // Drag handle on the BOTTOM edge (horizontal track)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .align(Alignment.BottomCenter)
+                .pointerInput(Unit) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        val deltaDp = with(currentDensity) { dragAmount.y.toDp() }
+                        panelHeight = (panelHeight + deltaDp).coerceIn(300.dp, 850.dp)
+                    }
+                }
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 4.dp, bottom = 4.dp)
+                .background(SlatePanel, RoundedCornerShape(16.dp))
+                .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+                .padding(12.dp)
+                .testTag("layers_panel")
+        ) {
         // Drawer title & Quick adding actions
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
@@ -7057,11 +7247,38 @@ fun RightsideLayerDrawer(
                 Icon(Icons.Default.Layers, "Layers list icon", tint = IndustrialAmber, modifier = Modifier.size(16.dp))
                 Text("Layers (${layers.size})", style = Typography.titleLarge, fontSize = 13.sp, color = TextPrimary)
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                // Multi Select Mode Toggle Button
+                IconButton(onClick = onToggleMultiSelect, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        imageVector = if (isMultiSelectMode) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                        contentDescription = "Multi Select Mode",
+                        tint = if (isMultiSelectMode) IndustrialAmber else TextPrimary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+
+                // Group Selected Layers Action
+                if (isMultiSelectMode && selectedLayersSet.size >= 2) {
+                    IconButton(onClick = onGroupSelected, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.CreateNewFolder, "Group Selected", tint = EnergeticYellow, modifier = Modifier.size(14.dp))
+                    }
+                }
+
+                // Merge Down Action
+                if (!isMultiSelectMode && selLayer != null) {
+                    val activeIndex = layers.indexOfFirst { it.id == selLayer.id }
+                    if (activeIndex != -1 && activeIndex < layers.size - 1) { // has layer beneath
+                        IconButton(onClick = { onMergeDown(selLayer.id) }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.VerticalAlignBottom, "Merge Down", tint = EnergeticYellow, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+
                 IconButton(onClick = onAddLayer, modifier = Modifier.size(24.dp)) {
                     Icon(Icons.Default.Add, "Add Layer", tint = TextPrimary, modifier = Modifier.size(16.dp))
                 }
-                if (selLayer != null) {
+                if (selLayer != null && !isMultiSelectMode) {
                     IconButton(onClick = { onDuplicateLayer(selLayer.id) }, modifier = Modifier.size(24.dp)) {
                         Icon(Icons.Default.ContentCopy, "Duplicate", tint = TextPrimary, modifier = Modifier.size(14.dp))
                     }
@@ -7208,13 +7425,23 @@ fun RightsideLayerDrawer(
 
         Spacer(Modifier.height(8.dp))
 
+        // Filter out layers whose parent group is collapsed
+        val displayedLayers = layers.filter { item ->
+            val pId = item.parentGroupId
+            if (pId != null) {
+                !collapsedGroupIds.contains(pId)
+            } else {
+                true
+            }
+        }
+
         // Layers Scrollable Core Stack (Reversing direction for canvas-compliant top-layer priority)
         LazyColumn(
             modifier = Modifier.weight(1f, fill = false),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            itemsIndexed(items = layers, key = { index, item -> item.id }) { index, item ->
-                val isSelected = item.id == selectedLayerId
+            itemsIndexed(items = displayedLayers, key = { index, item -> item.id }) { index, item ->
+                val isSelected = if (isMultiSelectMode) selectedLayersSet.contains(item.id) else item.id == selectedLayerId
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -7233,15 +7460,53 @@ fun RightsideLayerDrawer(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = if (item.isClippingMask) 14.dp else 0.dp)
+                            .padding(start = if (item.parentGroupId != null && item.isClippingMask) 24.dp else if (item.parentGroupId != null) 12.dp else if (item.isClippingMask) 14.dp else 0.dp)
                             .offset(x = if (isSelected) (-3).dp else 0.dp, y = if (isSelected) (-3).dp else 0.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(if (isSelected) IndustrialAmber.copy(0.24f) else MidSlate)
                             .border(BorderStroke(1.2.dp, if (isSelected) IndustrialAmber else HighslateOutline), RoundedCornerShape(8.dp))
-                            .clickable { onSelectLayer(item.id) }
+                            .clickable {
+                                if (isMultiSelectMode) {
+                                    onToggleSelectLayerMulti(item.id)
+                                } else {
+                                    onSelectLayer(item.id)
+                                }
+                            }
                             .padding(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                    // Checkbox for Multi-Select mode
+                    if (isMultiSelectMode) {
+                        val isMultiChecked = selectedLayersSet.contains(item.id)
+                        IconButton(
+                            onClick = { onToggleSelectLayerMulti(item.id) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isMultiChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                contentDescription = "Select status",
+                                tint = if (isMultiChecked) IndustrialAmber else TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    // Group collapse/expand caret button
+                    if (item.type == LayerType.GROUP) {
+                        val isCollapsed = collapsedGroupIds.contains(item.id)
+                        IconButton(
+                            onClick = { onToggleGroupCollapse(item.id) },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isCollapsed) Icons.Default.KeyboardArrowRight else Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Toggle Collapse",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
                     if (item.isClippingMask) {
                         Text(
                             text = "↳",
@@ -7378,6 +7643,274 @@ fun RightsideLayerDrawer(
             }
             }
         }
+    }
+    }
+}
+
+private fun drawLayerToNativeCanvas(
+    canvas: android.graphics.Canvas,
+    layer: com.example.studio.model.StudioLayer
+) {
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        color = android.graphics.Color.argb(
+            (layer.baseColor.alpha * 255).toInt().coerceIn(0, 255),
+            (layer.baseColor.red * 255).toInt().coerceIn(0, 255),
+            (layer.baseColor.green * 255).toInt().coerceIn(0, 255),
+            (layer.baseColor.blue * 255).toInt().coerceIn(0, 255)
+        )
+        style = if (layer.strokeThickness > 0f) android.graphics.Paint.Style.STROKE else android.graphics.Paint.Style.FILL
+        if (layer.strokeThickness > 0f) {
+            strokeWidth = layer.strokeThickness
+        }
+        alpha = (layer.opacity * 255).toInt().coerceIn(0, 255)
+    }
+
+    canvas.save()
+    canvas.translate(layer.positionX, layer.positionY)
+    
+    val m = android.graphics.Matrix()
+    val centerX = layer.width * layer.pivotX
+    val centerY = layer.height * layer.pivotY
+    m.postTranslate(centerX, centerY)
+    m.postRotate(layer.rotation)
+    m.postScale(layer.scaleX, layer.scaleY)
+    m.postTranslate(-centerX, -centerY)
+    canvas.concat(m)
+
+    when (layer.type) {
+        com.example.studio.model.LayerType.VECTOR_RECT -> {
+            if (layer.cornerRadius > 0f) {
+                canvas.drawRoundRect(0f, 0f, layer.width, layer.height, layer.cornerRadius, layer.cornerRadius, paint)
+            } else {
+                canvas.drawRect(0f, 0f, layer.width, layer.height, paint)
+            }
+        }
+        com.example.studio.model.LayerType.VECTOR_CIRCLE -> {
+            val radius = layer.width / 2f
+            canvas.drawCircle(radius, layer.height / 2f, radius, paint)
+        }
+        com.example.studio.model.LayerType.VECTOR_OVAL -> {
+            canvas.drawOval(0f, 0f, layer.width, layer.height, paint)
+        }
+        com.example.studio.model.LayerType.VECTOR_TRIANGLE,
+        com.example.studio.model.LayerType.VECTOR_PENTAGON,
+        com.example.studio.model.LayerType.VECTOR_HEXAGON -> {
+            val edges = when (layer.type) {
+                com.example.studio.model.LayerType.VECTOR_TRIANGLE -> 3
+                com.example.studio.model.LayerType.VECTOR_PENTAGON -> 5
+                else -> 6
+            }
+            val path = android.graphics.Path().apply {
+                val cx = layer.width / 2f
+                val cy = layer.height / 2f
+                val rx = layer.width / 2f
+                val ry = layer.height / 2f
+                for (i in 0 until edges) {
+                    val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                    val x = (cx + rx * Math.cos(angle)).toFloat()
+                    val y = (cy + ry * Math.sin(angle)).toFloat()
+                    if (i == 0) moveTo(x, y) else lineTo(x, y)
+                }
+                close()
+            }
+            canvas.drawPath(path, paint)
+        }
+        com.example.studio.model.LayerType.VECTOR_STAR -> {
+            val path = android.graphics.Path().apply {
+                val cx = layer.width / 2f
+                val cy = layer.height / 2f
+                val rOuter = layer.width / 2f
+                val rInner = rOuter * layer.starInnerRadiusRatio.coerceIn(0.01f, 0.99f)
+                val pointsCount = if (layer.polygonEdges >= 3) layer.polygonEdges else 5
+                var angle = Math.PI / 2.0 * 3.0
+                val step = Math.PI / pointsCount
+                moveTo(
+                    (cx + Math.cos(angle) * rOuter).toFloat(),
+                    (cy + Math.sin(angle) * rOuter).toFloat()
+                )
+                for (i in 0..(pointsCount * 2)) {
+                    val r = if (i % 2 == 0) rOuter else rInner
+                    lineTo(
+                        (cx + Math.cos(angle) * r).toFloat(),
+                        (cy + Math.sin(angle) * r).toFloat()
+                    )
+                    angle += step
+                }
+                close()
+            }
+            canvas.drawPath(path, paint)
+        }
+        com.example.studio.model.LayerType.VECTOR_LINE -> {
+            canvas.drawLine(0f, 0f, layer.width, layer.height, paint)
+        }
+        com.example.studio.model.LayerType.FREEHAND_DRAWING -> {
+            if (layer.brushPoints.isNotEmpty()) {
+                val linePaint = android.graphics.Paint(paint).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 8f
+                    strokeCap = android.graphics.Paint.Cap.ROUND
+                    strokeJoin = android.graphics.Paint.Join.ROUND
+                }
+                val path = android.graphics.Path()
+                path.moveTo(layer.brushPoints[0].x, layer.brushPoints[0].y)
+                for (i in 1 until layer.brushPoints.size) {
+                    path.lineTo(layer.brushPoints[i].x, layer.brushPoints[i].y)
+                }
+                canvas.drawPath(path, linePaint)
+            }
+        }
+        com.example.studio.model.LayerType.TEXT -> {
+            val textPaint = android.text.TextPaint().apply {
+                color = android.graphics.Color.argb(
+                    (layer.baseColor.alpha * 255).toInt().coerceIn(0, 255),
+                    (layer.baseColor.red * 255).toInt().coerceIn(0, 255),
+                    (layer.baseColor.green * 255).toInt().coerceIn(0, 255),
+                    (layer.baseColor.blue * 255).toInt().coerceIn(0, 255)
+                )
+                textSize = layer.fontSize
+                isAntiAlias = true
+            }
+            val staticLayout = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                android.text.StaticLayout.Builder.obtain(layer.textContent, 0, layer.textContent.length, textPaint, maxOf(1, layer.width.toInt()))
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                android.text.StaticLayout(layer.textContent, textPaint, maxOf(1, layer.width.toInt()), android.text.Layout.Alignment.ALIGN_NORMAL, 1f, 0f, false)
+            }
+            staticLayout.draw(canvas)
+        }
+        com.example.studio.model.LayerType.IMAGE_CARD -> {
+            val uriStr = layer.imageUri
+            if (!uriStr.isNullOrEmpty()) {
+                try {
+                    val file = java.io.File(uriStr)
+                    if (file.exists()) {
+                        val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                        if (bitmap != null) {
+                            val destRect = android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
+                            canvas.drawBitmap(bitmap, null, destRect, paint)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    t.printStackTrace()
+                }
+            }
+        }
+        com.example.studio.model.LayerType.GROUP -> {}
+        com.example.studio.model.LayerType.VECTOR_BEZIER -> {}
+    }
+    
+    canvas.restore()
+}
+
+fun mergeDownLayer(
+    activeLayerIndex: Int,
+    layers: List<com.example.studio.model.StudioLayer>,
+    canvasWidth: Float,
+    canvasHeight: Float,
+    context: android.content.Context,
+    imageBitmapCache: MutableMap<String, androidx.compose.ui.graphics.ImageBitmap>,
+    pathCache: android.util.SparseArray<androidx.compose.ui.graphics.Path>,
+    pathPointsCountCache: android.util.SparseIntArray,
+    dashEffect8: androidx.compose.ui.graphics.PathEffect,
+    onLayersChanged: (List<com.example.studio.model.StudioLayer>) -> Unit
+) {
+    if (activeLayerIndex < 0 || activeLayerIndex >= layers.size - 1) return
+    
+    val layerA = layers[activeLayerIndex]
+    val layerB = layers[activeLayerIndex + 1]
+    
+    val w = canvasWidth.toInt().coerceAtLeast(100)
+    val h = canvasHeight.toInt().coerceAtLeast(100)
+    
+    val mergedBitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(mergedBitmap)
+    val composeCanvas = androidx.compose.ui.graphics.Canvas(canvas)
+    val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
+    
+    try {
+        drawScope.draw(
+            density = androidx.compose.ui.unit.Density(1.0f),
+            layoutDirection = androidx.compose.ui.unit.LayoutDirection.Ltr,
+            canvas = composeCanvas,
+            size = androidx.compose.ui.geometry.Size(w.toFloat(), h.toFloat())
+        ) {
+            // Draw beneath layer first
+            drawSingleConnectedLayer(
+                layer = layerB,
+                layerOpacity = layerB.opacity,
+                selectedLayerId = null,
+                pathCache = pathCache,
+                pathPointsCountCache = pathPointsCountCache,
+                totalScale = 1.0f,
+                dashEffect = dashEffect8,
+                composeBlendMode = layerB.blendMode.toComposeBlendMode(),
+                imageBitmapCache = imageBitmapCache,
+                sharedTransformMatrix = androidx.compose.ui.graphics.Matrix(),
+                backdropBitmap = null,
+                globalX = layerB.positionX,
+                globalY = layerB.positionY,
+                activeTool = "None",
+                allLayers = layers
+            )
+            // Draw active/upper layer second
+            drawSingleConnectedLayer(
+                layer = layerA,
+                layerOpacity = layerA.opacity,
+                selectedLayerId = null,
+                pathCache = pathCache,
+                pathPointsCountCache = pathPointsCountCache,
+                totalScale = 1.0f,
+                dashEffect = dashEffect8,
+                composeBlendMode = layerA.blendMode.toComposeBlendMode(),
+                imageBitmapCache = imageBitmapCache,
+                sharedTransformMatrix = androidx.compose.ui.graphics.Matrix(),
+                backdropBitmap = null,
+                globalX = layerA.positionX,
+                globalY = layerA.positionY,
+                activeTool = "None",
+                allLayers = layers
+            )
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    
+    val file = java.io.File(context.cacheDir, "temp_merged_${System.currentTimeMillis()}.png")
+    try {
+        java.io.FileOutputStream(file).use { out ->
+            mergedBitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+        }
+        val uriStr = "file://${file.absolutePath}"
+        
+        // Populate newly generated file into our live Image Cache for instant high-fidelity loading on canvas
+        imageBitmapCache[uriStr] = mergedBitmap.asImageBitmap()
+        
+        val mergedLayer = com.example.studio.model.StudioLayer(
+            id = layerB.id,
+            name = "${layerB.name} + ${layerA.name}",
+            type = com.example.studio.model.LayerType.IMAGE_CARD,
+            positionX = 0f,
+            positionY = 0f,
+            width = canvasWidth,
+            height = canvasHeight,
+            imageUri = uriStr,
+            isVisible = true,
+            opacity = 1.0f,
+            scaleX = 1f,
+            scaleY = 1f,
+            rotation = 0f,
+            skewX = 0f,
+            skewY = 0f
+        )
+        
+        val newList = layers.toMutableList()
+        newList[activeLayerIndex + 1] = mergedLayer
+        newList.removeAt(activeLayerIndex)
+        onLayersChanged(newList)
+    } catch (e: Exception) {
+         e.printStackTrace()
     }
 }
 
@@ -14877,10 +15410,25 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     activeTool: String = "Brush",
     allLayers: List<com.example.studio.model.StudioLayer> = emptyList()
 ) {
-    val parentGroup = layer.parentGroupId?.let { pId ->
-        allLayers.find { it.id == pId }
+    // Recursively resolve all ancestor parent groups, from top-most ancestor down to immediate parent
+    val parentGroups = mutableListOf<com.example.studio.model.StudioLayer>()
+    var currentParentId = layer.parentGroupId
+    val visitedGroupIds = mutableSetOf<String>()
+    while (currentParentId != null && !visitedGroupIds.contains(currentParentId)) {
+        visitedGroupIds.add(currentParentId)
+        val p = allLayers.find { it.id == currentParentId }
+        if (p != null) {
+            parentGroups.add(0, p)
+            currentParentId = p.parentGroupId
+        } else {
+            break
+        }
     }
-    val computedOpacity = layerOpacity * (parentGroup?.opacity ?: 1.0f)
+
+    var computedOpacity = layerOpacity
+    for (p in parentGroups) {
+        computedOpacity *= p.opacity
+    }
 
     var twirlFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
     var pinchFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
@@ -14901,7 +15449,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
                           (sphereFil?.let { 1f + (it.parameters["Amount"]?.value ?: 100f) / 100f * 0.20f } ?: 1f)
 
     drawContext.canvas.save()
-    if (parentGroup != null) {
+    // Align all ancestor matrix transformations down the hierarchy
+    for (parentGroup in parentGroups) {
         drawContext.canvas.translate(parentGroup.positionX, parentGroup.positionY)
         val parentMatrix = androidx.compose.ui.graphics.Matrix().apply {
             reset()
