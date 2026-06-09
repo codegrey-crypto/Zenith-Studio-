@@ -917,6 +917,7 @@ data class StudioLayer(
     val isVisible: Boolean = true,
     val isAlphaLocked: Boolean = false,
     val isClippingMask: Boolean = false,
+    val isAspectLocked: Boolean = true,
     val effects: List<StudioEffect> = emptyList(),
     // Type specific options
     val textContent: String = "",

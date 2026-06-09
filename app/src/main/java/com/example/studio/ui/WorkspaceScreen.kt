@@ -951,15 +951,41 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             }
             undoStack.add(layers)
             redoStack.clear()
+            var initialW = 400f
+            var initialH = 400f
+            try {
+                val options = android.graphics.BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                context.contentResolver.openInputStream(it)?.use { stream ->
+                    android.graphics.BitmapFactory.decodeStream(stream, null, options)
+                }
+                val imageW = options.outWidth
+                val imageH = options.outHeight
+                if (imageW > 0 && imageH > 0) {
+                    val aspectRatio = imageW.toFloat() / imageH.toFloat()
+                    if (aspectRatio > 1.0f) {
+                        initialW = 400f
+                        initialH = 400f / aspectRatio
+                    } else {
+                        initialH = 400f
+                        initialW = 400f * aspectRatio
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
             val newL = com.example.studio.model.StudioLayer(
                 name = "Imported Image",
                 type = com.example.studio.model.LayerType.IMAGE_CARD,
                 positionX = 150f,
                 positionY = 200f,
-                width = 400f,
-                height = 400f,
+                width = initialW,
+                height = initialH,
                 baseColor = Color.White,
-                imageUri = it.toString()
+                imageUri = it.toString(),
+                isAspectLocked = true
             )
             layers = listOf(newL) + layers
             selectedLayerId = newL.id
@@ -2260,8 +2286,22 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                     if (dragMode == "resize") {
                                                         layers = layers.map { layer ->
                                                             if (layer.id == selId && !layer.isAlphaLocked) {
-                                                                val newW = (localChangeX - layer.positionX).coerceIn(20f, 2000f)
-                                                                val newH = (localChangeY - layer.positionY).coerceIn(20f, 2000f)
+                                                                val initialW = (localChangeX - layer.positionX).coerceIn(20f, 2000f)
+                                                                 val initialH = (localChangeY - layer.positionY).coerceIn(20f, 2000f)
+                                                                 val (newW, computedNewH) = if (layer.isAspectLocked) {
+                                                                     val ratio = if (layer.height > 0f) layer.width / layer.height else 1f
+                                                                     val scaleFromWidth = Math.abs(initialW - layer.width) >= Math.abs(initialH - layer.height)
+                                                                     if (scaleFromWidth) {
+                                                                         val computedH = (initialW / ratio).coerceIn(20f, 2000f)
+                                                                         Pair(computedH * ratio, computedH)
+                                                                     } else {
+                                                                         val computedW = (initialH * ratio).coerceIn(20f, 2000f)
+                                                                         Pair(computedW, computedW / ratio)
+                                                                     }
+                                                                 } else {
+                                                                     Pair(initialW, initialH)
+                                                                 }
+                                                                val newH = if (layer.isAspectLocked) computedNewH else (localChangeY - layer.positionY).coerceIn(20f, 2000f)
                                                                 layer.copy(width = newW, height = newH)
                                                             } else layer
                                                         }
@@ -12883,7 +12923,26 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             }
             com.example.studio.model.LayerType.IMAGE_CARD -> {
                 if (isOverlay) {
-                    if (paintToUse != null) {
+                    val uriStr = layer.imageUri
+                    val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
+                    if (loadedBitmap != null) {
+                        val paintWithTint = androidx.compose.ui.graphics.Paint().apply {
+                            this.color = finalComposeColor
+                            this.blendMode = composeBlendMode
+                            this.colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(finalComposeColor, androidx.compose.ui.graphics.BlendMode.SrcIn)
+                            val fwOrig = paintToUse?.asFrameworkPaint()
+                            val fwSelf = this.asFrameworkPaint()
+                            if (fwOrig != null) {
+                                fwSelf.shader = fwOrig.shader
+                                fwSelf.maskFilter = fwOrig.maskFilter
+                            }
+                        }
+                        drawContext.canvas.drawImageRect(
+                            image = loadedBitmap,
+                            dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                            paint = paintWithTint
+                        )
+                    } else if (paintToUse != null) {
                         if (layer.cornerRadius > 0f) {
                             drawContext.canvas.drawRoundRect(
                                 left = 0f,
@@ -13253,18 +13312,49 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                 }
                 com.example.studio.model.LayerType.IMAGE_CARD -> {
                     if (isOverlay) {
-                        if (layer.cornerRadius > 0f) {
-                            val rRect = androidx.compose.ui.geometry.RoundRect(
-                                rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
-                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius)
+                        val uriStr = layer.imageUri
+                        val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
+                        if (loadedBitmap != null) {
+                            val paintWithTint = androidx.compose.ui.graphics.Paint().apply {
+                                this.color = finalComposeColor
+                                this.blendMode = paint.blendMode
+                                this.colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(finalComposeColor, androidx.compose.ui.graphics.BlendMode.SrcIn)
+                                val fwOrig = paint.asFrameworkPaint()
+                                val fwSelf = this.asFrameworkPaint()
+                                fwSelf.shader = fwOrig.shader
+                                fwSelf.maskFilter = fwOrig.maskFilter
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                    try {
+                                        val getMethod = fwOrig.javaClass.getMethod("getRenderEffect")
+                                        val renderEffect = getMethod.invoke(fwOrig)
+                                        if (renderEffect != null) {
+                                            val setMethod = fwSelf.javaClass.getMethod("setRenderEffect", android.graphics.RenderEffect::class.java)
+                                            setMethod.invoke(fwSelf, renderEffect)
+                                        }
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                }
+                            }
+                            drawContext.canvas.drawImageRect(
+                                image = loadedBitmap,
+                                dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                                paint = paintWithTint
                             )
-                            val path = androidx.compose.ui.graphics.Path().apply { addRoundRect(rRect) }
-                            drawContext.canvas.drawPath(path, paint)
                         } else {
-                            drawContext.canvas.drawRect(
-                                rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
-                                paint = paint
-                            )
+                            if (layer.cornerRadius > 0f) {
+                                val rRect = androidx.compose.ui.geometry.RoundRect(
+                                    rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(layer.cornerRadius, layer.cornerRadius)
+                                )
+                                val path = androidx.compose.ui.graphics.Path().apply { addRoundRect(rRect) }
+                                drawContext.canvas.drawPath(path, paint)
+                            } else {
+                                drawContext.canvas.drawRect(
+                                    rect = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height),
+                                    paint = paint
+                                )
+                            }
                         }
                     } else {
                         val uriStr = layer.imageUri
