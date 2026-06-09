@@ -2936,9 +2936,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 composeBlendMode = composeBlendMode,
                                                 activeTool = activeTool
                                              )
-                                         }
                                      }
 
+                                     }
                                      val oldDrawLayerWithTransformsDummy = {
                                         withTransform({
                                             translate(left = layer.positionX, top = layer.positionY)
@@ -3476,39 +3476,39 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                         try {
                                             val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, canvasWidth, canvasHeight)
                                             drawContext.canvas.saveLayer(bounds, androidx.compose.ui.graphics.Paint())
-                                            if (true) {
+                                            // 1. Draw beneathLayer (Base/Destination Alpha) first with SrcOver (without selection highlights)
                                             drawSingleConnectedLayer(
-                                                layer = layer,
-                                                layerOpacity = layerOpacity,
-                                                selectedLayerId = selectedLayerId,
+                                                layer = beneathLayer,
+                                                layerOpacity = beneathLayer.opacity,
+                                                selectedLayerId = null,
                                                 pathCache = pathCache,
                                                 pathPointsCountCache = pathPointsCountCache,
                                                 totalScale = totalScale,
                                                 dashEffect = dashEffect8,
                                                 imageBitmapCache = imageBitmapCache,
-                                                composeBlendMode = composeBlendMode,
+                                                composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
                                                 sharedTransformMatrix = sharedTransformMatrix,
-                                                backdropBitmap = currentBackdrop,
-                                                globalX = layer.positionX,
-                                                globalY = layer.positionY,
+                                                backdropBitmap = null,
+                                                globalX = beneathLayer.positionX,
+                                                globalY = beneathLayer.positionY,
                                                 activeTool = activeTool
                                             )
-                                        }
                                         
+                                        // 2. Draw current clipped layer (Source) second with SrcIn
                                         drawSingleConnectedLayer(
-                                            layer = beneathLayer,
-                                            layerOpacity = beneathLayer.opacity,
+                                            layer = layer,
+                                            layerOpacity = layerOpacity,
                                             selectedLayerId = selectedLayerId,
                                             pathCache = pathCache,
                                             pathPointsCountCache = pathPointsCountCache,
                                             totalScale = totalScale,
                                             dashEffect = dashEffect8,
                                             imageBitmapCache = imageBitmapCache,
-                                            composeBlendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+                                            composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcIn,
                                             sharedTransformMatrix = sharedTransformMatrix,
-                                            backdropBitmap = null,
-                                            globalX = beneathLayer.positionX,
-                                            globalY = beneathLayer.positionY,
+                                            backdropBitmap = currentBackdrop,
+                                            globalX = layer.positionX,
+                                            globalY = layer.positionY,
                                             activeTool = activeTool
                                         )
                                         } catch (e: Exception) {
@@ -12594,6 +12594,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             nativePaint.shader = shader
             // Retain any opacity settings
             nativePaint.alpha = (finalOpacity * layerOpacity * 255).toInt().coerceIn(0, 255)
+            composePaint.blendMode = composeBlendMode
             composePaint
         } else {
             null
