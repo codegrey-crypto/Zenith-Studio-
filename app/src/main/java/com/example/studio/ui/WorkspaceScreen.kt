@@ -2867,6 +2867,19 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
                                     val beneathLayer = if (index + 1 < layers.size) layers[index + 1] else null
 
+                                    var rootBaseLayer: com.example.studio.model.StudioLayer? = null
+                                    if (layer.isClippingMask) {
+                                        for (i in (index + 1) until layers.size) {
+                                            val prospect = layers[i]
+                                            if (prospect.isVisible) {
+                                                if (!prospect.isClippingMask) {
+                                                    rootBaseLayer = prospect
+                                                    break
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     val drawLayerWithTransforms = {
                                         var twirlFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
                                         var pinchFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
@@ -2936,9 +2949,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 composeBlendMode = composeBlendMode,
                                                 activeTool = activeTool
                                              )
+                                         }
                                      }
 
-                                     }
                                      val oldDrawLayerWithTransformsDummy = {
                                         withTransform({
                                             translate(left = layer.positionX, top = layer.positionY)
@@ -3377,6 +3390,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 }
                                             }
 
+                                            com.example.studio.model.LayerType.GROUP -> {}
                                             LayerType.IMAGE_CARD -> {
                                                 val uriStr = layer.imageUri
                                                 val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
@@ -3472,14 +3486,14 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     }
 
                                     // Invoke drawing lambda, constraining within Clipping Mask boundaries if enabled
-                                    if (layer.isClippingMask && beneathLayer != null) {
+                                    if (layer.isClippingMask && rootBaseLayer != null) {
                                         try {
                                             val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, canvasWidth, canvasHeight)
                                             drawContext.canvas.saveLayer(bounds, androidx.compose.ui.graphics.Paint())
-                                            // 1. Draw beneathLayer (Base/Destination Alpha) first with SrcOver (without selection highlights)
+                                            // 1. Draw rootBaseLayer (Base/Destination Alpha) first with SrcOver (without selection highlights)
                                             drawSingleConnectedLayer(
-                                                layer = beneathLayer,
-                                                layerOpacity = beneathLayer.opacity,
+                                                layer = rootBaseLayer,
+                                                layerOpacity = rootBaseLayer.opacity,
                                                 selectedLayerId = null,
                                                 pathCache = pathCache,
                                                 pathPointsCountCache = pathPointsCountCache,
@@ -3489,9 +3503,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
                                                 sharedTransformMatrix = sharedTransformMatrix,
                                                 backdropBitmap = null,
-                                                globalX = beneathLayer.positionX,
-                                                globalY = beneathLayer.positionY,
-                                                activeTool = activeTool
+                                                globalX = rootBaseLayer.positionX,
+                                                globalY = rootBaseLayer.positionY,
+                                                activeTool = activeTool,
+                                                allLayers = layers
                                             )
                                         
                                         // 2. Draw current clipped layer (Source) second with SrcIn
@@ -3509,7 +3524,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                             backdropBitmap = currentBackdrop,
                                             globalX = layer.positionX,
                                             globalY = layer.positionY,
-                                            activeTool = activeTool
+                                            activeTool = activeTool,
+                                            allLayers = layers
                                         )
                                         } catch (e: Exception) {
                                             drawSingleConnectedLayer(
@@ -3526,7 +3542,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 backdropBitmap = currentBackdrop,
                                                 globalX = layer.positionX,
                                                 globalY = layer.positionY,
-                                                activeTool = activeTool
+                                                activeTool = activeTool,
+                                                allLayers = layers
                                             )
                                         } finally {
                                             try {
@@ -3548,7 +3565,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                              backdropBitmap = currentBackdrop,
                                              globalX = layer.positionX,
                                              globalY = layer.positionY,
-                                             activeTool = activeTool
+                                             activeTool = activeTool,
+                                             allLayers = layers
                                          )
                                     }
                                 }
@@ -7256,6 +7274,7 @@ fun RightsideLayerDrawer(
                             LayerType.TEXT -> "T"
                             LayerType.FREEHAND_DRAWING -> "✎"
                             LayerType.IMAGE_CARD -> "▨"
+                            LayerType.GROUP -> "📁"
                         }
                         Text(
                             text = glyph,
@@ -13093,6 +13112,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     }
                 }
             }
+            com.example.studio.model.LayerType.GROUP -> {}
             com.example.studio.model.LayerType.IMAGE_CARD -> {
                 if (isOverlay) {
                     val uriStr = layer.imageUri
@@ -13500,6 +13520,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                         drawContext.canvas.drawPath(path, paint)
                     }
                 }
+                com.example.studio.model.LayerType.GROUP -> {}
                 com.example.studio.model.LayerType.IMAGE_CARD -> {
                     if (isOverlay) {
                         val uriStr = layer.imageUri
@@ -13946,6 +13967,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     )
                 }
             }
+            com.example.studio.model.LayerType.GROUP -> {}
             com.example.studio.model.LayerType.IMAGE_CARD -> {
                 drawRect(
                     brush = finalBrush,
@@ -14852,8 +14874,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     backdropBitmap: android.graphics.Bitmap? = null,
     globalX: Float = 0f,
     globalY: Float = 0f,
-    activeTool: String = "Brush"
+    activeTool: String = "Brush",
+    allLayers: List<com.example.studio.model.StudioLayer> = emptyList()
 ) {
+    val parentGroup = layer.parentGroupId?.let { pId ->
+        allLayers.find { it.id == pId }
+    }
+    val computedOpacity = layerOpacity * (parentGroup?.opacity ?: 1.0f)
+
     var twirlFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
     var pinchFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
     var sphereFil: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
@@ -14873,6 +14901,19 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
                           (sphereFil?.let { 1f + (it.parameters["Amount"]?.value ?: 100f) / 100f * 0.20f } ?: 1f)
 
     drawContext.canvas.save()
+    if (parentGroup != null) {
+        drawContext.canvas.translate(parentGroup.positionX, parentGroup.positionY)
+        val parentMatrix = androidx.compose.ui.graphics.Matrix().apply {
+            reset()
+            val centerX = parentGroup.width * parentGroup.pivotX
+            val centerY = parentGroup.height * parentGroup.pivotY
+            translate(centerX, centerY)
+            rotateZ(parentGroup.rotation)
+            scale(parentGroup.scaleX, parentGroup.scaleY, 1f)
+            translate(-centerX, -centerY)
+        }
+        drawContext.canvas.concat(parentMatrix)
+    }
     drawContext.canvas.translate(layer.positionX, layer.positionY)
 
     val matrix = sharedTransformMatrix.apply {
@@ -14913,7 +14954,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     drawContext.canvas.concat(matrix)
     drawAllEffectsAndLayersLocal(
         layer = layer,
-        layerOpacity = layerOpacity,
+        layerOpacity = computedOpacity,
         selectedLayerId = selectedLayerId,
         pathCache = pathCache,
         pathPointsCountCache = pathPointsCountCache,

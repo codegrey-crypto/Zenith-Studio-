@@ -138,7 +138,8 @@ data class LayerDto(
     val fontIsItalic: Boolean? = false,
     val fontAlign: String? = "Center",
     val fontPath: String? = null,
-    val isAspectLocked: Boolean? = true
+    val isAspectLocked: Boolean? = true,
+    val parentGroupId: String? = null
 ) {
     fun toLayer(): StudioLayer {
         val pts = mutableListOf<Offset>()
@@ -191,7 +192,8 @@ data class LayerDto(
             fontIsBold = fontIsBold ?: false,
             fontIsItalic = fontIsItalic ?: false,
             fontAlign = fontAlign ?: "Center",
-            fontPath = fontPath
+            fontPath = fontPath,
+            parentGroupId = parentGroupId
         )
     }
 
@@ -247,7 +249,8 @@ data class LayerDto(
                 fontIsItalic = layer.fontIsItalic,
                 fontAlign = layer.fontAlign,
                 fontPath = layer.fontPath,
-                isAspectLocked = layer.isAspectLocked
+                isAspectLocked = layer.isAspectLocked,
+                parentGroupId = layer.parentGroupId
             )
         }
     }

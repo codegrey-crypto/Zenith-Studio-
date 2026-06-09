@@ -351,6 +351,7 @@ object PsdExportEngine {
                     canvas.drawBitmap(loadedBitmap, null, destRect, imagePaint)
                 }
             }
+            LayerType.GROUP -> {}
         }
 
         canvas.restore()

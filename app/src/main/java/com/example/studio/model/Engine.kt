@@ -17,7 +17,8 @@ enum class LayerType {
     VECTOR_BEZIER,
     TEXT,
     FREEHAND_DRAWING,
-    IMAGE_CARD
+    IMAGE_CARD,
+    GROUP
 }
 
 enum class ZenithBlendMode(val displayName: String) {
@@ -938,5 +939,6 @@ data class StudioLayer(
     val fontIsBold: Boolean = false,
     val fontIsItalic: Boolean = false,
     val fontAlign: String = "Center",
-    val fontPath: String? = null
+    val fontPath: String? = null,
+    val parentGroupId: String? = null
 )
