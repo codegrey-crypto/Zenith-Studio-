@@ -3960,120 +3960,125 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             }
                         }
                     }
+
+                    // Compact Floating Layer Manager Panel
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = isLayersPanelVisible,
+                        enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                        exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 56.dp, end = 12.dp)
+                    ) {
+                        RightsideLayerDrawer(
+                            layers = layers,
+                            selectedLayerId = selectedLayerId,
+                            onSelectLayer = { selectedLayerId = it },
+                            onChangeVisibility = { id ->
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                layers = layers.map { if (it.id == id) it.copy(isVisible = !it.isVisible) else it }
+                            },
+                            onChangeAlphaLock = { id ->
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                layers = layers.map { if (it.id == id) it.copy(isAlphaLocked = !it.isAlphaLocked) else it }
+                            },
+                            onChangeClippingMask = { id ->
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                layers = layers.map { if (it.id == id) it.copy(isClippingMask = !it.isClippingMask) else it }
+                            },
+                            onLayerReorderUp = { index ->
+                                if (index > 0) {
+                                    undoStack.add(layers)
+                                    redoStack.clear()
+                                    val list = layers.toMutableList()
+                                    val removed = list.removeAt(index)
+                                    list.add(index - 1, removed)
+                                    layers = list
+                                }
+                            },
+                            onLayerReorderDown = { index ->
+                                if (index < layers.size - 1) {
+                                    undoStack.add(layers)
+                                    redoStack.clear()
+                                    val list = layers.toMutableList()
+                                    val removed = list.removeAt(index)
+                                    list.add(index + 1, removed)
+                                    layers = list
+                                }
+                            },
+                            onAddLayer = {
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                val newL = StudioLayer(
+                                    name = "Empty Layer ${layers.size + 1}",
+                                    type = LayerType.FREEHAND_DRAWING,
+                                    positionX = 0f,
+                                    positionY = 0f,
+                                    width = canvasWidth,
+                                    height = canvasHeight,
+                                    baseColor = Color.Transparent,
+                                    effects = listOf(
+                                        PhotoshopEffectTemplates.create(effectType = "BrushConfig").let { eff ->
+                                            var updated = eff.updateParameter("Size", brushSize)
+                                            updated = updated.updateParameter("Opacity", brushOpacity)
+                                            updated = updated.updateParameter("Smoothing", if (brushSmoothing) 1.0f else 0.0f)
+                                            updated = updated.updateParameter("Preset", brushPresetIndex.toFloat())
+                                            updated
+                                        }
+                                    ),
+                                    brushPoints = emptyList()
+                                )
+                                layers = listOf(newL) + layers
+                                selectedLayerId = newL.id
+                            },
+                            onDuplicateLayer = { id ->
+                                val orig = layers.find { it.id == id }
+                                if (orig != null) {
+                                    undoStack.add(layers)
+                                    redoStack.clear()
+                                    val copy = orig.copy(
+                                        id = UUID.randomUUID().toString(),
+                                        name = "${orig.name} (Copy)",
+                                        positionX = orig.positionX + 40f,
+                                        positionY = orig.positionY + 40f
+                                    )
+                                    layers = listOf(copy) + layers
+                                    selectedLayerId = copy.id
+                                }
+                            },
+                            onDeleteLayer = { id ->
+                                if (layers.size > 1) {
+                                    undoStack.add(layers)
+                                    redoStack.clear()
+                                    layers = layers.filter { it.id != id }
+                                    selectedLayerId = layers[0].id
+                                }
+                            },
+                            onBlendModeChange = { id, mode ->
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                layers = layers.map { if (it.id == id) it.copy(blendMode = mode) else it }
+                            },
+                            onOpacityChange = { id, op ->
+                                layers = layers.map { if (it.id == id) it.copy(opacity = op) else it }
+                            },
+                            onTriggerRename = { id, currentName ->
+                                renamingLayerId = id
+                                renamingLayerName = currentName
+                            },
+                            onCloseDrawer = { isLayersPanelVisible = false },
+                            modifier = Modifier
+                                .fillMaxHeight(0.45f)
+                                .width(280.dp)
+                        )
+                    }
                 }
 
                 if (isLandscape && isBottomPanelVisible) {
                     RenderBottomEffectPanel(isLandscapeMode = true)
-                }
-
-                // Collapsible sidebar drawer for layer management panel (with smooth animations)
-                AnimatedVisibility(
-                    visible = isLayersPanelVisible,
-                    enter = expandHorizontally() + fadeIn(),
-                    exit = shrinkHorizontally() + fadeOut()
-                ) {
-                    RightsideLayerDrawer(
-                        layers = layers,
-                        selectedLayerId = selectedLayerId,
-                        onSelectLayer = { selectedLayerId = it },
-                        onChangeVisibility = { id ->
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            layers = layers.map { if (it.id == id) it.copy(isVisible = !it.isVisible) else it }
-                        },
-                        onChangeAlphaLock = { id ->
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            layers = layers.map { if (it.id == id) it.copy(isAlphaLocked = !it.isAlphaLocked) else it }
-                        },
-                        onChangeClippingMask = { id ->
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            layers = layers.map { if (it.id == id) it.copy(isClippingMask = !it.isClippingMask) else it }
-                        },
-                        onLayerReorderUp = { index ->
-                            if (index > 0) {
-                                undoStack.add(layers)
-                                redoStack.clear()
-                                val list = layers.toMutableList()
-                                val removed = list.removeAt(index)
-                                list.add(index - 1, removed)
-                                layers = list
-                            }
-                        },
-                        onLayerReorderDown = { index ->
-                            if (index < layers.size - 1) {
-                                undoStack.add(layers)
-                                redoStack.clear()
-                                val list = layers.toMutableList()
-                                val removed = list.removeAt(index)
-                                list.add(index + 1, removed)
-                                layers = list
-                            }
-                        },
-                        onAddLayer = {
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            val newL = StudioLayer(
-                                name = "Empty Layer ${layers.size + 1}",
-                                type = LayerType.FREEHAND_DRAWING,
-                                positionX = 0f,
-                                positionY = 0f,
-                                width = canvasWidth,
-                                height = canvasHeight,
-                                baseColor = Color.Transparent,
-                                effects = listOf(
-                                    PhotoshopEffectTemplates.create(effectType = "BrushConfig").let { eff ->
-                                        var updated = eff.updateParameter("Size", brushSize)
-                                        updated = updated.updateParameter("Opacity", brushOpacity)
-                                        updated = updated.updateParameter("Smoothing", if (brushSmoothing) 1.0f else 0.0f)
-                                        updated = updated.updateParameter("Preset", brushPresetIndex.toFloat())
-                                        updated
-                                    }
-                                ),
-                                brushPoints = emptyList()
-                            )
-                            layers = listOf(newL) + layers
-                            selectedLayerId = newL.id
-                        },
-                        onDuplicateLayer = { id ->
-                            val orig = layers.find { it.id == id }
-                            if (orig != null) {
-                                undoStack.add(layers)
-                                redoStack.clear()
-                                val copy = orig.copy(
-                                    id = UUID.randomUUID().toString(),
-                                    name = "${orig.name} (Copy)",
-                                    positionX = orig.positionX + 40f,
-                                    positionY = orig.positionY + 40f
-                                )
-                                layers = listOf(copy) + layers
-                                selectedLayerId = copy.id
-                            }
-                        },
-
-                        onDeleteLayer = { id ->
-                            if (layers.size > 1) {
-                                undoStack.add(layers)
-                                redoStack.clear()
-                                layers = layers.filter { it.id != id }
-                                selectedLayerId = layers[0].id
-                            }
-                        },
-                        onBlendModeChange = { id, mode ->
-                            undoStack.add(layers)
-                            redoStack.clear()
-                            layers = layers.map { if (it.id == id) it.copy(blendMode = mode) else it }
-                        },
-                        onOpacityChange = { id, op ->
-                            layers = layers.map { if (it.id == id) it.copy(opacity = op) else it }
-                        },
-                        onTriggerRename = { id, currentName ->
-                            renamingLayerId = id
-                            renamingLayerName = currentName
-                        },
-                        onCloseDrawer = { isLayersPanelVisible = false }
-                    )
                 }
             }
 
@@ -6973,18 +6978,17 @@ fun RightsideLayerDrawer(
     onBlendModeChange: (String, ZenithBlendMode) -> Unit,
     onOpacityChange: (String, Float) -> Unit,
     onTriggerRename: (String, String) -> Unit,
-    onCloseDrawer: () -> Unit
+    onCloseDrawer: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var expandedBlendList by remember { mutableStateOf(false) }
     val selLayer = layers.find { it.id == selectedLayerId }
 
     Column(
         modifier = Modifier
-            .width(238.dp)
-            .fillMaxHeight()
-            .padding(end = 8.dp, top = 8.dp, bottom = 8.dp)
             .background(SlatePanel, RoundedCornerShape(16.dp))
             .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
+            .then(modifier)
             .padding(12.dp)
             .testTag("layers_panel")
     ) {
@@ -8326,12 +8330,49 @@ fun OldBottomEffectPanel(
                                   Text("SizeW", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
                                   Slider(
                                       value = selectedLayer.width,
-                                      onValueChange = { onUpdateLayer(selectedLayer.copy(width = it)) },
+                                      onValueChange = { newW ->
+                                          if (selectedLayer.isAspectLocked) {
+                                              val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
+                                              val newH = if (aspect != 0f) (newW / aspect).coerceIn(20f, 2000f) else newW
+                                              onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
+                                          } else {
+                                              onUpdateLayer(selectedLayer.copy(width = newW))
+                                          }
+                                      },
                                       valueRange = 20f..800f,
                                       colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                                       modifier = Modifier.weight(1f).height(28.dp)
                                   )
-                                  Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Width", selectedLayer.width, 20f..800f, isInt = true) { onUpdateLayer(selectedLayer.copy(width = it)) }, textAlign = TextAlign.End)
+                                  Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Width", selectedLayer.width, 20f..800f, isInt = true) { newW ->
+                                      if (selectedLayer.isAspectLocked) {
+                                          val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
+                                          val newH = if (aspect != 0f) (newW / aspect).coerceIn(20f, 2000f) else newW
+                                          onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
+                                      } else {
+                                          onUpdateLayer(selectedLayer.copy(width = newW))
+                                      }
+                                  }, textAlign = TextAlign.End)
+                              }
+
+                              // Padlock Aspect Ratio Lock Toggle Button
+                              Row(
+                                  verticalAlignment = Alignment.CenterVertically,
+                                  modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)
+                              ) {
+                                  Text("Lock Aspect", style = Typography.labelSmall, fontSize = 9.sp, modifier = Modifier.width(58.dp), color = TextSecondary)
+                                  IconButton(
+                                      onClick = {
+                                          onUpdateLayer(selectedLayer.copy(isAspectLocked = !selectedLayer.isAspectLocked))
+                                      },
+                                      modifier = Modifier.size(24.dp)
+                                  ) {
+                                      Icon(
+                                          imageVector = if (selectedLayer.isAspectLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                          contentDescription = "Aspect Ratio Lock Toggle",
+                                          tint = if (selectedLayer.isAspectLocked) IndustrialAmber else TextSecondary,
+                                          modifier = Modifier.size(15.dp)
+                                      )
+                                  }
                               }
 
                               // Height slider
@@ -8339,12 +8380,28 @@ fun OldBottomEffectPanel(
                                   Text("SizeH", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
                                   Slider(
                                       value = selectedLayer.height,
-                                      onValueChange = { onUpdateLayer(selectedLayer.copy(height = it)) },
+                                      onValueChange = { newH ->
+                                          if (selectedLayer.isAspectLocked) {
+                                              val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
+                                              val newW = (newH * aspect).coerceIn(20f, 2000f)
+                                              onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
+                                          } else {
+                                              onUpdateLayer(selectedLayer.copy(height = newH))
+                                          }
+                                      },
                                       valueRange = 20f..800f,
                                       colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                                       modifier = Modifier.weight(1f).height(28.dp)
                                   )
-                                  Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Height", selectedLayer.height, 20f..800f, isInt = true) { onUpdateLayer(selectedLayer.copy(height = it)) }, textAlign = TextAlign.End)
+                                  Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Height", selectedLayer.height, 20f..800f, isInt = true) { newH ->
+                                      if (selectedLayer.isAspectLocked) {
+                                          val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
+                                          val newW = (newH * aspect).coerceIn(20f, 2000f)
+                                          onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
+                                      } else {
+                                          onUpdateLayer(selectedLayer.copy(height = newH))
+                                      }
+                                  }, textAlign = TextAlign.End)
                               }
 
                               // Pivot-X slider
@@ -12937,11 +12994,29 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                                 fwSelf.maskFilter = fwOrig.maskFilter
                             }
                         }
-                        drawContext.canvas.drawImageRect(
-                            image = loadedBitmap,
-                            dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
-                            paint = paintWithTint
-                        )
+                        try {
+                            val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height)
+                            drawContext.canvas.saveLayer(bounds, paintWithTint)
+                            drawContext.canvas.drawImageRect(
+                                image = loadedBitmap,
+                                dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                                paint = androidx.compose.ui.graphics.Paint().apply {
+                                    this.color = finalComposeColor
+                                    this.blendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
+                                    this.colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(finalComposeColor, androidx.compose.ui.graphics.BlendMode.SrcIn)
+                                }
+                            )
+                        } catch (e: Exception) {
+                            drawContext.canvas.drawImageRect(
+                                image = loadedBitmap,
+                                dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                                paint = paintWithTint
+                            )
+                        } finally {
+                            try {
+                                drawContext.canvas.restore()
+                            } catch (t: Throwable) {}
+                        }
                     } else if (paintToUse != null) {
                         if (layer.cornerRadius > 0f) {
                             drawContext.canvas.drawRoundRect(
@@ -13336,11 +13411,29 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                                     }
                                 }
                             }
-                            drawContext.canvas.drawImageRect(
-                                image = loadedBitmap,
-                                dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
-                                paint = paintWithTint
-                            )
+                            try {
+                                val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height)
+                                drawContext.canvas.saveLayer(bounds, paintWithTint)
+                                drawContext.canvas.drawImageRect(
+                                    image = loadedBitmap,
+                                    dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                                    paint = androidx.compose.ui.graphics.Paint().apply {
+                                        this.color = finalComposeColor
+                                        this.blendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
+                                        this.colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(finalComposeColor, androidx.compose.ui.graphics.BlendMode.SrcIn)
+                                    }
+                                )
+                            } catch (e: Exception) {
+                                drawContext.canvas.drawImageRect(
+                                    image = loadedBitmap,
+                                    dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                                    paint = paintWithTint
+                                )
+                            } finally {
+                                try {
+                                    drawContext.canvas.restore()
+                                } catch (t: Throwable) {}
+                            }
                         } else {
                             if (layer.cornerRadius > 0f) {
                                 val rRect = androidx.compose.ui.geometry.RoundRect(
