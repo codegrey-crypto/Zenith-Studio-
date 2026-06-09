@@ -3473,12 +3473,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
                                     // Invoke drawing lambda, constraining within Clipping Mask boundaries if enabled
                                     if (layer.isClippingMask && beneathLayer != null) {
-                                        clipRect(
-                                            left = beneathLayer.positionX,
-                                            top = beneathLayer.positionY,
-                                            right = beneathLayer.positionX + beneathLayer.width,
-                                            bottom = beneathLayer.positionY + beneathLayer.height
-                                        ) {
+                                        try {
+                                            val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, canvasWidth, canvasHeight)
+                                            drawContext.canvas.saveLayer(bounds, androidx.compose.ui.graphics.Paint())
+                                            if (true) {
                                             drawSingleConnectedLayer(
                                                 layer = layer,
                                                 layerOpacity = layerOpacity,
@@ -3495,6 +3493,45 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 globalY = layer.positionY,
                                                 activeTool = activeTool
                                             )
+                                        }
+                                        
+                                        drawSingleConnectedLayer(
+                                            layer = beneathLayer,
+                                            layerOpacity = beneathLayer.opacity,
+                                            selectedLayerId = selectedLayerId,
+                                            pathCache = pathCache,
+                                            pathPointsCountCache = pathPointsCountCache,
+                                            totalScale = totalScale,
+                                            dashEffect = dashEffect8,
+                                            imageBitmapCache = imageBitmapCache,
+                                            composeBlendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+                                            sharedTransformMatrix = sharedTransformMatrix,
+                                            backdropBitmap = null,
+                                            globalX = beneathLayer.positionX,
+                                            globalY = beneathLayer.positionY,
+                                            activeTool = activeTool
+                                        )
+                                        } catch (e: Exception) {
+                                            drawSingleConnectedLayer(
+                                                layer = layer,
+                                                layerOpacity = layerOpacity,
+                                                selectedLayerId = selectedLayerId,
+                                                pathCache = pathCache,
+                                                pathPointsCountCache = pathPointsCountCache,
+                                                totalScale = totalScale,
+                                                dashEffect = dashEffect8,
+                                                imageBitmapCache = imageBitmapCache,
+                                                composeBlendMode = composeBlendMode,
+                                                sharedTransformMatrix = sharedTransformMatrix,
+                                                backdropBitmap = currentBackdrop,
+                                                globalX = layer.positionX,
+                                                globalY = layer.positionY,
+                                                activeTool = activeTool
+                                            )
+                                        } finally {
+                                            try {
+                                                drawContext.canvas.restore()
+                                            } catch (t: Throwable) {}
                                         }
                                     } else {
                                         drawSingleConnectedLayer(
@@ -4071,7 +4108,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             },
                             onCloseDrawer = { isLayersPanelVisible = false },
                             modifier = Modifier
-                                .fillMaxHeight(0.45f)
+                                .fillMaxHeight(0.6f)
                                 .width(280.dp)
                         )
                     }
@@ -7076,6 +7113,78 @@ fun RightsideLayerDrawer(
                         }
                     }
                 }
+
+                Spacer(Modifier.height(6.dp))
+
+                // Alpha Lock & Clipping Mask quick toggles
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Alpha Lock Toggle Row
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(SlatePanel, RoundedCornerShape(4.dp))
+                            .clickable { onChangeAlphaLock(selLayer.id) }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(
+                                imageVector = if (selLayer.isAlphaLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                contentDescription = "Alpha Lock Toggle",
+                                tint = if (selLayer.isAlphaLocked) EnergeticYellow else TextSecondary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text("Alpha Lock", style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary)
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = selLayer.isAlphaLocked,
+                            onCheckedChange = { onChangeAlphaLock(selLayer.id) },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = IndustrialAmber,
+                                checkedTrackColor = IndustrialAmber.copy(alpha = 0.4f),
+                                uncheckedThumbColor = TextSecondary,
+                                uncheckedTrackColor = SlatePanel
+                            ),
+                            modifier = Modifier.scale(0.6f).height(16.dp)
+                        )
+                    }
+
+                    // Clipping Mask Toggle Row
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .background(SlatePanel, RoundedCornerShape(4.dp))
+                            .clickable { onChangeClippingMask(selLayer.id) }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.FlipToBack,
+                                contentDescription = "Clipping Mask Toggle",
+                                tint = if (selLayer.isClippingMask) IndustrialAmber else TextSecondary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text("Clip Mask", style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary)
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = selLayer.isClippingMask,
+                            onCheckedChange = { onChangeClippingMask(selLayer.id) },
+                            colors = androidx.compose.material3.SwitchDefaults.colors(
+                                checkedThumbColor = IndustrialAmber,
+                                checkedTrackColor = IndustrialAmber.copy(alpha = 0.4f),
+                                uncheckedThumbColor = TextSecondary,
+                                uncheckedTrackColor = SlatePanel
+                            ),
+                            modifier = Modifier.scale(0.6f).height(16.dp)
+                        )
+                    }
+                }
             }
         }
 
@@ -7083,7 +7192,7 @@ fun RightsideLayerDrawer(
 
         // Layers Scrollable Core Stack (Reversing direction for canvas-compliant top-layer priority)
         LazyColumn(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f, fill = false),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             itemsIndexed(items = layers, key = { index, item -> item.id }) { index, item ->
@@ -7226,7 +7335,7 @@ fun RightsideLayerDrawer(
                             modifier = Modifier.size(20.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.SubdirectoryArrowRight,
+                                imageVector = Icons.Default.FlipToBack,
                                 contentDescription = "Clipping Mask Toggle",
                                 tint = if (item.isClippingMask) IndustrialAmber else TextSecondary,
                                 modifier = Modifier.size(11.dp)
@@ -8328,25 +8437,26 @@ fun OldBottomEffectPanel(
                               // Width slider
                               Row(verticalAlignment = Alignment.CenterVertically) {
                                   Text("SizeW", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  val maxW = maxOf(2000f, selectedLayer.width * 1.5f)
                                   Slider(
-                                      value = selectedLayer.width,
+                                      value = selectedLayer.width.coerceIn(2f, maxW),
                                       onValueChange = { newW ->
                                           if (selectedLayer.isAspectLocked) {
                                               val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
-                                              val newH = if (aspect != 0f) (newW / aspect).coerceIn(20f, 2000f) else newW
+                                              val newH = if (aspect != 0f) (newW / aspect).coerceIn(2f, 50000f) else newW
                                               onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
                                           } else {
                                               onUpdateLayer(selectedLayer.copy(width = newW))
                                           }
                                       },
-                                      valueRange = 20f..800f,
+                                      valueRange = 2f..maxW,
                                       colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                                       modifier = Modifier.weight(1f).height(28.dp)
                                   )
-                                  Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Width", selectedLayer.width, 20f..800f, isInt = true) { newW ->
+                                  Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Width", selectedLayer.width, 2f..50000f, isInt = true) { newW ->
                                       if (selectedLayer.isAspectLocked) {
                                           val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
-                                          val newH = if (aspect != 0f) (newW / aspect).coerceIn(20f, 2000f) else newW
+                                          val newH = if (aspect != 0f) (newW / aspect).coerceIn(2f, 50000f) else newW
                                           onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
                                       } else {
                                           onUpdateLayer(selectedLayer.copy(width = newW))
@@ -8378,25 +8488,26 @@ fun OldBottomEffectPanel(
                               // Height slider
                               Row(verticalAlignment = Alignment.CenterVertically) {
                                   Text("SizeH", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                                  val maxH = maxOf(2000f, selectedLayer.height * 1.5f)
                                   Slider(
-                                      value = selectedLayer.height,
+                                      value = selectedLayer.height.coerceIn(2f, maxH),
                                       onValueChange = { newH ->
                                           if (selectedLayer.isAspectLocked) {
                                               val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
-                                              val newW = (newH * aspect).coerceIn(20f, 2000f)
+                                              val newW = (newH * aspect).coerceIn(2f, 50000f)
                                               onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
                                           } else {
                                               onUpdateLayer(selectedLayer.copy(height = newH))
                                           }
                                       },
-                                      valueRange = 20f..800f,
+                                      valueRange = 2f..maxH,
                                       colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                                       modifier = Modifier.weight(1f).height(28.dp)
                                   )
-                                  Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Height", selectedLayer.height, 20f..800f, isInt = true) { newH ->
+                                  Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Height", selectedLayer.height, 2f..50000f, isInt = true) { newH ->
                                       if (selectedLayer.isAspectLocked) {
                                           val aspect = if (selectedLayer.height > 0f) selectedLayer.width / selectedLayer.height else 1.0f
-                                          val newW = (newH * aspect).coerceIn(20f, 2000f)
+                                          val newW = (newH * aspect).coerceIn(2f, 50000f)
                                           onUpdateLayer(selectedLayer.copy(width = newW, height = newH))
                                       } else {
                                           onUpdateLayer(selectedLayer.copy(height = newH))
@@ -11538,39 +11649,47 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
     }
 
     val currentPointsSize = points.size
+    var smoothedPath: androidx.compose.ui.graphics.Path? = null
+    var computedSubStrokes: List<List<androidx.compose.ui.geometry.Offset>>? = null
+
     if (cacheKey != null && pathCache != null && pathPointsCountCache != null) {
         val cachedSize = pathPointsCountCache.get(cacheKey, -1)
-        if (cachedSize != currentPointsSize) {
+        if (cachedSize == currentPointsSize) {
+            smoothedPath = if (smoothing) pathCache.get(cacheKey + 1000000) else pathCache.get(cacheKey)
+        } else {
             pathCache.remove(cacheKey)
             pathCache.remove(cacheKey + 1000000)
             pathPointsCountCache.put(cacheKey, currentPointsSize)
         }
     }
 
-    // Split points list on Offset.Unspecified or NaN into separate sub-strokes to prevent connecting line bugs
-    val subStrokes = mutableListOf<List<androidx.compose.ui.geometry.Offset>>()
-    var currentSub = mutableListOf<androidx.compose.ui.geometry.Offset>()
-    for (pt in points) {
-        if (pt == androidx.compose.ui.geometry.Offset.Unspecified || pt.x.isNaN() || pt.y.isNaN()) {
-            if (currentSub.isNotEmpty()) {
-                subStrokes.add(currentSub)
-                currentSub = mutableListOf()
+    val getSubStrokes: () -> List<List<androidx.compose.ui.geometry.Offset>> = {
+        computedSubStrokes ?: run {
+            val subStrokesList = mutableListOf<List<androidx.compose.ui.geometry.Offset>>()
+            var currentSub = mutableListOf<androidx.compose.ui.geometry.Offset>()
+            for (pt in points) {
+                if (pt == androidx.compose.ui.geometry.Offset.Unspecified || pt.x.isNaN() || pt.y.isNaN()) {
+                    if (currentSub.isNotEmpty()) {
+                        subStrokesList.add(currentSub)
+                        currentSub = mutableListOf()
+                    }
+                } else {
+                    currentSub.add(pt)
+                }
             }
-        } else {
-            currentSub.add(pt)
+            if (currentSub.isNotEmpty()) {
+                subStrokesList.add(currentSub)
+            }
+            computedSubStrokes = subStrokesList
+            subStrokesList
         }
     }
-    if (currentSub.isNotEmpty()) {
-        subStrokes.add(currentSub)
-    }
 
-    if (subStrokes.isEmpty()) return
-    
-    val smoothedPath = if (smoothing) {
-        val cached = if (cacheKey != null) pathCache?.get(cacheKey + 1000000) else null
-        if (cached != null) {
-            cached
-        } else {
+    if (smoothedPath == null) {
+        val subStrokes = getSubStrokes()
+        if (subStrokes.isEmpty()) return
+        
+        smoothedPath = if (smoothing) {
             val path = androidx.compose.ui.graphics.Path()
             for (subPoints in subStrokes) {
                 if (subPoints.isEmpty()) continue
@@ -11594,11 +11713,6 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
             }
             if (cacheKey != null) pathCache?.put(cacheKey + 1000000, path)
             path
-        }
-    } else {
-        val cached = if (cacheKey != null) pathCache?.get(cacheKey) else null
-        if (cached != null) {
-            cached
         } else {
             val path = androidx.compose.ui.graphics.Path()
             for (subPoints in subStrokes) {
@@ -11728,7 +11842,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
         }
         6 -> { // Splatter Spray / Spray Splatter
             val random = java.util.Random(42)
-            for (subPoints in subStrokes) {
+            for (subPoints in getSubStrokes()) {
                 for (i in subPoints.indices step 4) {
                     val p = subPoints[i]
                     for (dot in 0..5) {
@@ -11996,7 +12110,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBrushStroke(
             val maxSplats = if (presetIndex == 33) 4 else 2
             val radiusVal = if (presetIndex == 34) 2.2f else 0.8f
             
-            for (subPoints in subStrokes) {
+            for (subPoints in getSubStrokes()) {
                 for (idx in subPoints.indices step 4) {
                     val p = subPoints[idx]
                     for (dot in 0..maxSplats) {
