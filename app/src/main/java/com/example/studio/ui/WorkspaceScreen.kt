@@ -11888,8 +11888,7 @@ fun CanvasSetupScreen(
                 // Compositions / Import Services Tab (activeMenuTab == 2)
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
+                        .fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
