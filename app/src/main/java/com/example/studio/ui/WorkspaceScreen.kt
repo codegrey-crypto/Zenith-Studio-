@@ -898,6 +898,12 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var reusableBackdropBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var activeBezierPointIndex by remember { mutableStateOf(-1) }
 
+    var isResizingActive by remember { mutableStateOf(false) }
+    var activeResizingLayerId by remember { mutableStateOf<String?>(null) }
+    var liveDragScaleX by remember { mutableStateOf(1.0f) }
+    var liveDragScaleY by remember { mutableStateOf(1.0f) }
+    var startingLayerForResize by remember { mutableStateOf<com.example.studio.model.StudioLayer?>(null) }
+
     // Floating UI selector for adding specific shapes
     var showAddShapeDialog by remember { mutableStateOf(false) }
     var showBrushesLibrary by remember { mutableStateOf(false) }
@@ -1166,6 +1172,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var psdImportProgressState by remember { mutableStateOf("") }
     var psdImportErrorMsg by remember { mutableStateOf<String?>(null) }
 
+    var isAlightImporting by remember { mutableStateOf(false) }
+    var alightImportErrorMsg by remember { mutableStateOf<String?>(null) }
+
     val loadParsedPsd: (PsdImportEngine.ParsedPsd, Boolean) -> Unit = { psd, downscale ->
         val scaleFactor = if (downscale) {
             val maxDim = maxOf(psd.canvasWidth, psd.canvasHeight)
@@ -1238,6 +1247,52 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     psdImportErrorMsg = "PSD Parsing Failure: " + (e.localizedMessage ?: e.javaClass.simpleName)
                 } finally {
                     isPsdImporting = false
+                }
+            }
+        }
+    }
+
+    val alightXmlPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        uri?.let { xmlUri ->
+            isAlightImporting = true
+            alightImportErrorMsg = null
+            
+            scope.launch {
+                try {
+                    context.contentResolver.openInputStream(xmlUri)?.use { inputStream ->
+                        val parsed = AlightXmlEngine.parseAlightXml(inputStream)
+                        
+                        if (parsed.layers.isEmpty()) {
+                            isAlightImporting = false
+                            alightImportErrorMsg = "No compatible shapes or text layers found in Alight Motion XML template."
+                            return@launch
+                        }
+
+                        // Set canvas dimensions and project details
+                        canvasWidth = parsed.canvasWidth
+                        canvasHeight = parsed.canvasHeight
+                        canvasWidthInput = parsed.canvasWidth.toInt().toString()
+                        canvasHeightInput = parsed.canvasHeight.toInt().toString()
+                        projectDpi = 300
+
+                        val nid = UUID.randomUUID().toString()
+                        projectId = nid
+                        projectName = "Alight Motion Import"
+                        layers = parsed.layers
+                        selectedLayerId = if (parsed.layers.isNotEmpty()) parsed.layers[0].id else ""
+                        isProjectInitialized = true
+
+                        workspaceViewModel.saveProject(nid, projectName, parsed.canvasWidth, parsed.canvasHeight, parsed.layers, dpi = 300)
+                        android.widget.Toast.makeText(context, "Alight Motion XML imported successfully with ${parsed.layers.size} layers!", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                    isAlightImporting = false
+                    alightImportErrorMsg = "Alight XML Parsing Failure: " + (e.localizedMessage ?: e.javaClass.simpleName)
+                } finally {
+                    isAlightImporting = false
                 }
             }
         }
@@ -1375,6 +1430,29 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    val executeAlightXmlExport: () -> Unit = {
+        android.widget.Toast.makeText(context, "Exporting Alight Motion XML template...", android.widget.Toast.LENGTH_SHORT).show()
+        scope.launch {
+            try {
+                val filename = (if (projectName.isBlank()) "AlightScene" else projectName) + "_" + System.currentTimeMillis()
+                val uri = AlightXmlEngine.saveAlightXmlToDownloads(
+                    context = context,
+                    projectName = filename,
+                    canvasWidth = canvasWidth,
+                    canvasHeight = canvasHeight,
+                    layers = layers
+                )
+                if (uri != null) {
+                    android.widget.Toast.makeText(context, "Exported Alight XML successfully to Download/AlightExports!", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    android.widget.Toast.makeText(context, "Export failed. Please check device state.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                android.widget.Toast.makeText(context, "Alight XML Export error: ${e.localizedMessage ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     val onExportArtwork: () -> Unit = {
         showExportSettingsDialog = true
     }
@@ -1443,6 +1521,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             },
             onImportPsdRequest = {
                 psdPickerLauncher.launch("*/*")
+            },
+            onImportAlightRequest = {
+                alightXmlPickerLauncher.launch("*/*")
             }
         )
 
@@ -1572,6 +1653,71 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     Button(
                         onClick = { psdImportErrorMsg = null },
                         colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow)
+                    ) {
+                        Text("Dismiss", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                    }
+                },
+                containerColor = SlatePanel,
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
+
+        if (isAlightImporting) {
+            AlertDialog(
+                onDismissRequest = {},
+                title = {
+                    Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = Color(0xFF00FF66),
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.5.dp
+                        )
+                        Text(
+                            text = "IMPORTING ALIGHT COMPOSITION",
+                            style = Typography.titleMedium.copy(fontSize = 14.sp),
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                text = {
+                    Text(
+                        text = "Analyzing XML design structures, mapping nodes, and scaling vector coordinates. Please hold on.",
+                        style = Typography.bodyMedium,
+                        color = TextPrimary
+                    )
+                },
+                confirmButton = {},
+                containerColor = SlatePanel,
+                shape = RoundedCornerShape(12.dp)
+            )
+        }
+
+        if (alightImportErrorMsg != null) {
+            AlertDialog(
+                onDismissRequest = { alightImportErrorMsg = null },
+                title = {
+                    Text(
+                        text = "❌ ALIGHT XML IMPORT ERROR",
+                        style = Typography.titleMedium,
+                        color = Color(0xFFFF8A80),
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = alightImportErrorMsg!!,
+                        style = Typography.bodyMedium,
+                        color = TextPrimary
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { alightImportErrorMsg = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66))
                     ) {
                         Text("Dismiss", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
                     }
@@ -2208,6 +2354,11 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                             val thresholdSq = threshold * threshold
                                                             if (distBr < thresholdSq) {
                                                                 dragMode = "resize"
+                                                                isResizingActive = true
+                                                                activeResizingLayerId = selId
+                                                                startingLayerForResize = currentSelected
+                                                                liveDragScaleX = 1.0f
+                                                                liveDragScaleY = 1.0f
                                                             } else if (isNearBezier) {
                                                                 dragMode = "bezier"
                                                             } else {
@@ -2288,6 +2439,27 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                     }
                                                 } else {
                                                     if (dragMode == "resize") {
+                                                        val startL = startingLayerForResize
+                                                        if (startL != null) {
+                                                            val localTouch = canvasToLayerLocal(Offset(localChangeX, localChangeY), startL)
+                                                            var scaleX = localTouch.x / startL.width.coerceAtLeast(1f)
+                                                            var scaleY = localTouch.y / startL.height.coerceAtLeast(1f)
+                                                            
+                                                            val minW = 20f
+                                                            val minH = 20f
+                                                            var scX = scaleX.coerceAtLeast(minW / startL.width.coerceAtLeast(1f))
+                                                            var scY = scaleY.coerceAtLeast(minH / startL.height.coerceAtLeast(1f))
+                                                            
+                                                            if (startL.isAspectLocked) {
+                                                                val scale = if (Math.abs(scX - 1f) >= Math.abs(scY - 1f)) scX else scY
+                                                                scX = scale
+                                                                scY = scale
+                                                            }
+                                                            
+                                                            liveDragScaleX = scX
+                                                            liveDragScaleY = scY
+                                                        }
+                                                    } else if (1 == 2) {
                                                         layers = layers.map { layer ->
                                                             if (layer.id == selId && !layer.isAlphaLocked) {
                                                                 val initialW = (localChangeX - layer.positionX).coerceIn(20f, 2000f)
@@ -2658,6 +2830,29 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     } while (event.changes.any { it.pressed })
 
                                     // Gesture over: finalize actions
+                                    if (isResizingActive && activeResizingLayerId != null && startingLayerForResize != null) {
+                                        val targetId = activeResizingLayerId
+                                        val startL = startingLayerForResize
+                                        val finalDragScaleXSnapshot = liveDragScaleX
+                                        val finalDragScaleYSnapshot = liveDragScaleY
+                                        if (targetId != null && startL != null) {
+                                            undoStack.add(layers)
+                                            redoStack.clear()
+                                            layers = layers.map { layer ->
+                                                if (layer.id == targetId) {
+                                                    val newW = (startL.width * finalDragScaleXSnapshot).coerceIn(20f, 2000f)
+                                                    val newH = (startL.height * finalDragScaleYSnapshot).coerceIn(20f, 2000f)
+                                                    layer.copy(width = newW, height = newH)
+                                                } else layer
+                                            }
+                                        }
+                                    }
+                                    isResizingActive = false
+                                    activeResizingLayerId = null
+                                    startingLayerForResize = null
+                                    liveDragScaleX = 1.0f
+                                    liveDragScaleY = 1.0f
+
                                     snapVerticalLine = null
                                     snapHorizontalLine = null
                                     snapIndicatorMsg = null
@@ -3521,7 +3716,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 globalX = layer.positionX,
                                                 globalY = layer.positionY,
                                                 activeTool = activeTool,
-                                                allLayers = layers
+                                                allLayers = layers,
+                                                liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                                liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f
                                             )
 
                                             // 2. Perform Advanced multi-layer clipping composition
@@ -3541,6 +3738,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 dashEffect = dashEffect8,
                                                 imageBitmapCache = imageBitmapCache,
                                                 composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+                                                 liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                                 liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f,
                                                 sharedTransformMatrix = sharedTransformMatrix,
                                                 backdropBitmap = null,
                                                 globalX = layer.positionX,
@@ -3567,6 +3766,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                      dashEffect = dashEffect8,
                                                      imageBitmapCache = imageBitmapCache,
                                                      composeBlendMode = clipped.blendMode.toComposeBlendMode(),
+                                                     liveDragScaleX = if (isResizingActive && clipped.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                                     liveDragScaleY = if (isResizingActive && clipped.id == activeResizingLayerId) liveDragScaleY else 1.0f,
                                                      sharedTransformMatrix = sharedTransformMatrix,
                                                      backdropBitmap = null,
                                                      globalX = clipped.positionX,
@@ -3582,7 +3783,28 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                              e.printStackTrace()
                                          }
                                      } else {
-                                         // Draw single normal layer
+                                         // Draw single normal layer - live scaling enabled
+                                          drawSingleConnectedLayer(
+                                              layer = layer,
+                                              layerOpacity = layerOpacity,
+                                              selectedLayerId = selectedLayerId,
+                                              pathCache = pathCache,
+                                              pathPointsCountCache = pathPointsCountCache,
+                                              totalScale = totalScale,
+                                              dashEffect = dashEffect8,
+                                              imageBitmapCache = imageBitmapCache,
+                                              composeBlendMode = composeBlendMode,
+                                              sharedTransformMatrix = sharedTransformMatrix,
+                                              backdropBitmap = currentBackdrop,
+                                              globalX = layer.positionX,
+                                              globalY = layer.positionY,
+                                              activeTool = activeTool,
+                                              allLayers = layers,
+                                              liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                              liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f
+                                          )
+                                                                            }
+                                      if (false) {
                                          drawSingleConnectedLayer(
                                              layer = layer,
                                              layerOpacity = layerOpacity,
@@ -4510,9 +4732,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     }
                 },
                 confirmButton = {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.End,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Button(
                             onClick = {
@@ -4521,20 +4744,33 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
                             shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.testTag("psd_export_button")
+                            modifier = Modifier.fillMaxWidth().testTag("psd_export_button")
                         ) {
-                            Text("Export as PSD (Layered)", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                            Text("Export Layered PSD (Photoshop)", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
                         }
-                        
+
+                        Button(
+                            onClick = {
+                                showExportSettingsDialog = false
+                                executeAlightXmlExport()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66)),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("alight_export_button")
+                        ) {
+                            Text("Export Alight Motion XML Layout", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        }
+
                         Button(
                             onClick = {
                                 showExportSettingsDialog = false
                                 executeArtworkExport(exportMultiplier, exportIsCmyk)
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66)),
-                            shape = RoundedCornerShape(6.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF29B6F6)),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Export Flat Canvas", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                            Text("Export Flattened Canvas Image", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
                         }
                     }
                 },
@@ -10477,7 +10713,8 @@ fun CanvasSetupScreen(
     onLoadProject: (ProjectEntity) -> Unit,
     onDeleteProject: (String) -> Unit,
     onRenameProject: (ProjectEntity, String) -> Unit,
-    onImportPsdRequest: () -> Unit
+    onImportPsdRequest: () -> Unit,
+    onImportAlightRequest: () -> Unit
 ) {
     var activeMenuTab by remember { mutableStateOf(0) } // 0 for Create Canvas, 1 for Previous Projects
     var activeUnit by remember { mutableStateOf("Pixels") }
@@ -10716,7 +10953,7 @@ fun CanvasSetupScreen(
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                listOf("Create Canvas", "Previous Projects", "Import PSD").forEachIndexed { tabIdx, tabTitle ->
+                listOf("Create Canvas", "Previous Projects", "Import Layout").forEachIndexed { tabIdx, tabTitle ->
                     val isTabSelected = activeMenuTab == tabIdx
                     Box(
                         modifier = Modifier
@@ -11648,80 +11885,170 @@ fun CanvasSetupScreen(
                     }
                 }
             } else {
-                // PSD Import Tab (activeMenuTab == 2)
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
-                    border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
-                    shape = RoundedCornerShape(16.dp)
+                // Compositions / Import Services Tab (activeMenuTab == 2)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                    // Card 1: PSD Engine
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                        border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(16.dp)
                     ) {
-                        Canvas(modifier = Modifier.size(100.dp)) {
-                            val gold = EnergeticYellow
-                            val blueAccent = Color(0xFF29B6F6)
-                            val stroke = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f))
-                            
-                            drawRoundRect(
-                                color = blueAccent.copy(0.4f),
-                                topLeft = Offset(10.dp.toPx(), 10.dp.toPx()),
-                                size = Size(80.dp.toPx(), 80.dp.toPx()),
-                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx()),
-                                style = stroke
-                            )
-                            
-                            drawRect(color = gold.copy(0.15f), topLeft = Offset(25.dp.toPx(), 25.dp.toPx()), size = Size(50.dp.toPx(), 15.dp.toPx()))
-                            drawRect(color = blueAccent.copy(0.15f), topLeft = Offset(25.dp.toPx(), 45.dp.toPx()), size = Size(50.dp.toPx(), 15.dp.toPx()))
-                            drawRect(color = gold.copy(0.15f), topLeft = Offset(25.dp.toPx(), 65.dp.toPx()), size = Size(50.dp.toPx(), 15.dp.toPx()))
-                        }
-
-                        Text(
-                            text = "ADOBE PHOTOSHOP PSD ENGINE",
-                            style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = TextPrimary
-                        )
-
-                        Text(
-                            text = "Extract and reassemble layered PSD compositions directly into fully editable vector/image layers. Supports RAW/RLE channels, transparencies, bounds, custom blend modes, opacity scaling, and resolution checks.",
-                            style = Typography.bodyMedium,
-                            color = TextSecondary,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Button(
-                            onClick = { onImportPsdRequest() },
-                            colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
-                            shape = RoundedCornerShape(10.dp),
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth(0.9f)
-                                .testTag("psd_launcher_button")
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.padding(vertical = 4.dp)
+                            Canvas(modifier = Modifier.size(80.dp)) {
+                                val gold = EnergeticYellow
+                                val blueAccent = Color(0xFF29B6F6)
+                                val stroke = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f))
+                                
+                                drawRoundRect(
+                                    color = blueAccent.copy(0.4f),
+                                    topLeft = Offset(8.dp.toPx(), 8.dp.toPx()),
+                                    size = Size(64.dp.toPx(), 64.dp.toPx()),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                                    style = stroke
+                                )
+                                
+                                drawRect(color = gold.copy(0.15f), topLeft = Offset(20.dp.toPx(), 20.dp.toPx()), size = Size(40.dp.toPx(), 12.dp.toPx()))
+                                drawRect(color = blueAccent.copy(0.15f), topLeft = Offset(20.dp.toPx(), 36.dp.toPx()), size = Size(40.dp.toPx(), 12.dp.toPx()))
+                                drawRect(color = gold.copy(0.15f), topLeft = Offset(20.dp.toPx(), 52.dp.toPx()), size = Size(40.dp.toPx(), 12.dp.toPx()))
+                            }
+
+                            Text(
+                                text = "ADOBE PHOTOSHOP PSD ENGINE",
+                                style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+
+                            Text(
+                                text = "Extract and reassemble layered PSD compositions directly into fully editable vector/image layers. Supports RAW/RLE channels, transparencies, custom boundaries, bounds, and resolution checks.",
+                                style = Typography.bodyMedium,
+                                color = TextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Button(
+                                onClick = { onImportPsdRequest() },
+                                colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("psd_launcher_button")
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.FileOpen,
-                                    contentDescription = "Select Photoshop File",
-                                    tint = DarkOnyx
-                                )
-                                Text(
-                                    "BROWSE AND IMPORT LAYERED PSD",
-                                    color = DarkOnyx,
-                                    fontWeight = FontWeight.Bold,
-                                    style = Typography.labelLarge
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FileOpen,
+                                        contentDescription = "Select Photoshop File",
+                                        tint = DarkOnyx
+                                    )
+                                    Text(
+                                        "BROWSE AND IMPORT PSD",
+                                        color = DarkOnyx,
+                                        fontWeight = FontWeight.Bold,
+                                        style = Typography.labelLarge
+                                    )
+                                }
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(4.dp))
                     }
+
+                    // Card 2: Alight Motion XML Engine
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                        border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Canvas(modifier = Modifier.size(80.dp)) {
+                                val neonGreen = Color(0xFF00FF66)
+                                val deepGreen = Color(0xFF1B5E20)
+                                val stroke = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f))
+                                
+                                drawRoundRect(
+                                    color = neonGreen.copy(0.3f),
+                                    topLeft = Offset(8.dp.toPx(), 8.dp.toPx()),
+                                    size = Size(64.dp.toPx(), 64.dp.toPx()),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                                    style = stroke
+                                )
+                                
+                                drawCircle(
+                                    color = neonGreen.copy(0.15f),
+                                    radius = 16.dp.toPx(),
+                                    center = Offset(40.dp.toPx(), 40.dp.toPx())
+                                )
+                                drawRect(
+                                    color = neonGreen.copy(0.15f), 
+                                    topLeft = Offset(24.dp.toPx(), 34.dp.toPx()), 
+                                    size = Size(32.dp.toPx(), 12.dp.toPx())
+                                )
+                            }
+
+                            Text(
+                                text = "ALIGHT MOTION COMPATIBLE XML",
+                                style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+
+                            Text(
+                                text = "Bi-directionally parse Alight Motion design templates into native layered canvas designs, or output layered compositions back into production-compatible Alight XML scenes.",
+                                style = Typography.bodyMedium,
+                                color = TextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Button(
+                                onClick = { onImportAlightRequest() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66)),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("alight_launcher_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FileOpen,
+                                        contentDescription = "Select Alight XML File",
+                                        tint = DarkOnyx
+                                    )
+                                    Text(
+                                        "BROWSE AND IMPORT ALIGHT XML",
+                                        color = DarkOnyx,
+                                        fontWeight = FontWeight.Bold,
+                                        style = Typography.labelLarge
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
                 }
             }
         }
@@ -15408,7 +15735,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     globalX: Float = 0f,
     globalY: Float = 0f,
     activeTool: String = "Brush",
-    allLayers: List<com.example.studio.model.StudioLayer> = emptyList()
+    allLayers: List<com.example.studio.model.StudioLayer> = emptyList(),
+    liveDragScaleX: Float = 1.0f,
+    liveDragScaleY: Float = 1.0f
 ) {
     // Recursively resolve all ancestor parent groups, from top-most ancestor down to immediate parent
     val parentGroups = mutableListOf<com.example.studio.model.StudioLayer>()
@@ -15464,6 +15793,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
         drawContext.canvas.concat(parentMatrix)
     }
     drawContext.canvas.translate(layer.positionX, layer.positionY)
+    if (liveDragScaleX != 1.0f || liveDragScaleY != 1.0f) {
+        drawContext.canvas.scale(liveDragScaleX, liveDragScaleY)
+    }
 
     val matrix = sharedTransformMatrix.apply {
         reset()
