@@ -10007,7 +10007,12 @@ fun OldBottomEffectPanel(
                                 
                                 // Dynamic query to list directory
                                 val workspaceVm: WorkspaceViewModel = viewModel()
-                                val customFontEntities by workspaceVm.customFonts.collectAsStateWithLifecycle()
+                                val customFontEntities by workspaceVm.displayedCustomFonts.collectAsStateWithLifecycle()
+
+                                LaunchedEffect(selectedCategoryFilter, fontSearchQuery) {
+                                    workspaceVm.updateFontFilter(selectedCategoryFilter, fontSearchQuery)
+                                }
+
                                 var favoriteFontsList = FontFavoritesState.favoriteFontsList
 
                                 val importedFonts = remember(customFontEntities) {
@@ -13445,10 +13450,21 @@ fun RenderFontRow(
 }
 
 object FontFavoritesState {
+    private var isInitialized = false
     val favoriteFontsState = androidx.compose.runtime.mutableStateOf(emptySet<String>())
     var favoriteFontsList: Set<String>
         get() = favoriteFontsState.value
-        set(value) { favoriteFontsState.value = value }
+        set(value) {
+            favoriteFontsState.value = value
+            isInitialized = true
+        }
+
+    fun ensureInitialized(context: android.content.Context) {
+        if (!isInitialized) {
+            favoriteFontsState.value = getFavoriteFonts(context)
+            isInitialized = true
+        }
+    }
 }
 
 @Composable
@@ -13458,9 +13474,7 @@ fun RenderFontRow(
     onUpdateLayer: (com.example.studio.model.StudioLayer) -> Unit,
     context: android.content.Context
 ) {
-    if (FontFavoritesState.favoriteFontsList.isEmpty()) {
-        FontFavoritesState.favoriteFontsList = getFavoriteFonts(context)
-    }
+    FontFavoritesState.ensureInitialized(context)
     val isSelected = if (font.isImported) {
         selectedLayer.fontPath == font.path
     } else {
