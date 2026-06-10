@@ -252,18 +252,24 @@ object AlightXmlEngine {
                         val activeCanvasW = targetWidth ?: xmlSceneWidth
                         val activeCanvasH = targetHeight ?: xmlSceneHeight
 
-                        val scaleFactorX = if (xmlSceneWidth > 0f) activeCanvasW / xmlSceneWidth else 1f
-                        val scaleFactorY = if (xmlSceneHeight > 0f) activeCanvasH / xmlSceneHeight else 1f
+                        val scaleFactor = if (xmlSceneWidth > 0f && xmlSceneHeight > 0f) {
+                            minOf(activeCanvasW / xmlSceneWidth, activeCanvasH / xmlSceneHeight)
+                        } else {
+                            1f
+                        }
+
+                        val offsetX = (activeCanvasW - (xmlSceneWidth * scaleFactor)) / 2f
+                        val offsetY = (activeCanvasH - (xmlSceneHeight * scaleFactor)) / 2f
 
                         val sizeW = cs.size.x
                         val sizeH = cs.size.y
                         val scaleX = cs.scale.x
                         val scaleY = cs.scale.y
-                        val finalW = (sizeW * scaleX) * scaleFactorX
-                        val finalH = (sizeH * scaleY) * scaleFactorY
+                        val finalW = (sizeW * scaleX) * scaleFactor
+                        val finalH = (sizeH * scaleY) * scaleFactor
 
-                        val posX = (cs.location.x * scaleFactorX) - finalW / 2f
-                        val posY = (cs.location.y * scaleFactorY) - finalH / 2f
+                        val posX = offsetX + (cs.location.x * scaleFactor) - finalW / 2f
+                        val posY = offsetY + (cs.location.y * scaleFactor) - finalH / 2f
 
                         val layerType = when (cs.s) {
                             ".rect" -> LayerType.VECTOR_RECT
@@ -309,16 +315,22 @@ object AlightXmlEngine {
                         val activeCanvasW = targetWidth ?: xmlSceneWidth
                         val activeCanvasH = targetHeight ?: xmlSceneHeight
 
-                        val scaleFactorX = if (xmlSceneWidth > 0f) activeCanvasW / xmlSceneWidth else 1f
-                        val scaleFactorY = if (xmlSceneHeight > 0f) activeCanvasH / xmlSceneHeight else 1f
+                        val scaleFactor = if (xmlSceneWidth > 0f && xmlSceneHeight > 0f) {
+                            minOf(activeCanvasW / xmlSceneWidth, activeCanvasH / xmlSceneHeight)
+                        } else {
+                            1f
+                        }
+
+                        val offsetX = (activeCanvasW - (xmlSceneWidth * scaleFactor)) / 2f
+                        val offsetY = (activeCanvasH - (xmlSceneHeight * scaleFactor)) / 2f
 
                         val scaleX = ct.scale.x
                         val scaleY = ct.scale.y
-                        val finalW = (ct.wrapWidth * scaleX) * scaleFactorX
-                        val finalH = ((ct.size * 1.5f) * scaleY) * scaleFactorY
+                        val finalW = (ct.wrapWidth * scaleX) * scaleFactor
+                        val finalH = ((ct.size * 1.5f) * scaleY) * scaleFactor
 
-                        val posX = (ct.location.x * scaleFactorX) - finalW / 2f
-                        val posY = (ct.location.y * scaleFactorY) - finalH / 2f
+                        val posX = offsetX + (ct.location.x * scaleFactor) - finalW / 2f
+                        val posY = offsetY + (ct.location.y * scaleFactor) - finalH / 2f
 
                         val baseColor = parseHexColor(ct.solidColorHex ?: ct.fillColor)
 
@@ -342,7 +354,7 @@ object AlightXmlEngine {
                                 width = finalW,
                                 height = finalH,
                                 rotation = ct.rotation,
-                                fontSize = ct.size * scaleFactorY,
+                                fontSize = ct.size * scaleFactor,
                                 fontAlign = when (ct.align.lowercase()) {
                                     "left" -> "Left"
                                     "right" -> "Right"

@@ -1019,31 +1019,78 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    val performFontScan: () -> Unit = {
+        isFontScanning = true
+        fontScanStatusMessage = "Crawling local folders & MediaStore vaults..."
+        scope.launch {
+            try {
+                discoveredFonts = FontScanner.scanLocalFonts(context)
+                selectedFontIndexes.clear()
+                discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
+                fontScanStatusMessage = if (discoveredFonts.isEmpty()) {
+                    "No design fonts (.ttf/.otf) found in common storage roots."
+                } else {
+                    "Discovered ${discoveredFonts.size} custom design typography files!"
+                }
+            } catch (e: Exception) {
+                fontScanStatusMessage = "Scanning failed: ${e.localizedMessage}"
+            } finally {
+                isFontScanning = false
+            }
+        }
+    }
+
     val storagePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         hasStoragePermission = isGranted
         if (isGranted) {
-            scope.launch {
-                isFontScanning = true
-                fontScanStatusMessage = "Crawling local folders & MediaStore vaults..."
-                try {
-                    discoveredFonts = FontScanner.scanLocalFonts(context)
-                    selectedFontIndexes.clear()
-                    discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
-                    fontScanStatusMessage = if (discoveredFonts.isEmpty()) {
-                        "No design fonts (.ttf/.otf) found in common storage roots."
-                    } else {
-                        "Discovered ${discoveredFonts.size} custom design typography files!"
-                    }
-                } catch (e: Exception) {
-                    fontScanStatusMessage = "Scanning failed: ${e.localizedMessage}"
-                } finally {
-                    isFontScanning = false
-                }
-            }
+            performFontScan()
         } else {
-            android.widget.Toast.makeText(context, "Storage scanner permission declined", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(context, "Storage scanner permission declined. Use Manual Pick instead or grant in settings.", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val requestOrPromptStoragePermission: () -> Unit = {
+        val hasPerm = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            android.os.Environment.isExternalStorageManager() ||
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.READ_EXTERNAL_STORAGE
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+
+        if (hasPerm) {
+            hasStoragePermission = true
+            performFontScan()
+        } else {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                android.widget.Toast.makeText(context, "Zenith Studio needs All Files Access for auto font directory scan. Grant it in Settings.", android.widget.Toast.LENGTH_LONG).show()
+                try {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = android.net.Uri.fromParts("package", context.packageName, null)
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    try {
+                        val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = android.net.Uri.fromParts("package", context.packageName, null)
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    } catch (ex: Exception) {
+                        ex.printStackTrace()
+                    }
+                }
+            } else {
+                storagePermissionLauncher.launch(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
         }
     }
 
@@ -4931,25 +4978,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
         }
 
         if (showFontScannerDialog) {
-            // Automatically scan when dialog is active
+            // Automatically scan / request permission when dialog is active
             LaunchedEffect(showFontScannerDialog) {
-                isFontScanning = true
-                fontScanStatusMessage = "Crawling local folders & MediaStore vaults..."
-                try {
-                    discoveredFonts = FontScanner.scanLocalFonts(context)
-                    // Pre-select all found fonts
-                    selectedFontIndexes.clear()
-                    discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
-                    fontScanStatusMessage = if (discoveredFonts.isEmpty()) {
-                        "No design fonts (.ttf/.otf) found in common storage roots."
-                    } else {
-                        "Discovered ${discoveredFonts.size} custom design typography files!"
-                    }
-                } catch (e: Exception) {
-                    fontScanStatusMessage = "Scanning failed: ${e.localizedMessage}"
-                } finally {
-                    isFontScanning = false
-                }
+                requestOrPromptStoragePermission()
             }
 
             AlertDialog(
@@ -5029,16 +5060,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                         ) {
                             Button(
                                 onClick = {
-                                    // Manually re-trigger scan
-                                    isFontScanning = true
-                                    fontScanStatusMessage = "Refreshing files search..."
-                                    scope.launch {
-                                        discoveredFonts = FontScanner.scanLocalFonts(context)
-                                        selectedFontIndexes.clear()
-                                        discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
-                                        fontScanStatusMessage = "Discovered ${discoveredFonts.size} fonts!"
-                                        isFontScanning = false
-                                    }
+                                    requestOrPromptStoragePermission()
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
                                 shape = RoundedCornerShape(6.dp),
