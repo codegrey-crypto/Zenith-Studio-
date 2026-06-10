@@ -278,40 +278,12 @@ object PsdExportEngine {
             }
             LayerType.TEXT -> {
                 val text = if (layer.textContent.isEmpty()) "DOUBLE TAP TO EDIT" else layer.textContent
-                val typeface = try {
-                    if (!layer.fontPath.isNullOrEmpty() && java.io.File(layer.fontPath).exists()) {
-                        val baseTf = android.graphics.Typeface.createFromFile(layer.fontPath)
-                        val style = if (layer.fontIsBold && layer.fontIsItalic) {
-                            android.graphics.Typeface.BOLD_ITALIC
-                        } else if (layer.fontIsBold) {
-                            android.graphics.Typeface.BOLD
-                        } else if (layer.fontIsItalic) {
-                            android.graphics.Typeface.ITALIC
-                        } else {
-                            android.graphics.Typeface.NORMAL
-                        }
-                        android.graphics.Typeface.create(baseTf, style)
-                    } else {
-                        val family = when (layer.fontFamilyName) {
-                            "Monospace" -> android.graphics.Typeface.MONOSPACE
-                            "Serif" -> android.graphics.Typeface.SERIF
-                            "Sans-Serif" -> android.graphics.Typeface.SANS_SERIF
-                            else -> android.graphics.Typeface.DEFAULT
-                        }
-                        val style = if (layer.fontIsBold && layer.fontIsItalic) {
-                            android.graphics.Typeface.BOLD_ITALIC
-                        } else if (layer.fontIsBold) {
-                            android.graphics.Typeface.BOLD
-                        } else if (layer.fontIsItalic) {
-                            android.graphics.Typeface.ITALIC
-                        } else {
-                            android.graphics.Typeface.NORMAL
-                        }
-                        android.graphics.Typeface.create(family, style)
-                    }
-                } catch (e: Exception) {
-                    android.graphics.Typeface.DEFAULT
-                }
+                val typeface = TypefaceCache.get(
+                    layer.fontPath,
+                    layer.fontFamilyName,
+                    layer.fontIsBold,
+                    layer.fontIsItalic
+                )
                 val textPaint = TextPaint().apply {
                     color = effectiveColor.toArgb()
                     textSize = layer.fontSize

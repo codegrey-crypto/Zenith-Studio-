@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class WorkspaceViewModel(application: Application) : AndroidViewModel(application) {
@@ -63,43 +65,47 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
     ) {
         viewModelScope.launch {
             var importCount = 0
-            val fontsDir = java.io.File(context.filesDir, "fonts")
-            if (!fontsDir.exists()) {
-                fontsDir.mkdirs()
-            }
-            fontsToImport.forEachIndexed { index, discFont ->
-                try {
-                    val destFile = java.io.File(fontsDir, discFont.file.name)
-                    // Copy font file to secure filesDir directory
-                    discFont.file.inputStream().use { input ->
-                        destFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    val cleanName = discFont.name
-                    val category = if (cleanName.contains("script", ignoreCase = true)) {
-                        "Script"
-                    } else if (cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true)) {
-                        "Handwritten"
-                    } else if (cleanName.contains("mono", ignoreCase = true)) {
-                        "Monospace"
-                    } else if (cleanName.contains("serif", ignoreCase = true)) {
-                        "Serif"
-                    } else {
-                        "Display"
-                    }
-                    fontDao.insertCustomFont(
-                        com.example.studio.database.CustomFontEntity(
-                            path = destFile.absolutePath,
-                            name = cleanName,
-                            category = category
-                        )
-                    )
-                    importCount++
-                } catch (e: Exception) {
-                    e.printStackTrace()
+            withContext(Dispatchers.IO) {
+                val fontsDir = java.io.File(context.filesDir, "fonts")
+                if (!fontsDir.exists()) {
+                    fontsDir.mkdirs()
                 }
-                onProgress(index + 1, fontsToImport.size)
+                fontsToImport.forEachIndexed { index, discFont ->
+                    try {
+                        val destFile = java.io.File(fontsDir, discFont.file.name)
+                        // Copy font file to secure filesDir directory
+                        discFont.file.inputStream().use { input ->
+                            destFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        val cleanName = discFont.name
+                        val category = if (cleanName.contains("script", ignoreCase = true)) {
+                            "Script"
+                        } else if (cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true)) {
+                            "Handwritten"
+                        } else if (cleanName.contains("mono", ignoreCase = true)) {
+                            "Monospace"
+                        } else if (cleanName.contains("serif", ignoreCase = true)) {
+                            "Serif"
+                        } else {
+                            "Display"
+                        }
+                        fontDao.insertCustomFont(
+                            com.example.studio.database.CustomFontEntity(
+                                path = destFile.absolutePath,
+                                name = cleanName,
+                                category = category
+                            )
+                        )
+                        importCount++
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                    withContext(Dispatchers.Main) {
+                        onProgress(index + 1, fontsToImport.size)
+                    }
+                }
             }
             loadCustomFonts()
             onComplete(importCount)
@@ -110,10 +116,11 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 fontDao.deleteCustomFont(path)
-                // Also delete actual file
-                val file = java.io.File(path)
-                if (file.exists()) {
-                    file.delete()
+                withContext(Dispatchers.IO) {
+                    val file = java.io.File(path)
+                    if (file.exists()) {
+                        file.delete()
+                    }
                 }
                 loadCustomFonts()
             } catch (e: Exception) {

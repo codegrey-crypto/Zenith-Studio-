@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -7237,40 +7238,12 @@ fun exportCanvasToBitmap(
             }
             com.example.studio.model.LayerType.TEXT -> {
                 val text = if (originalLayer.textContent.isEmpty()) "DOUBLE TAP TO EDIT" else originalLayer.textContent
-                val typeface = try {
-                    if (!originalLayer.fontPath.isNullOrEmpty() && java.io.File(originalLayer.fontPath).exists()) {
-                        val baseTf = android.graphics.Typeface.createFromFile(originalLayer.fontPath)
-                        val style = if (originalLayer.fontIsBold && originalLayer.fontIsItalic) {
-                            android.graphics.Typeface.BOLD_ITALIC
-                        } else if (originalLayer.fontIsBold) {
-                            android.graphics.Typeface.BOLD
-                        } else if (originalLayer.fontIsItalic) {
-                            android.graphics.Typeface.ITALIC
-                        } else {
-                            android.graphics.Typeface.NORMAL
-                        }
-                        android.graphics.Typeface.create(baseTf, style)
-                    } else {
-                        val family = when (originalLayer.fontFamilyName) {
-                            "Monospace" -> android.graphics.Typeface.MONOSPACE
-                            "Serif" -> android.graphics.Typeface.SERIF
-                            "Sans-Serif" -> android.graphics.Typeface.SANS_SERIF
-                            else -> android.graphics.Typeface.DEFAULT
-                        }
-                        val style = if (originalLayer.fontIsBold && originalLayer.fontIsItalic) {
-                            android.graphics.Typeface.BOLD_ITALIC
-                        } else if (originalLayer.fontIsBold) {
-                            android.graphics.Typeface.BOLD
-                        } else if (originalLayer.fontIsItalic) {
-                            android.graphics.Typeface.ITALIC
-                        } else {
-                            android.graphics.Typeface.NORMAL
-                        }
-                        android.graphics.Typeface.create(family, style)
-                    }
-                } catch (e: Exception) {
-                    android.graphics.Typeface.DEFAULT
-                }
+                val typeface = com.example.studio.ui.TypefaceCache.get(
+                    originalLayer.fontPath,
+                    originalLayer.fontFamilyName,
+                    originalLayer.fontIsBold,
+                    originalLayer.fontIsItalic
+                )
                 val textPaint = android.text.TextPaint().apply {
                     color = effectiveColor.toArgb()
                     textSize = originalLayer.fontSize
@@ -10041,36 +10014,6 @@ fun OldBottomEffectPanel(
                                         isImported = true
                                     )
                                 }
-                                val importedFonts_dummy = try {
-                                    val fontsDir = java.io.File(context.filesDir, "fonts")
-                                    if (!fontsDir.exists()) fontsDir.mkdirs()
-                                    val files = fontsDir.listFiles { file ->
-                                        file.isFile && (file.extension.lowercase() == "ttf" || file.extension.lowercase() == "otf")
-                                    } ?: emptyArray()
-                                    files.map { file ->
-                                        val cleanName = file.nameWithoutExtension.replace("_", " ").replace("-", " ")
-                                        val category = if (cleanName.contains("script", ignoreCase = true)) {
-                                            "Script"
-                                        } else if (cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true)) {
-                                            "Handwritten"
-                                        } else if (cleanName.contains("mono", ignoreCase = true)) {
-                                            "Monospace"
-                                        } else if (cleanName.contains("serif", ignoreCase = true)) {
-                                            "Serif"
-                                        } else {
-                                            "Display"
-                                        }
-                                        FontResource(
-                                            name = cleanName,
-                                            category = category,
-                                            path = file.absolutePath,
-                                            isImported = true
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    emptyList()
-                                }
-
                                 val consolidatedFonts = allFonts + importedFonts
                                 var favoriteFontsList = FontFavoritesState.favoriteFontsList
                                 val filteredFonts = if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) emptyList() else consolidatedFonts.filter { font ->
@@ -10083,15 +10026,18 @@ fun OldBottomEffectPanel(
                                     matchesQuery && matchesCategory
                                 }
 
-                                if (filteredFonts.isEmpty()) {
-                                    if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) {
-                                        val favorites = consolidatedFonts.filter { FontFavoritesState.favoriteFontsList.contains(it.name) }
-                                        val imported = consolidatedFonts.filter { it.isImported }
-                                        val system = consolidatedFonts.filter { !it.isImported }
+                                Box(modifier = Modifier.heightIn(max = 350.dp).fillMaxWidth()) {
+                                    androidx.compose.foundation.lazy.LazyColumn(
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) {
+                                            val favorites = consolidatedFonts.filter { FontFavoritesState.favoriteFontsList.contains(it.name) }
+                                            val imported = consolidatedFonts.filter { it.isImported }
+                                            val system = consolidatedFonts.filter { !it.isImported }
 
-                                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                             // 1. Favorites Section
-                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            item {
                                                 Row(
                                                     verticalAlignment = Alignment.CenterVertically, 
                                                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
@@ -10100,24 +10046,23 @@ fun OldBottomEffectPanel(
                                                     Spacer(Modifier.width(6.dp))
                                                     Text("FAVORITE FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = Color(0xFFFF4D4D), fontWeight = FontWeight.Bold)
                                                 }
-                                                if (favorites.isEmpty()) {
+                                            }
+                                            if (favorites.isEmpty()) {
+                                                item {
                                                     Text("No favorite fonts yet. Tap the heart next to any font to save it here!", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
-                                                } else {
-                                                    favorites.forEach { font ->
-                                                         RenderFontRow(font, selectedLayer, onUpdateLayer, context)
-                                                     }
-                                                     if (false) favorites.forEach { font ->
-                                                        RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
-                                                            favoriteFontsList = it
-                                                        }
-                                                    }
+                                                }
+                                            } else {
+                                                items(favorites) { font ->
+                                                    RenderFontRow(font, selectedLayer, onUpdateLayer, context)
                                                 }
                                             }
 
-                                            Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
+                                            item {
+                                                Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp, modifier = Modifier.padding(vertical = 4.dp))
+                                            }
 
                                             // 2. Imported Section
-                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            item {
                                                 Row(
                                                     verticalAlignment = Alignment.CenterVertically, 
                                                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
@@ -10126,24 +10071,23 @@ fun OldBottomEffectPanel(
                                                     Spacer(Modifier.width(6.dp))
                                                     Text("IMPORTED FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = EnergeticYellow, fontWeight = FontWeight.Bold)
                                                 }
-                                                if (imported.isEmpty()) {
+                                            }
+                                            if (imported.isEmpty()) {
+                                                item {
                                                     Text("No imported fonts yet. Tap 'Import Font' above to load custom TTF/OTF files.", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
-                                                } else {
-                                                    imported.forEach { font ->
-                                                         RenderFontRow(font, selectedLayer, onUpdateLayer, context)
-                                                     }
-                                                     if (false) imported.forEach { font ->
-                                                        RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
-                                                            favoriteFontsList = it
-                                                        }
-                                                    }
+                                                }
+                                            } else {
+                                                items(imported) { font ->
+                                                    RenderFontRow(font, selectedLayer, onUpdateLayer, context)
                                                 }
                                             }
 
-                                            Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
+                                            item {
+                                                Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp, modifier = Modifier.padding(vertical = 4.dp))
+                                            }
 
                                             // 3. System Fonts Section
-                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            item {
                                                 Row(
                                                     verticalAlignment = Alignment.CenterVertically, 
                                                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
@@ -10152,59 +10096,21 @@ fun OldBottomEffectPanel(
                                                     Spacer(Modifier.width(6.dp))
                                                     Text("SYSTEM FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
                                                 }
-                                                system.forEach { font ->
-                                                     RenderFontRow(font, selectedLayer, onUpdateLayer, context)
-                                                 }
-                                                 if (false) system.forEach { font ->
+                                            }
+                                            items(system) { font ->
+                                                RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+                                            }
+                                        } else {
+                                            val filtered = filteredFonts
+                                            if (filtered.isEmpty()) {
+                                                item {
+                                                    Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
+                                                }
+                                            } else {
+                                                items(filtered) { font ->
                                                     RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
                                                         favoriteFontsList = it
                                                     }
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
-                                    }
-                                } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        filteredFonts.forEach { font ->
-                                             RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
-                                                 favoriteFontsList = it
-                                             }
-                                         }
-                                         if (false) filteredFonts.forEach { font ->
-                                            val isSelected = if (font.isImported) {
-                                                selectedLayer.fontPath == font.path
-                                            } else {
-                                                selectedLayer.fontFamilyName == font.name && selectedLayer.fontPath == null
-                                            }
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .background(if (isSelected) IndustrialAmber.copy(alpha = 0.2f) else Color.Transparent, RoundedCornerShape(4.dp))
-                                                    .border(BorderStroke(0.5.dp, if (isSelected) IndustrialAmber else Color.Transparent), RoundedCornerShape(4.dp))
-                                                    .clickable {
-                                                        if (font.isImported) {
-                                                            onUpdateLayer(selectedLayer.copy(fontPath = font.path, fontFamilyName = font.name))
-                                                        } else {
-                                                            onUpdateLayer(selectedLayer.copy(fontPath = null, fontFamilyName = font.name))
-                                                        }
-                                                    }
-                                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(font.name, style = Typography.labelSmall, fontSize = 11.sp, color = TextPrimary, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
-                                                    Text(
-                                                        text = if (font.isImported) "Imported • ${font.category}" else "System Font • ${font.category}",
-                                                        style = Typography.labelSmall,
-                                                        fontSize = 9.sp,
-                                                        color = TextSecondary
-                                                    )
-                                                }
-                                                if (isSelected) {
-                                                    Icon(Icons.Default.Check, "Selected", modifier = Modifier.size(14.dp), tint = IndustrialAmber)
                                                 }
                                             }
                                         }
@@ -13434,40 +13340,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTextLayerIntern
     blurRadius: Float = 0f
 ) {
     val text = if (layer.textContent.isEmpty()) "DOUBLE TAP TO EDIT" else layer.textContent
-    val typeface = try {
-        if (!layer.fontPath.isNullOrEmpty() && java.io.File(layer.fontPath).exists()) {
-            val baseTf = android.graphics.Typeface.createFromFile(layer.fontPath)
-            val style = if (layer.fontIsBold && layer.fontIsItalic) {
-                android.graphics.Typeface.BOLD_ITALIC
-            } else if (layer.fontIsBold) {
-                android.graphics.Typeface.BOLD
-            } else if (layer.fontIsItalic) {
-                android.graphics.Typeface.ITALIC
-            } else {
-                android.graphics.Typeface.NORMAL
-            }
-            android.graphics.Typeface.create(baseTf, style)
-        } else {
-            val family = when (layer.fontFamilyName) {
-                "Monospace" -> android.graphics.Typeface.MONOSPACE
-                "Serif" -> android.graphics.Typeface.SERIF
-                "Sans-Serif" -> android.graphics.Typeface.SANS_SERIF
-                else -> android.graphics.Typeface.DEFAULT
-            }
-            val style = if (layer.fontIsBold && layer.fontIsItalic) {
-                android.graphics.Typeface.BOLD_ITALIC
-            } else if (layer.fontIsBold) {
-                android.graphics.Typeface.BOLD
-            } else if (layer.fontIsItalic) {
-                android.graphics.Typeface.ITALIC
-            } else {
-                android.graphics.Typeface.NORMAL
-            }
-            android.graphics.Typeface.create(family, style)
-        }
-    } catch (e: Exception) {
-        android.graphics.Typeface.DEFAULT
-    }
+    val typeface = com.example.studio.ui.TypefaceCache.get(
+        layer.fontPath,
+        layer.fontFamilyName,
+        layer.fontIsBold,
+        layer.fontIsItalic
+    )
 
     val activeColor = layer.baseColor.copy(alpha = layer.opacity * opacityMultiplier)
     val textPaint = android.text.TextPaint().apply {
