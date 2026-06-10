@@ -868,6 +868,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var showRenameProjectDialog by remember { mutableStateOf(false) }
     var projectRenameValue by remember { mutableStateOf("") }
 
+    var showFontScannerDialog by remember { mutableStateOf(false) }
+    var discoveredFonts by remember { mutableStateOf<List<com.example.studio.ui.FontScanner.DiscoveredFont>>(emptyList()) }
+    val selectedFontIndexes = remember { androidx.compose.runtime.mutableStateMapOf<Int, Boolean>() }
+    var isFontScanning by remember { mutableStateOf(false) }
+    var isBatchImportingFonts by remember { mutableStateOf(false) }
+    var fontScanStatusMessage by remember { mutableStateOf("") }
+
     // Initial State Setup - Empty to allow user manually adding anything they want, Canvas-style!
     var layers by remember {
         mutableStateOf(emptyList<StudioLayer>())
@@ -1823,7 +1830,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 onFontSearchQueryChange = { fontSearchQuery = it },
                 selectedCategoryFilter = selectedCategoryFilter,
                 onSelectedCategoryFilterChange = { selectedCategoryFilter = it },
-                onImportFontClick = { fontPickerLauncher.launch("*/*") },
+                onImportFontClick = { showFontScannerDialog = true },
                 onExportCanvas = onExportArtwork,
                 gridEnabled = gridEnabled,
                 onGridEnabledChange = { gridEnabled = it },
@@ -4876,6 +4883,281 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 confirmButton = {
                     TextButton(onClick = { showAddShapeDialog = false }) {
                         Text("Cancel", color = IndustrialAmber)
+                    }
+                },
+                containerColor = SlatePanel
+            )
+        }
+
+        if (showFontScannerDialog) {
+            // Automatically scan when dialog is active
+            LaunchedEffect(showFontScannerDialog) {
+                isFontScanning = true
+                fontScanStatusMessage = "Crawling local folders & MediaStore vaults..."
+                try {
+                    discoveredFonts = FontScanner.scanLocalFonts(context)
+                    // Pre-select all found fonts
+                    selectedFontIndexes.clear()
+                    discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
+                    fontScanStatusMessage = if (discoveredFonts.isEmpty()) {
+                        "No design fonts (.ttf/.otf) found in common storage roots."
+                    } else {
+                        "Discovered ${discoveredFonts.size} custom design typography files!"
+                    }
+                } catch (e: Exception) {
+                    fontScanStatusMessage = "Scanning failed: ${e.localizedMessage}"
+                } finally {
+                    isFontScanning = false
+                }
+            }
+
+            AlertDialog(
+                onDismissRequest = { showFontScannerDialog = false },
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.TextFields,
+                            contentDescription = null,
+                            tint = IndustrialAmber,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text(
+                            text = "Auto Font Scan & Batch Import",
+                            style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 16.sp),
+                            color = TextPrimary
+                        )
+                    }
+                },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Zenith Studio will dynamically scan device storage volumes (Download, Documents, and folders) for custom TrueType (.ttf) and OpenType (.otf) design fonts.",
+                            style = Typography.bodySmall,
+                            color = TextSecondary
+                        )
+
+                        // Progress/Status Container
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MidSlate.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                .border(1.dp, HighslateOutline.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                .padding(12.dp)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (isFontScanning) "Scanning Device Storage..." else if (isBatchImportingFonts) "Batch Importing Typography..." else "Scan Engine Status",
+                                        style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = IndustrialAmber
+                                    )
+                                    if (isFontScanning || isBatchImportingFonts) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            color = IndustrialAmber,
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = fontScanStatusMessage,
+                                    style = Typography.labelSmall,
+                                    color = TextPrimary
+                                )
+                            }
+                        }
+
+                        // Toolbar choices
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = {
+                                    // Manually re-trigger scan
+                                    isFontScanning = true
+                                    fontScanStatusMessage = "Refreshing files search..."
+                                    scope.launch {
+                                        discoveredFonts = FontScanner.scanLocalFonts(context)
+                                        selectedFontIndexes.clear()
+                                        discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
+                                        fontScanStatusMessage = "Discovered ${discoveredFonts.size} fonts!"
+                                        isFontScanning = false
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(28.dp),
+                                enabled = !isFontScanning && !isBatchImportingFonts
+                            ) {
+                                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(12.dp), tint = TextPrimary)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Rescan", style = Typography.labelSmall, color = TextPrimary, fontSize = 10.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    fontPickerLauncher.launch("*/*")
+                                    showFontScannerDialog = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                shape = RoundedCornerShape(6.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(28.dp),
+                                enabled = !isFontScanning && !isBatchImportingFonts
+                            ) {
+                                Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(12.dp), tint = TextPrimary)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Manual Pick", style = Typography.labelSmall, color = TextPrimary, fontSize = 10.sp)
+                            }
+
+                            if (discoveredFonts.isNotEmpty()) {
+                                Spacer(modifier = Modifier.weight(1f))
+                                TextButton(
+                                    onClick = {
+                                        val allSelected = discoveredFonts.indices.all { selectedFontIndexes[it] == true }
+                                        discoveredFonts.indices.forEach { selectedFontIndexes[it] = !allSelected }
+                                    },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    val allSelected = discoveredFonts.indices.all { selectedFontIndexes[it] == true }
+                                    Text(
+                                        text = if (allSelected) "Deselect All" else "Select All",
+                                        style = Typography.labelSmall,
+                                        color = EnergeticYellow,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // Scrollable List of Discovered Fonts
+                        if (discoveredFonts.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .border(0.5.dp, HighslateOutline.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (isFontScanning) "Searching directories recursively..." else "No ttf/otf files detected. Copy some .ttf/.otf fonts to Download folder and hit Rescan!",
+                                    style = Typography.bodySmall,
+                                    color = TextSecondary,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .border(0.5.dp, HighslateOutline.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                    .background(SlatePanel.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                    .padding(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                items(discoveredFonts.size) { index ->
+                                    val fontItem = discoveredFonts[index]
+                                    val isChecked = selectedFontIndexes[index] ?: false
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { selectedFontIndexes[index] = !isChecked }
+                                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Checkbox(
+                                            checked = isChecked,
+                                            onCheckedChange = { selectedFontIndexes[index] = it },
+                                            colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber)
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = fontItem.name,
+                                                style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                                color = TextPrimary
+                                            )
+                                            Text(
+                                                text = fontItem.file.parent ?: "/storage/emulated/0",
+                                                style = Typography.labelSmall,
+                                                color = TextSecondary,
+                                                maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                fontSize = 9.sp
+                                            )
+                                        }
+                                        Text(
+                                            text = "." + fontItem.file.extension.uppercase(),
+                                            style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = IndustrialAmber,
+                                            fontSize = 9.sp
+                                        )
+                                    }
+                                    if (index < discoveredFonts.lastIndex) {
+                                        Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    val selectedCount = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] == true }.size
+                    Button(
+                        onClick = {
+                            val selectedToImport = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] == true }
+                            if (selectedToImport.isNotEmpty()) {
+                                isBatchImportingFonts = true
+                                workspaceViewModel.batchImportFonts(
+                                    context = context,
+                                    fontsToImport = selectedToImport,
+                                    onProgress = { current, total ->
+                                        fontScanStatusMessage = "Copying font $current of $total to secure local workspace..."
+                                    },
+                                    onComplete = { count ->
+                                        isBatchImportingFonts = false
+                                        showFontScannerDialog = false
+                                        android.widget.Toast.makeText(context, "Successfully batch imported $count design fonts!", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                        shape = RoundedCornerShape(8.dp),
+                        enabled = selectedCount > 0 && !isFontScanning && !isBatchImportingFonts
+                    ) {
+                        Text(
+                            text = "Batch Import Selected ($selectedCount)",
+                            color = DarkOnyx,
+                            style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showFontScannerDialog = false },
+                        enabled = !isBatchImportingFonts
+                    ) {
+                        Text("Close", color = TextSecondary)
                     }
                 },
                 containerColor = SlatePanel

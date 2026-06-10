@@ -55,6 +55,57 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun batchImportFonts(
+        context: android.content.Context,
+        fontsToImport: List<com.example.studio.ui.FontScanner.DiscoveredFont>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+        onComplete: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            var importCount = 0
+            val fontsDir = java.io.File(context.filesDir, "fonts")
+            if (!fontsDir.exists()) {
+                fontsDir.mkdirs()
+            }
+            fontsToImport.forEachIndexed { index, discFont ->
+                try {
+                    val destFile = java.io.File(fontsDir, discFont.file.name)
+                    // Copy font file to secure filesDir directory
+                    discFont.file.inputStream().use { input ->
+                        destFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    val cleanName = discFont.name
+                    val category = if (cleanName.contains("script", ignoreCase = true)) {
+                        "Script"
+                    } else if (cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true)) {
+                        "Handwritten"
+                    } else if (cleanName.contains("mono", ignoreCase = true)) {
+                        "Monospace"
+                    } else if (cleanName.contains("serif", ignoreCase = true)) {
+                        "Serif"
+                    } else {
+                        "Display"
+                    }
+                    fontDao.insertCustomFont(
+                        com.example.studio.database.CustomFontEntity(
+                            path = destFile.absolutePath,
+                            name = cleanName,
+                            category = category
+                        )
+                    )
+                    importCount++
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                onProgress(index + 1, fontsToImport.size)
+            }
+            loadCustomFonts()
+            onComplete(importCount)
+        }
+    }
+
     fun deleteCustomFont(path: String) {
         viewModelScope.launch {
             try {
