@@ -877,6 +877,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var isFontScanning by remember { mutableStateOf(false) }
     var isBatchImportingFonts by remember { mutableStateOf(false) }
     var fontScanStatusMessage by remember { mutableStateOf("") }
+    val selectedFoldersToScan = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>().apply {
+        put("Download", true)
+        put("Fonts", true)
+        put("Documents", false)
+        put("MediaStore", true)
+        put("Root", false)
+    } }
 
     var hasStoragePermission by remember {
         mutableStateOf(
@@ -1023,15 +1030,17 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
     val performFontScan: () -> Unit = {
         isFontScanning = true
-        fontScanStatusMessage = "Crawling local folders & MediaStore vaults..."
+        val activeFolders = selectedFoldersToScan.filter { it.value }.keys.toSet()
+        val foldersStr = activeFolders.joinToString(", ")
+        fontScanStatusMessage = "Crawling ($foldersStr)..."
         scope.launch {
             try {
-                discoveredFonts = FontScanner.scanLocalFonts(context)
+                discoveredFonts = FontScanner.scanLocalFonts(context, activeFolders)
                 selectedFontIndexes.clear()
                 discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
                 selectedFontCount = discoveredFonts.size
                 fontScanStatusMessage = if (discoveredFonts.isEmpty()) {
-                    "No design fonts (.ttf/.otf) found in common storage roots."
+                    "No design fonts (.ttf/.otf) found in chosen directories."
                 } else {
                     "Discovered ${discoveredFonts.size} custom design typography files!"
                 }
@@ -5019,6 +5028,82 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             style = Typography.bodySmall,
                             color = TextSecondary
                         )
+
+                        // Folder Selection Checkboxes
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "Choose specific Folders to scan:",
+                                style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = IndustrialAmber
+                            )
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("Download", "Fonts", "Documents").forEach { folder ->
+                                    val isSelected = selectedFoldersToScan[folder] ?: false
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(MidSlate.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                                            .clickable { selectedFoldersToScan[folder] = !isSelected }
+                                            .padding(end = 4.dp)
+                                    ) {
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = { selectedFoldersToScan[folder] = it },
+                                            colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber),
+                                            modifier = Modifier.scale(0.75f)
+                                        )
+                                        Text(
+                                            text = folder,
+                                            style = Typography.labelSmall.copy(fontSize = 10.sp),
+                                            color = if (isSelected) TextPrimary else TextSecondary,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("MediaStore", "Root").forEach { folder ->
+                                    val isSelected = selectedFoldersToScan[folder] ?: false
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .background(MidSlate.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                                            .clickable { selectedFoldersToScan[folder] = !isSelected }
+                                            .padding(end = 4.dp)
+                                    ) {
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = { selectedFoldersToScan[folder] = it },
+                                            colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber),
+                                            modifier = Modifier.scale(0.75f)
+                                        )
+                                        Text(
+                                            text = when (folder) {
+                                                "MediaStore" -> "Media Vault"
+                                                "Root" -> "Full Phone"
+                                                else -> folder
+                                            },
+                                            style = Typography.labelSmall.copy(fontSize = 10.sp),
+                                            color = if (isSelected) TextPrimary else TextSecondary,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                                Box(modifier = Modifier.weight(1f)) // empty placeholder for alignment
+                            }
+                        }
 
                         // Progress/Status Container
                         Box(
@@ -10124,7 +10209,7 @@ fun OldBottomEffectPanel(
                                                     Text("No favorite fonts yet. Tap the heart next to any font to save it here!", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
                                                 }
                                             } else {
-                                                items(favorites) { font ->
+                                                items(favorites, key = { it.name + "_" + (it.path ?: "") }) { font ->
                                                     RenderFontRow(font, selectedLayer, onUpdateLayer, context)
                                                 }
                                             }
@@ -10149,7 +10234,7 @@ fun OldBottomEffectPanel(
                                                     Text("No imported fonts yet. Tap 'Import Font' above to load custom TTF/OTF files.", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 8.dp))
                                                 }
                                             } else {
-                                                items(imported) { font ->
+                                                items(imported, key = { it.name + "_" + (it.path ?: "") }) { font ->
                                                     RenderFontRow(font, selectedLayer, onUpdateLayer, context)
                                                 }
                                             }
@@ -10169,7 +10254,7 @@ fun OldBottomEffectPanel(
                                                     Text("SYSTEM FONTS", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, fontWeight = FontWeight.Bold)
                                                 }
                                             }
-                                            items(system) { font ->
+                                            items(system, key = { it.name + "_" + (it.path ?: "") }) { font ->
                                                 RenderFontRow(font, selectedLayer, onUpdateLayer, context)
                                             }
                                         } else {
@@ -10179,9 +10264,10 @@ fun OldBottomEffectPanel(
                                                     Text("No matching fonts found.", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
                                                 }
                                             } else {
-                                                items(filtered) { font ->
-                                                    RenderFontRow(font, selectedLayer, favoriteFontsList, onUpdateLayer, context) {
-                                                        favoriteFontsList = it
+                                                items(filtered, key = { it.name + "_" + (it.path ?: "") }) { font ->
+                                                                                                        RenderFontRow(font, selectedLayer, onUpdateLayer, context)
+                                                    if (false) {
+                                                        // no-op
                                                     }
                                                 }
                                             }
