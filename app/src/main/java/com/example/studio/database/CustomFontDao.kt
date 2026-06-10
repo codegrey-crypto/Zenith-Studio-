@@ -19,6 +19,9 @@ interface CustomFontDao {
     """)
     suspend fun searchCustomFonts(category: String, query: String, limit: Int): List<CustomFontEntity>
 
+    @Query("SELECT * FROM custom_fonts WHERE name IN (:names)")
+    suspend fun getCustomFontsByNames(names: List<String>): List<CustomFontEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCustomFont(font: CustomFontEntity)
 

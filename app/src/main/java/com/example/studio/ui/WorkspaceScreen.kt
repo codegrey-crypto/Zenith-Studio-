@@ -873,6 +873,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var showFontScannerDialog by remember { mutableStateOf(false) }
     var discoveredFonts by remember { mutableStateOf<List<com.example.studio.ui.FontScanner.DiscoveredFont>>(emptyList()) }
     val selectedFontIndexes = remember { androidx.compose.runtime.mutableStateMapOf<Int, Boolean>() }
+    var selectedFontCount by remember { mutableStateOf(0) }
     var isFontScanning by remember { mutableStateOf(false) }
     var isBatchImportingFonts by remember { mutableStateOf(false) }
     var fontScanStatusMessage by remember { mutableStateOf("") }
@@ -1028,6 +1029,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 discoveredFonts = FontScanner.scanLocalFonts(context)
                 selectedFontIndexes.clear()
                 discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
+                selectedFontCount = discoveredFonts.size
                 fontScanStatusMessage = if (discoveredFonts.isEmpty()) {
                     "No design fonts (.ttf/.otf) found in common storage roots."
                 } else {
@@ -5092,15 +5094,21 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
                             if (discoveredFonts.isNotEmpty()) {
                                 Spacer(modifier = Modifier.weight(1f))
+                                val allSelected = selectedFontCount == discoveredFonts.size
                                 TextButton(
                                     onClick = {
-                                        val allSelected = discoveredFonts.indices.all { selectedFontIndexes[it] == true }
-                                        discoveredFonts.indices.forEach { selectedFontIndexes[it] = !allSelected }
+                                        val nextSelected = !allSelected
+                                        if (nextSelected) {
+                                            discoveredFonts.indices.forEach { selectedFontIndexes[it] = true }
+                                            selectedFontCount = discoveredFonts.size
+                                        } else {
+                                            selectedFontIndexes.clear()
+                                            selectedFontCount = 0
+                                        }
                                     },
                                     contentPadding = PaddingValues(0.dp),
                                     modifier = Modifier.height(24.dp)
                                 ) {
-                                    val allSelected = discoveredFonts.indices.all { selectedFontIndexes[it] == true }
                                     Text(
                                         text = if (allSelected) "Deselect All" else "Select All",
                                         style = Typography.labelSmall,
@@ -5144,14 +5152,29 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clickable { selectedFontIndexes[index] = !isChecked }
+                                            .clickable {
+                                                val nextChecked = !isChecked
+                                                selectedFontIndexes[index] = nextChecked
+                                                if (nextChecked) {
+                                                    if (!isChecked) selectedFontCount++
+                                                } else {
+                                                    if (isChecked) selectedFontCount--
+                                                }
+                                            }
                                             .padding(horizontal = 8.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         Checkbox(
                                             checked = isChecked,
-                                            onCheckedChange = { selectedFontIndexes[index] = it },
+                                            onCheckedChange = { nextChecked ->
+                                                selectedFontIndexes[index] = nextChecked
+                                                if (nextChecked) {
+                                                    if (!isChecked) selectedFontCount++
+                                                } else {
+                                                    if (isChecked) selectedFontCount--
+                                                }
+                                            },
                                             colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber)
                                         )
                                         Column(modifier = Modifier.weight(1f)) {
@@ -5185,7 +5208,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     }
                 },
                 confirmButton = {
-                    val selectedCount = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] == true }.size
+                    val selectedCount = selectedFontCount
                     Button(
                         onClick = {
                             val selectedToImport = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] == true }
@@ -10008,12 +10031,28 @@ fun OldBottomEffectPanel(
                                 // Dynamic query to list directory
                                 val workspaceVm: WorkspaceViewModel = viewModel()
                                 val customFontEntities by workspaceVm.displayedCustomFonts.collectAsStateWithLifecycle()
+                                val favoriteCustomFontEntities by workspaceVm.favoriteCustomFonts.collectAsStateWithLifecycle()
 
                                 LaunchedEffect(selectedCategoryFilter, fontSearchQuery) {
                                     workspaceVm.updateFontFilter(selectedCategoryFilter, fontSearchQuery)
                                 }
 
                                 var favoriteFontsList = FontFavoritesState.favoriteFontsList
+
+                                LaunchedEffect(favoriteFontsList) {
+                                    workspaceVm.loadFavoriteCustomFonts(favoriteFontsList.toList())
+                                }
+
+                                val favoriteCustomFontsMap = remember(favoriteCustomFontEntities) {
+                                    favoriteCustomFontEntities.map { entity ->
+                                        FontResource(
+                                            name = entity.name,
+                                            category = entity.category,
+                                            path = entity.path,
+                                            isImported = true
+                                        )
+                                    }
+                                }
 
                                 val importedFonts = remember(customFontEntities) {
                                     customFontEntities.map { entity ->
@@ -10047,9 +10086,11 @@ fun OldBottomEffectPanel(
                                     }
                                 }
 
-                                val favorites = remember(consolidatedFonts, favoriteFontsList) {
+                                val favorites = remember(allFonts, favoriteCustomFontsMap, favoriteFontsList) {
                                     val favSet = favoriteFontsList.toSet()
-                                    consolidatedFonts.filter { favSet.contains(it.name) }
+                                    val systemFavs = allFonts.filter { favSet.contains(it.name) }
+                                    val customFavs = favoriteCustomFontsMap.filter { favSet.contains(it.name) }
+                                    systemFavs + customFavs
                                 }
 
                                 val imported = remember(consolidatedFonts) {

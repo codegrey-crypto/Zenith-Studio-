@@ -28,6 +28,9 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
     private val _displayedCustomFonts = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.studio.database.CustomFontEntity>>(emptyList())
     val displayedCustomFonts: StateFlow<List<com.example.studio.database.CustomFontEntity>> = _displayedCustomFonts
 
+    private val _favoriteCustomFonts = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.studio.database.CustomFontEntity>>(emptyList())
+    val favoriteCustomFonts: StateFlow<List<com.example.studio.database.CustomFontEntity>> = _favoriteCustomFonts
+
     private var lastCategory = "All"
     private var lastQuery = ""
 
@@ -45,10 +48,6 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
 
     suspend fun loadCustomFonts() {
         try {
-            val fonts = withContext(Dispatchers.IO) {
-                fontDao.getAllCustomFonts()
-            }
-            _customFonts.value = fonts
             refreshFontFilter()
         } catch (e: Exception) {
             e.printStackTrace()
@@ -72,6 +71,19 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refreshFontFilter() {
         updateFontFilter(lastCategory, lastQuery)
+    }
+
+    fun loadFavoriteCustomFonts(names: List<String>) {
+        viewModelScope.launch {
+            try {
+                val fonts = withContext(Dispatchers.IO) {
+                    fontDao.getCustomFontsByNames(names)
+                }
+                _favoriteCustomFonts.value = fonts
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun addCustomFont(name: String, path: String, category: String) {
