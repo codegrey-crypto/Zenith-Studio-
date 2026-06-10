@@ -1262,7 +1262,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             scope.launch {
                 try {
                     context.contentResolver.openInputStream(xmlUri)?.use { inputStream ->
-                        val parsed = AlightXmlEngine.parseAlightXml(inputStream)
+                        val activeW = canvasWidthInput.toFloatOrNull() ?: 1080f
+                        val activeH = canvasHeightInput.toFloatOrNull() ?: 1350f
+                        val parsed = AlightXmlEngine.parseAlightXml(inputStream, activeW, activeH)
                         
                         if (parsed.layers.isEmpty()) {
                             isAlightImporting = false

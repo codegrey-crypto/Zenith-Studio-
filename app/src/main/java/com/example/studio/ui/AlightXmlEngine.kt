@@ -9,6 +9,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import com.example.studio.model.LayerType
 import com.example.studio.model.StudioLayer
+import com.example.studio.model.StudioEffect
+import com.example.studio.model.EffectParameter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.xmlpull.v1.XmlPullParser
@@ -36,6 +38,8 @@ object AlightXmlEngine {
         var startColor: String? = null
         var size: Offset = Offset(100f, 100f)
         var cornerRadius: Float = 0f
+        var gaussianBlurStrength: Float? = null
+        var solidColorHex: String? = null
     }
 
     private class TextData {
@@ -49,6 +53,8 @@ object AlightXmlEngine {
         var rotation: Float = 0f
         var content: String = ""
         var fillColor: String? = null
+        var gaussianBlurStrength: Float? = null
+        var solidColorHex: String? = null
     }
 
     /**
@@ -111,18 +117,23 @@ object AlightXmlEngine {
     /**
      * STREAM XML PARSING: Background worker XML parsing loop
      */
-    suspend fun parseAlightXml(inputStream: InputStream): ParsedAlightXml = withContext(Dispatchers.IO) {
+    suspend fun parseAlightXml(
+        inputStream: InputStream,
+        targetWidth: Float? = null,
+        targetHeight: Float? = null
+    ): ParsedAlightXml = withContext(Dispatchers.IO) {
         val parser = Xml.newPullParser()
         parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
         parser.setInput(inputStream, "UTF-8")
 
-        var canvasWidth = 1080f
-        var canvasHeight = 1350f
+        var xmlSceneWidth = 1080f
+        var xmlSceneHeight = 1350f
         var firstTag = true
         val parsedLayers = mutableListOf<StudioLayer>()
 
         var currentShape: ShapeData? = null
         var currentText: TextData? = null
+        var currentEffectId: String? = null
 
         var eventType = parser.eventType
         while (eventType != XmlPullParser.END_DOCUMENT) {
@@ -136,24 +147,23 @@ object AlightXmlEngine {
                         }
                         val widthAttr = parser.getAttributeValue(null, "width")
                         if (widthAttr != null) {
-                            canvasWidth = widthAttr.toFloatOrNull() ?: 1080f
+                            xmlSceneWidth = widthAttr.toFloatOrNull() ?: 1080f
                         }
                         val heightAttr = parser.getAttributeValue(null, "height")
                         if (heightAttr != null) {
-                            canvasHeight = heightAttr.toFloatOrNull() ?: 1350f
+                            xmlSceneHeight = heightAttr.toFloatOrNull() ?: 1350f
                         }
                     } else {
                         when (name) {
                             "scene" -> {
-                                // If there are nested scenes, use the root scene parameters, but we can also parse inner scenes if they have new dimensions.
                                 val widthAttr = parser.getAttributeValue(null, "width")
                                 val heightAttr = parser.getAttributeValue(null, "height")
                                 if (widthAttr != null && heightAttr != null) {
                                     val w = widthAttr.toFloatOrNull()
                                     val h = heightAttr.toFloatOrNull()
                                     if (w != null && h != null && w > 10f && h > 10f) {
-                                        canvasWidth = w
-                                        canvasHeight = h
+                                        xmlSceneWidth = w
+                                        xmlSceneHeight = h
                                     }
                                 }
                             }
@@ -172,6 +182,9 @@ object AlightXmlEngine {
                                     wrapWidth = parser.getAttributeValue(null, "wrapWidth")?.toFloatOrNull() ?: 512f
                                     align = parser.getAttributeValue(null, "align") ?: "center"
                                 }
+                            }
+                            "effect" -> {
+                                currentEffectId = parser.getAttributeValue(null, "id")
                             }
                             "location" -> {
                                 val value = parser.getAttributeValue(null, "value")
@@ -195,13 +208,24 @@ object AlightXmlEngine {
                                 currentText?.fillColor = value
                             }
                             "property" -> {
-                                if (currentShape != null) {
-                                    val propName = parser.getAttributeValue(null, "name")
-                                    val propValue = parser.getAttributeValue(null, "value")
-                                    if (propName == "size" && propValue != null) {
-                                        currentShape!!.size = parseLocation(propValue)
-                                    } else if (propName == "cornerRadius" && propValue != null) {
-                                        currentShape!!.cornerRadius = propValue.toFloatOrNull() ?: 0f
+                                val propName = parser.getAttributeValue(null, "name")
+                                val propValue = parser.getAttributeValue(null, "value")
+                                if (currentEffectId != null) {
+                                    if (currentEffectId == "com.alightcreative.effects.gaussianblur" && propName == "strength" && propValue != null) {
+                                        val strVal = propValue.toFloatOrNull() ?: 0f
+                                        currentShape?.gaussianBlurStrength = strVal
+                                        currentText?.gaussianBlurStrength = strVal
+                                    } else if (currentEffectId == "com.alightcreative.effects.solidcolor" && propName == "color" && propValue != null) {
+                                        currentShape?.solidColorHex = propValue
+                                        currentText?.solidColorHex = propValue
+                                    }
+                                } else {
+                                    if (currentShape != null) {
+                                        if (propName == "size" && propValue != null) {
+                                            currentShape!!.size = parseLocation(propValue)
+                                        } else if (propName == "cornerRadius" && propValue != null) {
+                                            currentShape!!.cornerRadius = propValue.toFloatOrNull() ?: 0f
+                                        }
                                     }
                                 }
                             }
@@ -221,17 +245,25 @@ object AlightXmlEngine {
                 }
                 XmlPullParser.END_TAG -> {
                     val name = parser.name
-                    if (name == "shape" && currentShape != null) {
+                    if (name == "effect") {
+                        currentEffectId = null
+                    } else if (name == "shape" && currentShape != null) {
                         val cs = currentShape!!
+                        val activeCanvasW = targetWidth ?: xmlSceneWidth
+                        val activeCanvasH = targetHeight ?: xmlSceneHeight
+
+                        val scaleFactorX = if (xmlSceneWidth > 0f) activeCanvasW / xmlSceneWidth else 1f
+                        val scaleFactorY = if (xmlSceneHeight > 0f) activeCanvasH / xmlSceneHeight else 1f
+
                         val sizeW = cs.size.x
                         val sizeH = cs.size.y
                         val scaleX = cs.scale.x
                         val scaleY = cs.scale.y
-                        val finalW = sizeW * scaleX
-                        val finalH = sizeH * scaleY
+                        val finalW = (sizeW * scaleX) * scaleFactorX
+                        val finalH = (sizeH * scaleY) * scaleFactorY
 
-                        val posX = cs.location.x - finalW / 2f
-                        val posY = cs.location.y - finalH / 2f
+                        val posX = (cs.location.x * scaleFactorX) - finalW / 2f
+                        val posY = (cs.location.y * scaleFactorY) - finalH / 2f
 
                         val layerType = when (cs.s) {
                             ".rect" -> LayerType.VECTOR_RECT
@@ -241,7 +273,18 @@ object AlightXmlEngine {
                             else -> LayerType.VECTOR_RECT
                         }
 
-                        val baseColor = parseHexColor(cs.startColor ?: cs.fillColor)
+                        // Apply the solidcolor overlay filter hex configuration directly to baseColor if present
+                        val baseColor = parseHexColor(cs.solidColorHex ?: cs.startColor ?: cs.fillColor)
+
+                        // If Gaussian Blur strength property was extracted, translate straight into StudioEffect list
+                        val effectsList = mutableListOf<StudioEffect>()
+                        cs.gaussianBlurStrength?.let { strength ->
+                            val radiusInPixels = strength * 200f
+                            val blurEffect = StudioEffect.GaussianBlur()
+                                .updateParameter("Radius", radiusInPixels)
+                                .updateParameter("Intensity", 1.0f)
+                            effectsList.add(blurEffect)
+                        }
 
                         parsedLayers.add(
                             StudioLayer(
@@ -254,6 +297,7 @@ object AlightXmlEngine {
                                 height = finalH,
                                 rotation = cs.rotation,
                                 baseColor = baseColor,
+                                effects = effectsList,
                                 cornerRadius = if (cs.s == ".roundrect" || cs.cornerRadius > 0f) {
                                     if (cs.cornerRadius > 0f) cs.cornerRadius else 20f
                                 } else 0f
@@ -262,15 +306,31 @@ object AlightXmlEngine {
                         currentShape = null
                     } else if (name == "text" && currentText != null) {
                         val ct = currentText!!
+                        val activeCanvasW = targetWidth ?: xmlSceneWidth
+                        val activeCanvasH = targetHeight ?: xmlSceneHeight
+
+                        val scaleFactorX = if (xmlSceneWidth > 0f) activeCanvasW / xmlSceneWidth else 1f
+                        val scaleFactorY = if (xmlSceneHeight > 0f) activeCanvasH / xmlSceneHeight else 1f
+
                         val scaleX = ct.scale.x
                         val scaleY = ct.scale.y
-                        val finalW = ct.wrapWidth * scaleX
-                        val finalH = (ct.size * 1.5f) * scaleY
+                        val finalW = (ct.wrapWidth * scaleX) * scaleFactorX
+                        val finalH = ((ct.size * 1.5f) * scaleY) * scaleFactorY
 
-                        val posX = ct.location.x - finalW / 2f
-                        val posY = ct.location.y - finalH / 2f
+                        val posX = (ct.location.x * scaleFactorX) - finalW / 2f
+                        val posY = (ct.location.y * scaleFactorY) - finalH / 2f
 
-                        val baseColor = parseHexColor(ct.fillColor)
+                        val baseColor = parseHexColor(ct.solidColorHex ?: ct.fillColor)
+
+                        // Gaussian Blur translate straight into StudioEffect list
+                        val effectsList = mutableListOf<StudioEffect>()
+                        ct.gaussianBlurStrength?.let { strength ->
+                            val radiusInPixels = strength * 200f
+                            val blurEffect = StudioEffect.GaussianBlur()
+                                .updateParameter("Radius", radiusInPixels)
+                                .updateParameter("Intensity", 1.0f)
+                            effectsList.add(blurEffect)
+                        }
 
                         parsedLayers.add(
                             StudioLayer(
@@ -282,14 +342,15 @@ object AlightXmlEngine {
                                 width = finalW,
                                 height = finalH,
                                 rotation = ct.rotation,
-                                fontSize = ct.size,
+                                fontSize = ct.size * scaleFactorY,
                                 fontAlign = when (ct.align.lowercase()) {
                                     "left" -> "Left"
                                     "right" -> "Right"
                                     else -> "Center"
                                 },
                                 textContent = ct.content,
-                                baseColor = baseColor
+                                baseColor = baseColor,
+                                effects = effectsList
                             )
                         )
                         currentText = null
@@ -300,8 +361,8 @@ object AlightXmlEngine {
         }
 
         ParsedAlightXml(
-            canvasWidth = canvasWidth,
-            canvasHeight = canvasHeight,
+            canvasWidth = targetWidth ?: xmlSceneWidth,
+            canvasHeight = targetHeight ?: xmlSceneHeight,
             layers = parsedLayers
         )
     }
@@ -364,6 +425,23 @@ object AlightXmlEngine {
                         xml.append(String.format(Locale.US, "    <property name=\"cornerRadius\" type=\"float\" value=\"%.6f\" />\n", layer.cornerRadius))
                     }
 
+                    // Bi-directional Visual Effects (FX) export compilation
+                    // 1. Solid Color
+                    xml.append("    <effect id=\"com.alightcreative.effects.solidcolor\">\n")
+                    xml.append("      <property name=\"color\" type=\"color\" value=\"$fillStr\" />\n")
+                    xml.append("    </effect>\n")
+
+                    // 2. Gaussian Blur
+                    val blurEff = layer.effects.firstOrNull { it is StudioEffect.GaussianBlur } as? StudioEffect.GaussianBlur
+                    if (blurEff != null) {
+                        val radius = blurEff.parameters["Radius"]?.value ?: 0f
+                        val intensity = blurEff.parameters["Intensity"]?.value ?: 1f
+                        val strength = (radius * intensity) / 200f
+                        xml.append("    <effect id=\"com.alightcreative.effects.gaussianblur\">\n")
+                        xml.append(String.format(Locale.US, "      <property name=\"strength\" type=\"float\" value=\"%.6f\" />\n", strength))
+                        xml.append("    </effect>\n")
+                    }
+
                     xml.append("  </shape>\n")
                 }
                 LayerType.TEXT -> {
@@ -390,6 +468,24 @@ object AlightXmlEngine {
                         .replace("<", "&lt;")
                         .replace(">", "&gt;")
                     xml.append("    <content>$contentEscaped</content>\n")
+
+                    // Bi-directional Visual Effects (FX) export compilation
+                    // 1. Solid Color
+                    xml.append("    <effect id=\"com.alightcreative.effects.solidcolor\">\n")
+                    xml.append("      <property name=\"color\" type=\"color\" value=\"$fillStr\" />\n")
+                    xml.append("    </effect>\n")
+
+                    // 2. Gaussian Blur
+                    val blurEff = layer.effects.firstOrNull { it is StudioEffect.GaussianBlur } as? StudioEffect.GaussianBlur
+                    if (blurEff != null) {
+                        val radius = blurEff.parameters["Radius"]?.value ?: 0f
+                        val intensity = blurEff.parameters["Intensity"]?.value ?: 1f
+                        val strength = (radius * intensity) / 200f
+                        xml.append("    <effect id=\"com.alightcreative.effects.gaussianblur\">\n")
+                        xml.append(String.format(Locale.US, "      <property name=\"strength\" type=\"float\" value=\"%.6f\" />\n", strength))
+                        xml.append("    </effect>\n")
+                    }
+
                     xml.append("  </text>\n")
                 }
                 else -> {}
