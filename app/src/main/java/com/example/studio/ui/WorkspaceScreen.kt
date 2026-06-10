@@ -17145,6 +17145,22 @@ fun BrushesLibraryOverlay(
 
                 // 2. Transposed Wave Preview of active brush
                 val activeBrushItem = ALL_AVAILABLE_BRUSHES.find { it.index == currentPreset } ?: ALL_AVAILABLE_BRUSHES[0]
+                var previewWidth by remember { mutableStateOf(0f) }
+                var previewHeight by remember { mutableStateOf(0f) }
+                val previewPoints = remember(previewWidth, previewHeight) {
+                    if (previewWidth <= 0f || previewHeight <= 0f) emptyList<Offset>()
+                    else {
+                        val pts = ArrayList<Offset>(31)
+                        val steps = 30
+                        for (i in 0..steps) {
+                            val frac = i.toFloat() / steps
+                            val px = previewWidth * 0.1f + frac * previewWidth * 0.8f
+                            val py = previewHeight * 0.5f + kotlin.math.sin(frac * Math.PI.toFloat() * 3f) * (previewHeight * 0.22f)
+                            pts.add(Offset(px, py))
+                        }
+                        pts
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -17152,24 +17168,24 @@ fun BrushesLibraryOverlay(
                         .padding(horizontal = 16.dp, vertical = 8.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .border(1.dp, HighslateOutline, RoundedCornerShape(8.dp))
+                        .background(Color(0xFF181822))
+                        .onSizeChanged {
+                            previewWidth = it.width.toFloat()
+                            previewHeight = it.height.toFloat()
+                        }
                 ) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val stripeSize = 10.dp.toPx()
                         val w = size.width
                         val h = size.height
+                        val tileSize = androidx.compose.ui.geometry.Size(stripeSize, stripeSize)
                         for (x in 0..(w / stripeSize).toInt()) {
                             for (y in 0..(h / stripeSize).toInt()) {
                                 if ((x + y) % 2 == 0) {
                                     drawRect(
                                         color = Color(0xFF282833),
                                         topLeft = Offset(x * stripeSize, y * stripeSize),
-                                        size = androidx.compose.ui.geometry.Size(stripeSize, stripeSize)
-                                    )
-                                } else {
-                                    drawRect(
-                                        color = Color(0xFF181822),
-                                        topLeft = Offset(x * stripeSize, y * stripeSize),
-                                        size = androidx.compose.ui.geometry.Size(stripeSize, stripeSize)
+                                        size = tileSize
                                     )
                                 }
                             }
@@ -17177,26 +17193,18 @@ fun BrushesLibraryOverlay(
                     }
 
                     Canvas(modifier = Modifier.fillMaxSize()) {
-                        val w = size.width
-                        val h = size.height
-                        val pts = mutableListOf<Offset>()
-                        val steps = 30
-                        for (i in 0..steps) {
-                            val frac = i.toFloat() / steps
-                            val px = w * 0.1f + frac * w * 0.8f
-                            val py = h * 0.5f + kotlin.math.sin(frac * Math.PI.toFloat() * 3f) * (h * 0.22f)
-                            pts.add(Offset(px, py))
+                        if (previewPoints.isNotEmpty()) {
+                            drawBrushStroke(
+                                points = previewPoints,
+                                color = currentColor,
+                                size = currentSize * 0.65f,
+                                opacity = currentOpacity,
+                                presetIndex = currentPreset,
+                                smoothing = true,
+                                originX = 0f,
+                                originY = 0f
+                            )
                         }
-                        drawBrushStroke(
-                            points = pts,
-                            color = currentColor,
-                            size = currentSize * 0.65f,
-                            opacity = currentOpacity,
-                            presetIndex = currentPreset,
-                            smoothing = true,
-                            originX = 0f,
-                            originY = 0f
-                        )
                     }
 
                     Box(
@@ -17372,6 +17380,20 @@ fun BrushesLibraryOverlay(
                             items(sourceList.size) { idx ->
                                 val brushItem = sourceList[idx]
                                 val isSelected = currentPreset == brushItem.index
+                                val density = androidx.compose.ui.platform.LocalDensity.current
+                                val wavePts = remember(density) {
+                                    val wPx = with(density) { 96.dp.toPx() }
+                                    val hPx = with(density) { 28.dp.toPx() }
+                                    val pts = ArrayList<Offset>(16)
+                                    val steps = 15
+                                    for (i in 0..steps) {
+                                        val frac = i.toFloat() / steps
+                                        val px = wPx * 0.1f + frac * wPx * 0.8f
+                                        val py = hPx * 0.5f + kotlin.math.sin(frac * Math.PI.toFloat() * 1.8f) * (hPx * 0.22f)
+                                        pts.add(Offset(px, py))
+                                    }
+                                    pts
+                                }
 
                                 Row(
                                     modifier = Modifier
@@ -17394,16 +17416,6 @@ fun BrushesLibraryOverlay(
                                             .background(Color(0xFF0C0C0E), RoundedCornerShape(4.dp))
                                             .border(0.5.dp, HighslateOutline, RoundedCornerShape(4.dp))
                                     ) {
-                                        val w = size.width
-                                        val h = size.height
-                                        val wavePts = mutableListOf<Offset>()
-                                        val steps = 15
-                                        for (i in 0..steps) {
-                                            val frac = i.toFloat() / steps
-                                            val px = w * 0.1f + frac * w * 0.8f
-                                            val py = h * 0.5f + kotlin.math.sin(frac * Math.PI.toFloat() * 1.8f) * (h * 0.22f)
-                                            wavePts.add(Offset(px, py))
-                                        }
                                         drawBrushStroke(
                                             points = wavePts,
                                             color = currentColor,

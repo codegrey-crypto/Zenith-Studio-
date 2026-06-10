@@ -523,20 +523,8 @@ fun TypographyOrShapeDetailView(
                     }
                 }
 
-                val consolidatedFonts = remember(fontSearchQuery, selectedCategoryFilter, FontFavoritesState.favoriteFontsList) {
-                    val allFonts = listOf(
-                        FontResource(name = "Roboto (Sans-serif)", category = "Sans-Serif", systemFamily = "sans-serif"),
-                        FontResource(name = "Noto Serif (Serif)", category = "Serif", systemFamily = "serif"),
-                        FontResource(name = "Roboto Mono (Monospace)", category = "Monospace", systemFamily = "monospace"),
-                        FontResource(name = "Montserrat", category = "Sans-Serif", systemFamily = "sans-serif-condensed"),
-                        FontResource(name = "Merriweather", category = "Serif", systemFamily = "serif"),
-                        FontResource(name = "Playfair Display", category = "Display", systemFamily = "serif"),
-                        FontResource(name = "Pacifico (Script)", category = "Script", systemFamily = "sans-serif"),
-                        FontResource(name = "Dancing Script", category = "Script", systemFamily = "serif"),
-                        FontResource(name = "Caveat (Handwritten)", category = "Handwritten", systemFamily = "sans-serif"),
-                        FontResource(name = "Indie Flower", category = "Handwritten", systemFamily = "sans-serif")
-                    )
-                    val importedFonts = try {
+                val importedFontsList = remember(FontFavoritesState.favoriteFontsList) {
+                    try {
                         val fontsDir = File(context.filesDir, "fonts")
                         if (!fontsDir.exists()) fontsDir.mkdirs()
                         val files = fontsDir.listFiles { file ->
@@ -554,7 +542,22 @@ fun TypographyOrShapeDetailView(
                     } catch (e: Exception) {
                         emptyList()
                     }
-                    allFonts + importedFonts
+                }
+
+                val consolidatedFonts = remember(importedFontsList) {
+                    val allFonts = listOf(
+                        FontResource(name = "Roboto (Sans-serif)", category = "Sans-Serif", systemFamily = "sans-serif"),
+                        FontResource(name = "Noto Serif (Serif)", category = "Serif", systemFamily = "serif"),
+                        FontResource(name = "Roboto Mono (Monospace)", category = "Monospace", systemFamily = "monospace"),
+                        FontResource(name = "Montserrat", category = "Sans-Serif", systemFamily = "sans-serif-condensed"),
+                        FontResource(name = "Merriweather", category = "Serif", systemFamily = "serif"),
+                        FontResource(name = "Playfair Display", category = "Display", systemFamily = "serif"),
+                        FontResource(name = "Pacifico (Script)", category = "Script", systemFamily = "sans-serif"),
+                        FontResource(name = "Dancing Script", category = "Script", systemFamily = "serif"),
+                        FontResource(name = "Caveat (Handwritten)", category = "Handwritten", systemFamily = "sans-serif"),
+                        FontResource(name = "Indie Flower", category = "Handwritten", systemFamily = "sans-serif")
+                    )
+                    allFonts + importedFontsList
                 }
 
                 val filteredFonts = if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) emptyList() else consolidatedFonts.filter { font ->
