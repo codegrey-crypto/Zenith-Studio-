@@ -853,7 +853,8 @@ val LocalRulerSettings = androidx.compose.runtime.compositionLocalOf { Workspace
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkspaceScreen(modifier: Modifier = Modifier) {
-    globalAppContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val context = androidx.compose.ui.platform.LocalContext.current
+    globalAppContext = context.applicationContext
     val workspaceViewModel: WorkspaceViewModel = viewModel()
     val previousProjects by workspaceViewModel.previousProjects.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -874,6 +875,19 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var isFontScanning by remember { mutableStateOf(false) }
     var isBatchImportingFonts by remember { mutableStateOf(false) }
     var fontScanStatusMessage by remember { mutableStateOf("") }
+
+    var hasStoragePermission by remember {
+        mutableStateOf(
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                true
+            } else {
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+        )
+    }
 
     // Initial State Setup - Empty to allow user manually adding anything they want, Canvas-style!
     var layers by remember {
@@ -949,7 +963,6 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var fontSearchQuery by remember { mutableStateOf("") }
     var selectedCategoryFilter by remember { mutableStateOf("All") }
 
-    val context = androidx.compose.ui.platform.LocalContext.current
     var favoriteFontsList by remember { mutableStateOf(getFavoriteFonts(context)) }
     val imagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -1003,6 +1016,34 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             layers = listOf(newL) + layers
             selectedLayerId = newL.id
             showAddShapeDialog = false
+        }
+    }
+
+    val storagePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasStoragePermission = isGranted
+        if (isGranted) {
+            scope.launch {
+                isFontScanning = true
+                fontScanStatusMessage = "Crawling local folders & MediaStore vaults..."
+                try {
+                    discoveredFonts = FontScanner.scanLocalFonts(context)
+                    selectedFontIndexes.clear()
+                    discoveredFonts.forEachIndexed { i, _ -> selectedFontIndexes[i] = true }
+                    fontScanStatusMessage = if (discoveredFonts.isEmpty()) {
+                        "No design fonts (.ttf/.otf) found in common storage roots."
+                    } else {
+                        "Discovered ${discoveredFonts.size} custom design typography files!"
+                    }
+                } catch (e: Exception) {
+                    fontScanStatusMessage = "Scanning failed: ${e.localizedMessage}"
+                } finally {
+                    isFontScanning = false
+                }
+            }
+        } else {
+            android.widget.Toast.makeText(context, "Storage scanner permission declined", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
