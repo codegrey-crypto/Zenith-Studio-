@@ -9990,40 +9990,69 @@ fun OldBottomEffectPanel(
                                 }
 
                                 // Merging built-in lists with imported storage ones
-                                val allFonts = listOf(
-                                    FontResource(name = "Roboto (Sans-serif)", category = "Sans-Serif", systemFamily = "sans-serif"),
-                                    FontResource(name = "Noto Serif (Serif)", category = "Serif", systemFamily = "serif"),
-                                    FontResource(name = "Roboto Mono (Monospace)", category = "Monospace", systemFamily = "monospace"),
-                                    FontResource(name = "Montserrat", category = "Sans-Serif", systemFamily = "sans-serif-condensed"),
-                                    FontResource(name = "Merriweather", category = "Serif", systemFamily = "serif"),
-                                    FontResource(name = "Playfair Display", category = "Display", systemFamily = "serif"),
-                                    FontResource(name = "Pacifico (Script)", category = "Script", systemFamily = "sans-serif"),
-                                    FontResource(name = "Dancing Script", category = "Script", systemFamily = "serif"),
-                                    FontResource(name = "Caveat (Handwritten)", category = "Handwritten", systemFamily = "sans-serif"),
-                                    FontResource(name = "Indie Flower", category = "Handwritten", systemFamily = "sans-serif")
-                                )
+                                val allFonts = remember {
+                                    listOf(
+                                        FontResource(name = "Roboto (Sans-serif)", category = "Sans-Serif", systemFamily = "sans-serif"),
+                                        FontResource(name = "Noto Serif (Serif)", category = "Serif", systemFamily = "serif"),
+                                        FontResource(name = "Roboto Mono (Monospace)", category = "Monospace", systemFamily = "monospace"),
+                                        FontResource(name = "Montserrat", category = "Sans-Serif", systemFamily = "sans-serif-condensed"),
+                                        FontResource(name = "Merriweather", category = "Serif", systemFamily = "serif"),
+                                        FontResource(name = "Playfair Display", category = "Display", systemFamily = "serif"),
+                                        FontResource(name = "Pacifico (Script)", category = "Script", systemFamily = "sans-serif"),
+                                        FontResource(name = "Dancing Script", category = "Script", systemFamily = "serif"),
+                                        FontResource(name = "Caveat (Handwritten)", category = "Handwritten", systemFamily = "sans-serif"),
+                                        FontResource(name = "Indie Flower", category = "Handwritten", systemFamily = "sans-serif")
+                                    )
+                                }
                                 
                                 // Dynamic query to list directory
                                 val workspaceVm: WorkspaceViewModel = viewModel()
                                 val customFontEntities by workspaceVm.customFonts.collectAsStateWithLifecycle()
-                                val importedFonts = customFontEntities.map { entity ->
-                                    FontResource(
-                                        name = entity.name,
-                                        category = entity.category,
-                                        path = entity.path,
-                                        isImported = true
-                                    )
-                                }
-                                val consolidatedFonts = allFonts + importedFonts
                                 var favoriteFontsList = FontFavoritesState.favoriteFontsList
-                                val filteredFonts = if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) emptyList() else consolidatedFonts.filter { font ->
-                                    val matchesQuery = font.name.contains(fontSearchQuery, ignoreCase = true)
-                                    val matchesCategory = when (selectedCategoryFilter) {
-                                        "All" -> true
-                                        "Imported" -> font.isImported
-                                        else -> font.category == selectedCategoryFilter
+
+                                val importedFonts = remember(customFontEntities) {
+                                    customFontEntities.map { entity ->
+                                        FontResource(
+                                            name = entity.name,
+                                            category = entity.category,
+                                            path = entity.path,
+                                            isImported = true
+                                        )
                                     }
-                                    matchesQuery && matchesCategory
+                                }
+
+                                val consolidatedFonts = remember(allFonts, importedFonts) {
+                                    allFonts + importedFonts
+                                }
+
+                                val filteredFonts = remember(consolidatedFonts, selectedCategoryFilter, fontSearchQuery) {
+                                    if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) {
+                                        emptyList()
+                                    } else {
+                                        val query = fontSearchQuery.trim()
+                                        consolidatedFonts.filter { font ->
+                                            val matchesQuery = query.isEmpty() || font.name.contains(query, ignoreCase = true)
+                                            val matchesCategory = when (selectedCategoryFilter) {
+                                                "All" -> true
+                                                "Imported" -> font.isImported
+                                                else -> font.category == selectedCategoryFilter
+                                            }
+                                            matchesQuery && matchesCategory
+                                        }
+                                    }
+                                }
+
+                                val favorites = remember(consolidatedFonts, favoriteFontsList) {
+                                    val favSet = favoriteFontsList.toSet()
+                                    consolidatedFonts.filter { favSet.contains(it.name) }
+                                }
+
+                                val imported = remember(consolidatedFonts) {
+                                    consolidatedFonts.filter { it.isImported }
+                                }
+
+                                val system = remember(consolidatedFonts) {
+                                    consolidatedFonts.filter { !it.isImported }
                                 }
 
                                 Box(modifier = Modifier.heightIn(max = 350.dp).fillMaxWidth()) {
@@ -10032,9 +10061,6 @@ fun OldBottomEffectPanel(
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         if (selectedCategoryFilter == "All" && fontSearchQuery.isEmpty()) {
-                                            val favorites = consolidatedFonts.filter { FontFavoritesState.favoriteFontsList.contains(it.name) }
-                                            val imported = consolidatedFonts.filter { it.isImported }
-                                            val system = consolidatedFonts.filter { !it.isImported }
 
                                             // 1. Favorites Section
                                             item {
