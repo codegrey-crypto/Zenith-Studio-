@@ -180,26 +180,6 @@ fun extractSubjectForeground(
     threshold: Float,
     subjectOpacity: Float
 ): android.graphics.Bitmap {
-    // 1. Cache Eviction & Memory Protection: recycle and remove oldest entries if cache is growing
-    if (pixelStretchBitmapsCache.size > 12) {
-        synchronized(pixelStretchBitmapsCache) {
-            if (pixelStretchBitmapsCache.size > 12) {
-                val keys = pixelStretchBitmapsCache.keys().toList()
-                val keysToEvict = keys.take(6)
-                for (k in keysToEvict) {
-                    val bmp = pixelStretchBitmapsCache.remove(k)
-                    if (bmp != null && bmp != source && !bmp.isRecycled) {
-                        try {
-                            bmp.recycle()
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // 2. High-performance downsampling (maintains crisp detail but avoids processing millions of pixels in Kotlin)
     val maxDimension = 1024
     var workingSource = source
@@ -8489,6 +8469,172 @@ private fun drawLayerToNativeCanvas(
     canvas: android.graphics.Canvas,
     layer: com.example.studio.model.StudioLayer
 ) {
+    val activeStretchEffects = layer.effects.filter { it.isEnabled }
+    val pixelStretchEffect = activeStretchEffects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "PixelStretch" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+
+    if (pixelStretchEffect != null) {
+        val layW = maxOf(2, layer.width.toInt().coerceAtMost(2048))
+        val layH = maxOf(2, layer.height.toInt().coerceAtMost(2048))
+        
+        val sliceLine = pixelStretchEffect.parameters["SliceLine"]?.value ?: 0.5f
+        val orientationVal = pixelStretchEffect.parameters["Orientation"]?.value ?: 0f
+        val isHorizontal = orientationVal > 0.5f
+        val warpBend = pixelStretchEffect.parameters["WarpBend"]?.value ?: 0f
+        val warpFreq = pixelStretchEffect.parameters["WarpFrequency"]?.value ?: 1f
+        val cutoutVal = pixelStretchEffect.parameters["SubjectCutout"]?.value ?: 1f
+        val thresholdVal = pixelStretchEffect.parameters["CutoutThreshold"]?.value ?: 230f
+        
+        val stateHash = if (layer.type == com.example.studio.model.LayerType.IMAGE_CARD) {
+            layer.imageUri.hashCode()
+        } else {
+            (layer.textContent.hashCode() * 31 + layer.baseColor.hashCode()) * 31 + layer.brushPoints.size + layer.cornerRadius.hashCode() + layer.polygonEdges + layer.strokeThickness.hashCode() + layer.fontSize.hashCode()
+        }
+        
+        val finalStretchKey = "ps_${layer.id}_${sliceLine}_${isHorizontal}_${warpBend}_${warpFreq}_${cutoutVal}_${thresholdVal}_${layW}_${layH}_${stateHash}"
+        var finalWarpedBmp = pixelStretchBitmapsCache[finalStretchKey]
+        
+        if (finalWarpedBmp == null || finalWarpedBmp.isRecycled) {
+            val baseBmp = if (layer.type == com.example.studio.model.LayerType.IMAGE_CARD) {
+                val uriStr = layer.imageUri
+                if (!uriStr.isNullOrEmpty()) {
+                    try {
+                        val file = java.io.File(uriStr)
+                        if (file.exists()) {
+                            android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                        } else null
+                    } catch (t: Throwable) {
+                        null
+                    }
+                } else null
+            } else {
+                val tempBmp = android.graphics.Bitmap.createBitmap(layW, layH, android.graphics.Bitmap.Config.ARGB_8888)
+                val tempCanvas = android.graphics.Canvas(tempBmp)
+                val disabledEffects = layer.effects.map {
+                    if (it.id == pixelStretchEffect.id) {
+                        (it as com.example.studio.model.StudioEffect.PhotoshopEffect).copy(isEnabled = false)
+                    } else it
+                }
+                val tempLayer = layer.copy(effects = disabledEffects)
+                drawLayerToNativeCanvas(tempCanvas, tempLayer)
+                tempBmp
+            }
+            
+            if (baseBmp != null) {
+                val resultBmp = android.graphics.Bitmap.createBitmap(layW, layH, android.graphics.Bitmap.Config.ARGB_8888)
+                val tempCanvas = android.graphics.Canvas(resultBmp)
+                val sliceBmp = extractPixelStretchBitmap(baseBmp, sliceLine, isHorizontal)
+                
+                val meshWidth = 20
+                val meshHeight = 20
+                val vertCount = (meshWidth + 1) * (meshHeight + 1)
+                val verts = FloatArray(vertCount * 2)
+                
+                var index = 0
+                for (yIdx in 0..meshHeight) {
+                    val fy = yIdx.toFloat() / meshHeight
+                    val yNormal = fy * layH
+                    for (xIdx in 0..meshWidth) {
+                        val fx = xIdx.toFloat() / meshWidth
+                        var xNormal = fx * layW
+
+                        var vx = xNormal
+                        var vy = yNormal
+
+                        if (isHorizontal) {
+                            val wave = kotlin.math.sin(Math.PI.toFloat() * fx) * warpBend + 
+                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fx) * (warpBend * 0.4f)
+                            vy += wave
+                        } else {
+                            val wave = kotlin.math.sin(Math.PI.toFloat() * fy) * warpBend + 
+                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fy) * (warpBend * 0.4f)
+                            vx += wave
+                        }
+
+                        verts[index * 2] = vx
+                        verts[index * 2 + 1] = vy
+                        index++
+                    }
+                }
+                
+                val meshPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    isFilterBitmap = true
+                }
+                
+                try {
+                    tempCanvas.drawBitmapMesh(sliceBmp, meshWidth, meshHeight, verts, 0, null, 0, meshPaint)
+                    if (sliceBmp != baseBmp) {
+                        try { sliceBmp.recycle() } catch (e: Exception) {}
+                    }
+                    if (cutoutVal > 0f) {
+                        val cutoutBmp = extractSubjectForeground(baseBmp, thresholdVal, cutoutVal)
+                        tempCanvas.drawBitmap(cutoutBmp, null, android.graphics.Rect(0, 0, layW, layH), meshPaint)
+                        if (cutoutBmp != baseBmp) {
+                            try { cutoutBmp.recycle() } catch (e: Exception) {}
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                
+                if (layer.type != com.example.studio.model.LayerType.IMAGE_CARD) {
+                    try {
+                        baseBmp.recycle()
+                    } catch (e: Exception) {}
+                }
+                
+                pixelStretchBitmapsCache[finalStretchKey] = resultBmp
+                if (pixelStretchBitmapsCache.size > 16) {
+                    synchronized(pixelStretchBitmapsCache) {
+                        if (pixelStretchBitmapsCache.size > 16) {
+                            val keys = pixelStretchBitmapsCache.keys().toList()
+                            val keysToEvict = keys.take(8)
+                            for (k in keysToEvict) {
+                                val bmp = pixelStretchBitmapsCache.remove(k)
+                                if (bmp != null && !bmp.isRecycled) {
+                                    try {
+                                        bmp.recycle()
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                finalWarpedBmp = resultBmp
+            }
+        }
+        
+        if (finalWarpedBmp != null) {
+            val paint = android.graphics.Paint().apply {
+                isAntiAlias = true
+                isFilterBitmap = true
+                alpha = (layer.opacity * 255).toInt().coerceIn(0, 255)
+            }
+            
+            canvas.save()
+            canvas.translate(layer.positionX, layer.positionY)
+            val m = android.graphics.Matrix()
+            val centerX = layer.width * layer.pivotX
+            val centerY = layer.height * layer.pivotY
+            m.postTranslate(centerX, centerY)
+            m.postRotate(layer.rotation)
+            m.postScale(layer.scaleX, layer.scaleY)
+            m.postTranslate(-centerX, -centerY)
+            canvas.concat(m)
+            
+            try {
+                canvas.drawBitmap(finalWarpedBmp, null, android.graphics.Rect(0, 0, layW, layH), paint)
+            } catch (e: java.lang.Exception) {
+                e.printStackTrace()
+            }
+            
+            canvas.restore()
+            return
+        }
+    }
+
     val paint = android.graphics.Paint().apply {
         isAntiAlias = true
         color = android.graphics.Color.argb(
@@ -8626,82 +8772,8 @@ private fun drawLayerToNativeCanvas(
                     if (file.exists()) {
                         val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
                         if (bitmap != null) {
-                            val activeEffects = layer.effects.filter { it.isEnabled }
-                            val pixelStretchEffect = activeEffects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "PixelStretch" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
-
-                            if (pixelStretchEffect != null) {
-                                val sliceLine = pixelStretchEffect.parameters["SliceLine"]?.value ?: 0.5f
-                                val orientationVal = pixelStretchEffect.parameters["Orientation"]?.value ?: 0f
-                                val isHorizontal = orientationVal > 0.5f
-                                val warpBend = pixelStretchEffect.parameters["WarpBend"]?.value ?: 0f
-                                val warpFreq = pixelStretchEffect.parameters["WarpFrequency"]?.value ?: 1f
-                                val cutoutVal = pixelStretchEffect.parameters["SubjectCutout"]?.value ?: 1f
-                                val thresholdVal = pixelStretchEffect.parameters["CutoutThreshold"]?.value ?: 230f
-
-                                // 1. Extract 1D slice
-                                val sliceKey = "${layer.id}_slice_${sliceLine}_${isHorizontal}_${bitmap.hashCode()}"
-                                var sliceBmp = pixelStretchBitmapsCache[sliceKey]
-                                if (sliceBmp == null) {
-                                    sliceBmp = extractPixelStretchBitmap(bitmap, sliceLine, isHorizontal)
-                                    pixelStretchBitmapsCache[sliceKey] = sliceBmp
-                                }
-
-                                // 2. Compute warp vertices for drawBitmapMesh
-                                val meshWidth = 20
-                                val meshHeight = 20
-                                val vertCount = (meshWidth + 1) * (meshHeight + 1)
-                                val verts = FloatArray(vertCount * 2)
-
-                                val layW = layer.width
-                                val layH = layer.height
-
-                                var index = 0
-                                for (yIdx in 0..meshHeight) {
-                                    val fy = yIdx.toFloat() / meshHeight
-                                    val yNormal = fy * layH
-                                    for (xIdx in 0..meshWidth) {
-                                        val fx = xIdx.toFloat() / meshWidth
-                                        var xNormal = fx * layW
-
-                                        var vx = xNormal
-                                        var vy = yNormal
-
-                                        if (isHorizontal) {
-                                            val wave = kotlin.math.sin(Math.PI.toFloat() * fx) * warpBend + 
-                                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fx) * (warpBend * 0.4f)
-                                            vy += wave
-                                        } else {
-                                            val wave = kotlin.math.sin(Math.PI.toFloat() * fy) * warpBend + 
-                                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fy) * (warpBend * 0.4f)
-                                            vx += wave
-                                        }
-
-                                        verts[index * 2] = vx
-                                        verts[index * 2 + 1] = vy
-                                        index++
-                                    }
-                                }
-
-                                try {
-                                    canvas.drawBitmapMesh(sliceBmp, meshWidth, meshHeight, verts, 0, null, 0, paint)
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                }
-
-                                if (cutoutVal > 0f) {
-                                    val cutoutKey = "${layer.id}_cutout_${thresholdVal}_${cutoutVal}_${bitmap.hashCode()}"
-                                    var cutoutBmp = pixelStretchBitmapsCache[cutoutKey]
-                                    if (cutoutBmp == null) {
-                                        cutoutBmp = extractSubjectForeground(bitmap, thresholdVal, cutoutVal)
-                                        pixelStretchBitmapsCache[cutoutKey] = cutoutBmp
-                                    }
-                                    val destRect = android.graphics.Rect(0, 0, layW.toInt(), layH.toInt())
-                                    canvas.drawBitmap(cutoutBmp, null, destRect, paint)
-                                }
-                            } else {
-                                val destRect = android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
-                                canvas.drawBitmap(bitmap, null, destRect, paint)
-                            }
+                            val destRect = android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
+                            canvas.drawBitmap(bitmap, null, destRect, paint)
                         }
                     }
                 } catch (t: Throwable) {
@@ -13958,6 +14030,168 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     globalY: Float = 0f,
     activeTool: String = "Brush"
 ) {
+    val activeStretchEffects = layer.effects.filter { it.isEnabled }
+    val pixelStretchEffect = activeStretchEffects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "PixelStretch" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+
+    if (pixelStretchEffect != null) {
+        val layW = maxOf(2, layer.width.toInt().coerceAtMost(2048))
+        val layH = maxOf(2, layer.height.toInt().coerceAtMost(2048))
+        
+        val sliceLine = pixelStretchEffect.parameters["SliceLine"]?.value ?: 0.5f
+        val orientationVal = pixelStretchEffect.parameters["Orientation"]?.value ?: 0f
+        val isHorizontal = orientationVal > 0.5f
+        val warpBend = pixelStretchEffect.parameters["WarpBend"]?.value ?: 0f
+        val warpFreq = pixelStretchEffect.parameters["WarpFrequency"]?.value ?: 1f
+        val cutoutVal = pixelStretchEffect.parameters["SubjectCutout"]?.value ?: 1f
+        val thresholdVal = pixelStretchEffect.parameters["CutoutThreshold"]?.value ?: 230f
+        
+        val stateHash = if (layer.type == com.example.studio.model.LayerType.IMAGE_CARD) {
+            layer.imageUri.hashCode()
+        } else {
+            (layer.textContent.hashCode() * 31 + layer.baseColor.hashCode()) * 31 + layer.brushPoints.size + layer.cornerRadius.hashCode() + layer.polygonEdges + layer.strokeThickness.hashCode() + layer.fontSize.hashCode()
+        }
+        
+        val finalStretchKey = "ps_${layer.id}_${sliceLine}_${isHorizontal}_${warpBend}_${warpFreq}_${cutoutVal}_${thresholdVal}_${layW}_${layH}_${stateHash}"
+        var finalWarpedBmp = pixelStretchBitmapsCache[finalStretchKey]
+        
+        if (finalWarpedBmp == null || finalWarpedBmp.isRecycled) {
+            val baseBmp = if (layer.type == com.example.studio.model.LayerType.IMAGE_CARD) {
+                val uriStr = layer.imageUri
+                val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
+                loadedBitmap?.asAndroidBitmap()
+            } else {
+                val tempBmp = android.graphics.Bitmap.createBitmap(layW, layH, android.graphics.Bitmap.Config.ARGB_8888)
+                val nativeCanvas = android.graphics.Canvas(tempBmp)
+                val tempCanvas = androidx.compose.ui.graphics.Canvas(nativeCanvas)
+                val originalCanvas = drawContext.canvas
+                
+                drawContext.canvas = tempCanvas
+                try {
+                    val disabledEffects = layer.effects.map {
+                        if (it.id == pixelStretchEffect.id) {
+                            (it as com.example.studio.model.StudioEffect.PhotoshopEffect).copy(isEnabled = false)
+                        } else it
+                    }
+                    val tempLayer = layer.copy(effects = disabledEffects)
+                    drawAllEffectsAndLayersLocal(
+                        layer = tempLayer,
+                        layerOpacity = 1.0f,
+                        selectedLayerId = selectedLayerId,
+                        pathCache = pathCache,
+                        pathPointsCountCache = pathPointsCountCache,
+                        totalScale = totalScale,
+                        dashEffect = dashEffect,
+                        composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+                        imageBitmapCache = imageBitmapCache,
+                        backdropBitmap = backdropBitmap,
+                        globalX = globalX,
+                        globalY = globalY,
+                        activeTool = activeTool
+                    )
+                } finally {
+                    drawContext.canvas = originalCanvas
+                }
+                tempBmp
+            }
+            
+            if (baseBmp != null) {
+                val resultBmp = android.graphics.Bitmap.createBitmap(layW, layH, android.graphics.Bitmap.Config.ARGB_8888)
+                val tempCanvas = android.graphics.Canvas(resultBmp)
+                val sliceBmp = extractPixelStretchBitmap(baseBmp, sliceLine, isHorizontal)
+                
+                val meshWidth = 20
+                val meshHeight = 20
+                val vertCount = (meshWidth + 1) * (meshHeight + 1)
+                val verts = FloatArray(vertCount * 2)
+                
+                var index = 0
+                for (yIdx in 0..meshHeight) {
+                    val fy = yIdx.toFloat() / meshHeight
+                    val yNormal = fy * layH
+                    for (xIdx in 0..meshWidth) {
+                        val fx = xIdx.toFloat() / meshWidth
+                        var xNormal = fx * layW
+
+                        var vx = xNormal
+                        var vy = yNormal
+
+                        if (isHorizontal) {
+                            val wave = kotlin.math.sin(Math.PI.toFloat() * fx) * warpBend + 
+                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fx) * (warpBend * 0.4f)
+                            vy += wave
+                        } else {
+                            val wave = kotlin.math.sin(Math.PI.toFloat() * fy) * warpBend + 
+                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fy) * (warpBend * 0.4f)
+                            vx += wave
+                        }
+
+                        verts[index * 2] = vx
+                        verts[index * 2 + 1] = vy
+                        index++
+                    }
+                }
+                
+                val meshPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    isFilterBitmap = true
+                }
+                
+                try {
+                    tempCanvas.drawBitmapMesh(sliceBmp, meshWidth, meshHeight, verts, 0, null, 0, meshPaint)
+                    if (sliceBmp != baseBmp) {
+                        try { sliceBmp.recycle() } catch (e: Exception) {}
+                    }
+                    if (cutoutVal > 0f) {
+                        val cutoutBmp = extractSubjectForeground(baseBmp, thresholdVal, cutoutVal)
+                        tempCanvas.drawBitmap(cutoutBmp, null, android.graphics.Rect(0, 0, layW, layH), meshPaint)
+                        if (cutoutBmp != baseBmp) {
+                            try { cutoutBmp.recycle() } catch (e: Exception) {}
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                
+                if (layer.type != com.example.studio.model.LayerType.IMAGE_CARD) {
+                    try {
+                        baseBmp.recycle()
+                    } catch (e: Exception) {}
+                }
+                
+                pixelStretchBitmapsCache[finalStretchKey] = resultBmp
+                if (pixelStretchBitmapsCache.size > 16) {
+                    synchronized(pixelStretchBitmapsCache) {
+                        if (pixelStretchBitmapsCache.size > 16) {
+                            val keys = pixelStretchBitmapsCache.keys().toList()
+                            val keysToEvict = keys.take(8)
+                            for (k in keysToEvict) {
+                                val bmp = pixelStretchBitmapsCache.remove(k)
+                                if (bmp != null && !bmp.isRecycled) {
+                                    try {
+                                        bmp.recycle()
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                finalWarpedBmp = resultBmp
+            }
+        }
+        
+        if (finalWarpedBmp != null) {
+            drawImage(
+                image = finalWarpedBmp.asImageBitmap(),
+                dstSize = androidx.compose.ui.unit.IntSize(layW, layH),
+                alpha = layerOpacity,
+                blendMode = composeBlendMode
+            )
+            return
+        }
+    }
+
     val effectiveColor = getLayerEffectiveColor(layer, 1.0f)
     var dropShadow: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
     var innerShadow: com.example.studio.model.StudioEffect.PhotoshopEffect? = null
@@ -14696,113 +14930,26 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
                     if (loadedBitmap != null) {
                         val activeEffects = layer.effects.filter { it.isEnabled }
-                        val pixelStretchEffect = activeEffects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "PixelStretch" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
-
-                        if (pixelStretchEffect != null) {
-                            val sliceLine = pixelStretchEffect.parameters["SliceLine"]?.value ?: 0.5f
-                            val orientationVal = pixelStretchEffect.parameters["Orientation"]?.value ?: 0f
-                            val isHorizontal = orientationVal > 0.5f
-                            val warpBend = pixelStretchEffect.parameters["WarpBend"]?.value ?: 0f
-                            val warpFreq = pixelStretchEffect.parameters["WarpFrequency"]?.value ?: 1f
-                            val cutoutVal = pixelStretchEffect.parameters["SubjectCutout"]?.value ?: 1f
-                            val thresholdVal = pixelStretchEffect.parameters["CutoutThreshold"]?.value ?: 230f
-
-                            val androidBmp = loadedBitmap.asAndroidBitmap()
-
-                            // 1. Extract 1D slice
-                            val sliceKey = "${layer.id}_slice_${sliceLine}_${isHorizontal}_${androidBmp.hashCode()}"
-                            val sliceBmp = pixelStretchBitmapsCache.getOrPut(sliceKey) {
-                                extractPixelStretchBitmap(androidBmp, sliceLine, isHorizontal)
+                        val drawImage = if (activeEffects.isNotEmpty()) {
+                            val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
+                            val processedKey = "${layer.id}_${uriStr}_${effectHash}"
+                            var cachedProcessed = processedImageBitmapCache[processedKey]
+                            if (cachedProcessed == null) {
+                                val androidBmp = loadedBitmap.asAndroidBitmap()
+                                val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
+                                cachedProcessed = filteredBmp.asImageBitmap()
+                                processedImageBitmapCache[processedKey] = cachedProcessed
                             }
-
-                            // 2. Compute warp vertices for drawBitmapMesh
-                            val meshWidth = 20
-                            val meshHeight = 20
-                            val vertCount = (meshWidth + 1) * (meshHeight + 1)
-                            val verts = FloatArray(vertCount * 2)
-
-                            val layW = layer.width
-                            val layH = layer.height
-
-                            var index = 0
-                            for (yIdx in 0..meshHeight) {
-                                val fy = yIdx.toFloat() / meshHeight
-                                val yNormal = fy * layH
-                                for (xIdx in 0..meshWidth) {
-                                    val fx = xIdx.toFloat() / meshWidth
-                                    var xNormal = fx * layW
-
-                                    var vx = xNormal
-                                    var vy = yNormal
-
-                                    if (isHorizontal) {
-                                        val wave = kotlin.math.sin(Math.PI.toFloat() * fx) * warpBend + 
-                                                   kotlin.math.sin(warpFreq * Math.PI.toFloat() * fx) * (warpBend * 0.4f)
-                                        vy += wave
-                                    } else {
-                                        val wave = kotlin.math.sin(Math.PI.toFloat() * fy) * warpBend + 
-                                                   kotlin.math.sin(warpFreq * Math.PI.toFloat() * fy) * (warpBend * 0.4f)
-                                        vx += wave
-                                    }
-
-                                    verts[index * 2] = vx
-                                    verts[index * 2 + 1] = vy
-                                    index++
-                                }
-                            }
-
-                            // 3. Draw stretched & warped lines using GPU-accelerated drawBitmapMesh!
-                            val paint = android.graphics.Paint().apply {
-                                isAntiAlias = true
-                                isFilterBitmap = true
-                                alpha = ((finalOpacity * layerOpacity) * 255).toInt().coerceIn(0, 255)
-                            }
-                            
-                            val canvasNative = drawContext.canvas.nativeCanvas
-                            canvasNative.save()
-                            try {
-                                canvasNative.drawBitmapMesh(sliceBmp, meshWidth, meshHeight, verts, 0, null, 0, paint)
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            } finally {
-                                canvasNative.restore()
-                            }
-
-                            // 4. Render subject cutout layered seamlessly on top of stretched lines
-                            if (cutoutVal > 0f) {
-                                val cutoutKey = "${layer.id}_cutout_${thresholdVal}_${cutoutVal}_${androidBmp.hashCode()}"
-                                val cutoutBmp = pixelStretchBitmapsCache.getOrPut(cutoutKey) {
-                                    extractSubjectForeground(androidBmp, thresholdVal, cutoutVal)
-                                }
-                                drawImage(
-                                    image = cutoutBmp.asImageBitmap(),
-                                    dstSize = androidx.compose.ui.unit.IntSize(layW.toInt(), layH.toInt()),
-                                    alpha = finalOpacity * layerOpacity,
-                                    blendMode = composeBlendMode
-                                )
-                            }
+                            cachedProcessed
                         } else {
-                            val drawImage = if (activeEffects.isNotEmpty()) {
-                                val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
-                                val processedKey = "${layer.id}_${uriStr}_${effectHash}"
-                                var cachedProcessed = processedImageBitmapCache[processedKey]
-                                if (cachedProcessed == null) {
-                                    val androidBmp = loadedBitmap.asAndroidBitmap()
-                                    val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
-                                    cachedProcessed = filteredBmp.asImageBitmap()
-                                    processedImageBitmapCache[processedKey] = cachedProcessed
-                                }
-                                cachedProcessed
-                            } else {
-                                loadedBitmap
-                            }
-                            drawImage(
-                                image = drawImage,
-                                dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
-                                alpha = finalOpacity * layerOpacity,
-                                blendMode = composeBlendMode
-                            )
+                            loadedBitmap
                         }
+                        drawImage(
+                            image = drawImage,
+                            dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                            alpha = finalOpacity * layerOpacity,
+                            blendMode = composeBlendMode
+                        )
                     } else {
                         drawRect(
                             color = finalComposeColor,
