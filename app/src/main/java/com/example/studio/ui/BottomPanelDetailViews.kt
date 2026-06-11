@@ -356,7 +356,7 @@ fun TypographyOrShapeDetailView(
                     .padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("Typography Style & Font 🔠", style = Typography.labelSmall, color = EnergeticYellow)
+                Text("Typography Style & Font ", style = Typography.labelSmall, color = EnergeticYellow)
                 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Source Text Content", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
@@ -660,7 +660,7 @@ fun TypographyOrShapeDetailView(
                         .padding(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("Parametric Shape Editor 📐", style = Typography.labelSmall, color = EnergeticYellow)
+                    Text("Parametric Shape Editor", style = Typography.labelSmall, color = EnergeticYellow)
                     
                     Text(
                         text = "Shape Type: ${selectedLayer.type.name.removePrefix("VECTOR_").replace("_", " ")}",
@@ -844,7 +844,7 @@ fun TypographyOrShapeDetailView(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("📐", fontSize = 28.sp)
+                    Text("S", fontSize = 28.sp, color = EnergeticYellow)
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = "Vector Shape Layer Required",
@@ -1004,6 +1004,12 @@ fun FiltersAndFxDetailView(
                     listOf(
                         "Structural Ripples" to listOf("LineDensity", "Rotation"),
                         "Optics & Diffusive Blur" to listOf("RefractionStrength", "BlurMix", "SpecularHighlight")
+                    )
+                } else if (actEff is StudioEffect.PhotoshopEffect && actEff.effectType == "PixelStretch") {
+                    listOf(
+                        "Pixel Extraction & Stretch Direction" to listOf("SliceLine", "Orientation"),
+                        "Deformation Grid (Warp & Curves)" to listOf("WarpBend", "WarpFrequency"),
+                        "Depth & Composition Masking" to listOf("SubjectCutout", "CutoutThreshold")
                     )
                 } else {
                     listOf("" to actEff.parameters.keys.toList())

@@ -117,6 +117,86 @@ fun interpolateMultiColor(colors: List<androidx.compose.ui.graphics.Color>, frac
 }
 
 val processedImageBitmapCache = java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
+val pixelStretchBitmapsCache = java.util.concurrent.ConcurrentHashMap<String, android.graphics.Bitmap>()
+
+fun extractPixelStretchBitmap(
+    source: android.graphics.Bitmap,
+    sliceLine: Float,
+    horizontalOrientation: Boolean
+): android.graphics.Bitmap {
+    val srcW = source.width
+    val srcH = source.height
+    try {
+        if (horizontalOrientation) {
+            val targetX = (sliceLine * (srcW - 1)).toInt().coerceIn(0, srcW - 1)
+            val sliceBmp = android.graphics.Bitmap.createBitmap(1, srcH, android.graphics.Bitmap.Config.ARGB_8888)
+            val pixels = IntArray(srcH)
+            source.getPixels(pixels, 0, 1, targetX, 0, 1, srcH)
+            sliceBmp.setPixels(pixels, 0, 1, 0, 0, 1, srcH)
+            return sliceBmp
+        } else {
+            val targetY = (sliceLine * (srcH - 1)).toInt().coerceIn(0, srcH - 1)
+            val sliceBmp = android.graphics.Bitmap.createBitmap(srcW, 1, android.graphics.Bitmap.Config.ARGB_8888)
+            val pixels = IntArray(srcW)
+            source.getPixels(pixels, 0, srcW, 0, targetY, srcW, 1)
+            sliceBmp.setPixels(pixels, 0, srcW, 0, 0, srcW, 1)
+            return sliceBmp
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return source
+    }
+}
+
+fun extractSubjectForeground(
+    source: android.graphics.Bitmap,
+    threshold: Float,
+    subjectOpacity: Float
+): android.graphics.Bitmap {
+    val w = source.width
+    val h = source.height
+    try {
+        val result = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(w * h)
+        source.getPixels(pixels, 0, w, 0, 0, w, h)
+        
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            val a = (color shr 24) and 0xff
+            val r = (color shr 16) and 0xff
+            val g = (color shr 8) and 0xff
+            val b = color and 0xff
+            
+            val luma = 0.299f * r + 0.587f * g + 0.114f * b
+            
+            val alphaMask = if (threshold >= 128f) {
+                if (luma > threshold) {
+                    val diff = luma - threshold
+                    val pct = (diff / (255f - threshold)).coerceIn(0f, 1f)
+                    (a * (1f - pct) * subjectOpacity).toInt()
+                } else {
+                    (a * subjectOpacity).toInt()
+                }
+            } else {
+                if (luma < threshold) {
+                    val pct = (luma / threshold).coerceIn(0f, 1f)
+                    (a * pct * subjectOpacity).toInt()
+                } else {
+                    (a * subjectOpacity).toInt()
+                }
+            }
+            
+            pixels[i] = (alphaMask shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        
+        result.setPixels(pixels, 0, w, 0, 0, w, h)
+        return result
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return source
+    }
+}
+
 var globalAppContext: android.content.Context? = null
 
 data class AnchorPoint(
@@ -1643,7 +1723,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 onDismissRequest = { showDownscalePsdDialog = null },
                 title = {
                     Text(
-                        text = "⚠️ HIGH RESOLUTION WARNING",
+                        text = " HIGH RESOLUTION WARNING",
                         style = Typography.titleMedium,
                         color = Color(0xFFFF8A80),
                         fontWeight = FontWeight.Bold
@@ -1745,7 +1825,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 onDismissRequest = { psdImportErrorMsg = null },
                 title = {
                     Text(
-                        text = "❌ PSD IMPORT ERROR",
+                        text = " PSD IMPORT ERROR",
                         style = Typography.titleMedium,
                         color = Color(0xFFFF8A80),
                         fontWeight = FontWeight.Bold
@@ -1810,7 +1890,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 onDismissRequest = { alightImportErrorMsg = null },
                 title = {
                     Text(
-                        text = "❌ ALIGHT XML IMPORT ERROR",
+                        text = " ALIGHT XML IMPORT ERROR",
                         style = Typography.titleMedium,
                         color = Color(0xFFFF8A80),
                         fontWeight = FontWeight.Bold
@@ -2055,7 +2135,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     onDismissRequest = { showDownscalePsdDialog = null },
                     title = {
                         Text(
-                            text = "⚠️ HIGH RESOLUTION WARNING",
+                            text = " HIGH RESOLUTION WARNING",
                             style = Typography.titleMedium,
                             color = Color(0xFFFF8A80),
                             fontWeight = FontWeight.Bold
@@ -2157,7 +2237,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     onDismissRequest = { psdImportErrorMsg = null },
                     title = {
                         Text(
-                            text = "❌ PSD IMPORT ERROR",
+                            text = " PSD IMPORT ERROR",
                             style = Typography.titleMedium,
                             color = Color(0xFFFF8A80),
                             fontWeight = FontWeight.Bold
@@ -5603,7 +5683,7 @@ fun GradientPickerPanel(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "Custom Stops 🎨",
+                    text = "Custom Stops",
                     style = Typography.labelSmall.copy(
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 10.sp,
@@ -5627,13 +5707,13 @@ fun GradientPickerPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             val patterns = listOf(
-                "Linear 📐" to 0f,
-                "Radial 🎯" to 1f,
-                "Sweep 🧭" to 2f,
-                "Reflected 🪞" to 3f,
-                "Concentric 🛞" to 4f,
-                "Diamond 💎" to 5f,
-                "Reflected Rad 🌟" to 6f
+                "Linear" to 0f,
+                "Radial" to 1f,
+                "Sweep" to 2f,
+                "Reflected" to 3f,
+                "Concentric" to 4f,
+                "Diamond" to 5f,
+                "Reflected Rad" to 6f
             )
             items(patterns.size) { i ->
                 val (label, valFloat) = patterns[i]
@@ -8203,7 +8283,7 @@ fun RightsideLayerDrawer(
                             LayerType.TEXT -> "T"
                             LayerType.FREEHAND_DRAWING -> "✎"
                             LayerType.IMAGE_CARD -> "▨"
-                            LayerType.GROUP -> "📁"
+                            LayerType.GROUP -> ""
                         }
                         Text(
                             text = glyph,
@@ -8452,8 +8532,82 @@ private fun drawLayerToNativeCanvas(
                     if (file.exists()) {
                         val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
                         if (bitmap != null) {
-                            val destRect = android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
-                            canvas.drawBitmap(bitmap, null, destRect, paint)
+                            val activeEffects = layer.effects.filter { it.isEnabled }
+                            val pixelStretchEffect = activeEffects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "PixelStretch" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+
+                            if (pixelStretchEffect != null) {
+                                val sliceLine = pixelStretchEffect.parameters["SliceLine"]?.value ?: 0.5f
+                                val orientationVal = pixelStretchEffect.parameters["Orientation"]?.value ?: 0f
+                                val isHorizontal = orientationVal > 0.5f
+                                val warpBend = pixelStretchEffect.parameters["WarpBend"]?.value ?: 0f
+                                val warpFreq = pixelStretchEffect.parameters["WarpFrequency"]?.value ?: 1f
+                                val cutoutVal = pixelStretchEffect.parameters["SubjectCutout"]?.value ?: 1f
+                                val thresholdVal = pixelStretchEffect.parameters["CutoutThreshold"]?.value ?: 230f
+
+                                // 1. Extract 1D slice
+                                val sliceKey = "${layer.id}_slice_${sliceLine}_${isHorizontal}_${bitmap.hashCode()}"
+                                var sliceBmp = pixelStretchBitmapsCache[sliceKey]
+                                if (sliceBmp == null) {
+                                    sliceBmp = extractPixelStretchBitmap(bitmap, sliceLine, isHorizontal)
+                                    pixelStretchBitmapsCache[sliceKey] = sliceBmp
+                                }
+
+                                // 2. Compute warp vertices for drawBitmapMesh
+                                val meshWidth = 20
+                                val meshHeight = 20
+                                val vertCount = (meshWidth + 1) * (meshHeight + 1)
+                                val verts = FloatArray(vertCount * 2)
+
+                                val layW = layer.width
+                                val layH = layer.height
+
+                                var index = 0
+                                for (yIdx in 0..meshHeight) {
+                                    val fy = yIdx.toFloat() / meshHeight
+                                    val yNormal = fy * layH
+                                    for (xIdx in 0..meshWidth) {
+                                        val fx = xIdx.toFloat() / meshWidth
+                                        var xNormal = fx * layW
+
+                                        var vx = xNormal
+                                        var vy = yNormal
+
+                                        if (isHorizontal) {
+                                            val wave = kotlin.math.sin(Math.PI.toFloat() * fx) * warpBend + 
+                                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fx) * (warpBend * 0.4f)
+                                            vy += wave
+                                        } else {
+                                            val wave = kotlin.math.sin(Math.PI.toFloat() * fy) * warpBend + 
+                                                       kotlin.math.sin(warpFreq * Math.PI.toFloat() * fy) * (warpBend * 0.4f)
+                                            vx += wave
+                                        }
+
+                                        verts[index * 2] = vx
+                                        verts[index * 2 + 1] = vy
+                                        index++
+                                    }
+                                }
+
+                                try {
+                                    canvas.drawBitmapMesh(sliceBmp, meshWidth, meshHeight, verts, 0, null, 0, paint)
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+
+                                if (cutoutVal > 0f) {
+                                    val cutoutKey = "${layer.id}_cutout_${thresholdVal}_${cutoutVal}_${bitmap.hashCode()}"
+                                    var cutoutBmp = pixelStretchBitmapsCache[cutoutKey]
+                                    if (cutoutBmp == null) {
+                                        cutoutBmp = extractSubjectForeground(bitmap, thresholdVal, cutoutVal)
+                                        pixelStretchBitmapsCache[cutoutKey] = cutoutBmp
+                                    }
+                                    val destRect = android.graphics.Rect(0, 0, layW.toInt(), layH.toInt())
+                                    canvas.drawBitmap(cutoutBmp, null, destRect, paint)
+                                }
+                            } else {
+                                val destRect = android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
+                                canvas.drawBitmap(bitmap, null, destRect, paint)
+                            }
                         }
                     }
                 } catch (t: Throwable) {
@@ -9014,7 +9168,7 @@ fun BottomEffectPanel(
                                                 .padding(10.dp),
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Text("Color Designer 🎨", style = Typography.labelSmall, color = EnergeticYellow)
+                                            Text("Color Designer", style = Typography.labelSmall, color = EnergeticYellow)
                                             HsvColorPickerPanel(
                                                 currentColor = selectedLayer.baseColor,
                                                 currentOpacity = selectedLayer.opacity,
@@ -9126,10 +9280,10 @@ fun BottomEffectPanel(
                             ) {
                                 val categories = listOf(
                                     Triple(0, "Transform", Icons.Default.Transform),
-                                    Triple(1, if (selectedLayer.type == LayerType.TEXT) "Type 🔤" else "Shape 📐", Icons.Default.Category),
-                                    Triple(2, "Color 🎨", Icons.Default.Palette),
+                                    Triple(1, if (selectedLayer.type == LayerType.TEXT) "Type" else "Shape", Icons.Default.Category),
+                                    Triple(2, "Color", Icons.Default.Palette),
                                     Triple(3, "Filters & FX (${selectedLayer.effects.size})", Icons.Default.FilterFrames),
-                                    Triple(4, "Stroke & Shadows ✨", Icons.Default.Deblur)
+                                    Triple(4, "Stroke & Shadows", Icons.Default.Deblur)
                                 )
 
                                 categories.forEach { (index, label, icon) ->
@@ -9452,7 +9606,7 @@ fun OldBottomEffectPanel(
                                         .padding(10.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text("Color Designer 🎨", style = Typography.labelSmall, color = EnergeticYellow)
+                                    Text("Color Designer", style = Typography.labelSmall, color = EnergeticYellow)
                                     HsvColorPickerPanel(
                                         currentColor = selectedLayer.baseColor,
                                         currentOpacity = selectedLayer.opacity,
@@ -9928,7 +10082,7 @@ fun OldBottomEffectPanel(
                                     .padding(10.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Text("Typography Style & Font 🔠", style = Typography.labelSmall, color = EnergeticYellow)
+                                Text("Typography Style & Font ", style = Typography.labelSmall, color = EnergeticYellow)
                                 
                                 // Source text content
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -10292,7 +10446,7 @@ fun OldBottomEffectPanel(
                                         .padding(10.dp),
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Text("Parametric Shape Editor 📐", style = Typography.labelSmall, color = EnergeticYellow)
+                                    Text("Parametric Shape Editor ", style = Typography.labelSmall, color = EnergeticYellow)
                                     
                                     Text(
                                         text = "Shape Type: ${selectedLayer.type.name.removePrefix("VECTOR_").replace("_", " ")}",
@@ -10462,7 +10616,7 @@ fun OldBottomEffectPanel(
                                     verticalArrangement = Arrangement.Center,
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Text("📐", fontSize = 28.sp)
+                                    Text("", fontSize = 28.sp)
                                     Spacer(Modifier.height(8.dp))
                                     Text(
                                         text = "Vector Shape Layer Required",
@@ -10501,7 +10655,7 @@ fun OldBottomEffectPanel(
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Color Designer 🎨", style = Typography.labelSmall, color = EnergeticYellow)
+                            Text("Color Designer", style = Typography.labelSmall, color = EnergeticYellow)
 
                             HsvColorPickerPanel(
                                 currentColor = selectedLayer.baseColor,
@@ -11886,7 +12040,7 @@ fun CanvasSetupScreen(
                                 val hIn = physicalHeightInput.toFloatOrNull() ?: 11.0f
                                 val wPx = (wIn * evaluatedDpi).toInt()
                                 val hPx = (hIn * evaluatedDpi).toInt()
-                                "📐 CONVERSION FORMULA:\nWidth: $wIn in × $evaluatedDpi DPI = $wPx px\nHeight: $hIn in × $evaluatedDpi DPI = $hPx px"
+                                " CONVERSION FORMULA:\nWidth: $wIn in × $evaluatedDpi DPI = $wPx px\nHeight: $hIn in × $evaluatedDpi DPI = $hPx px"
                             }
                             "Centimeters" -> {
                                 val wCm = physicalWidthInput.toFloatOrNull() ?: 21.0f
@@ -11895,7 +12049,7 @@ fun CanvasSetupScreen(
                                 val hIn = hCm / 2.54f
                                 val wPx = (wIn * evaluatedDpi).toInt()
                                 val hPx = (hIn * evaluatedDpi).toInt()
-                                "📐 CONVERSION FORMULA (cm → in → px):\nWidth: ($wCm cm ÷ 2.54) × $evaluatedDpi DPI = $wPx px\nHeight: ($hCm cm ÷ 2.54) × $evaluatedDpi DPI = $hPx px"
+                                " CONVERSION FORMULA (cm → in → px):\nWidth: ($wCm cm ÷ 2.54) × $evaluatedDpi DPI = $wPx px\nHeight: ($hCm cm ÷ 2.54) × $evaluatedDpi DPI = $hPx px"
                             }
                             else -> {
                                 "Direct Pixel Plane Mapping Configured."
@@ -11913,7 +12067,7 @@ fun CanvasSetupScreen(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
-                                    text = "📏 PHYSICAL RESOLUTION TRANSLATION",
+                                    text = " PHYSICAL RESOLUTION TRANSLATION",
                                     style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = EnergeticYellow)
                                 )
                                 Text(
@@ -14448,26 +14602,113 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
                     if (loadedBitmap != null) {
                         val activeEffects = layer.effects.filter { it.isEnabled }
-                        val drawImage = if (activeEffects.isNotEmpty()) {
-                            val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
-                            val processedKey = "${layer.id}_${uriStr}_${effectHash}"
-                            var cachedProcessed = processedImageBitmapCache[processedKey]
-                            if (cachedProcessed == null) {
-                                val androidBmp = loadedBitmap.asAndroidBitmap()
-                                val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
-                                cachedProcessed = filteredBmp.asImageBitmap()
-                                processedImageBitmapCache[processedKey] = cachedProcessed
+                        val pixelStretchEffect = activeEffects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "PixelStretch" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+
+                        if (pixelStretchEffect != null) {
+                            val sliceLine = pixelStretchEffect.parameters["SliceLine"]?.value ?: 0.5f
+                            val orientationVal = pixelStretchEffect.parameters["Orientation"]?.value ?: 0f
+                            val isHorizontal = orientationVal > 0.5f
+                            val warpBend = pixelStretchEffect.parameters["WarpBend"]?.value ?: 0f
+                            val warpFreq = pixelStretchEffect.parameters["WarpFrequency"]?.value ?: 1f
+                            val cutoutVal = pixelStretchEffect.parameters["SubjectCutout"]?.value ?: 1f
+                            val thresholdVal = pixelStretchEffect.parameters["CutoutThreshold"]?.value ?: 230f
+
+                            val androidBmp = loadedBitmap.asAndroidBitmap()
+
+                            // 1. Extract 1D slice
+                            val sliceKey = "${layer.id}_slice_${sliceLine}_${isHorizontal}_${androidBmp.hashCode()}"
+                            val sliceBmp = pixelStretchBitmapsCache.getOrPut(sliceKey) {
+                                extractPixelStretchBitmap(androidBmp, sliceLine, isHorizontal)
                             }
-                            cachedProcessed
+
+                            // 2. Compute warp vertices for drawBitmapMesh
+                            val meshWidth = 20
+                            val meshHeight = 20
+                            val vertCount = (meshWidth + 1) * (meshHeight + 1)
+                            val verts = FloatArray(vertCount * 2)
+
+                            val layW = layer.width
+                            val layH = layer.height
+
+                            var index = 0
+                            for (yIdx in 0..meshHeight) {
+                                val fy = yIdx.toFloat() / meshHeight
+                                val yNormal = fy * layH
+                                for (xIdx in 0..meshWidth) {
+                                    val fx = xIdx.toFloat() / meshWidth
+                                    var xNormal = fx * layW
+
+                                    var vx = xNormal
+                                    var vy = yNormal
+
+                                    if (isHorizontal) {
+                                        val wave = kotlin.math.sin(Math.PI.toFloat() * fx) * warpBend + 
+                                                   kotlin.math.sin(warpFreq * Math.PI.toFloat() * fx) * (warpBend * 0.4f)
+                                        vy += wave
+                                    } else {
+                                        val wave = kotlin.math.sin(Math.PI.toFloat() * fy) * warpBend + 
+                                                   kotlin.math.sin(warpFreq * Math.PI.toFloat() * fy) * (warpBend * 0.4f)
+                                        vx += wave
+                                    }
+
+                                    verts[index * 2] = vx
+                                    verts[index * 2 + 1] = vy
+                                    index++
+                                }
+                            }
+
+                            // 3. Draw stretched & warped lines using GPU-accelerated drawBitmapMesh!
+                            val paint = android.graphics.Paint().apply {
+                                isAntiAlias = true
+                                isFilterBitmap = true
+                                alpha = ((finalOpacity * layerOpacity) * 255).toInt().coerceIn(0, 255)
+                            }
+                            
+                            val canvasNative = drawContext.canvas.nativeCanvas
+                            canvasNative.save()
+                            try {
+                                canvasNative.drawBitmapMesh(sliceBmp, meshWidth, meshHeight, verts, 0, null, 0, paint)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            } finally {
+                                canvasNative.restore()
+                            }
+
+                            // 4. Render subject cutout layered seamlessly on top of stretched lines
+                            if (cutoutVal > 0f) {
+                                val cutoutKey = "${layer.id}_cutout_${thresholdVal}_${cutoutVal}_${androidBmp.hashCode()}"
+                                val cutoutBmp = pixelStretchBitmapsCache.getOrPut(cutoutKey) {
+                                    extractSubjectForeground(androidBmp, thresholdVal, cutoutVal)
+                                }
+                                drawImage(
+                                    image = cutoutBmp.asImageBitmap(),
+                                    dstSize = androidx.compose.ui.unit.IntSize(layW.toInt(), layH.toInt()),
+                                    alpha = finalOpacity * layerOpacity,
+                                    blendMode = composeBlendMode
+                                )
+                            }
                         } else {
-                            loadedBitmap
+                            val drawImage = if (activeEffects.isNotEmpty()) {
+                                val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
+                                val processedKey = "${layer.id}_${uriStr}_${effectHash}"
+                                var cachedProcessed = processedImageBitmapCache[processedKey]
+                                if (cachedProcessed == null) {
+                                    val androidBmp = loadedBitmap.asAndroidBitmap()
+                                    val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
+                                    cachedProcessed = filteredBmp.asImageBitmap()
+                                    processedImageBitmapCache[processedKey] = cachedProcessed
+                                }
+                                cachedProcessed
+                            } else {
+                                loadedBitmap
+                            }
+                            drawImage(
+                                image = drawImage,
+                                dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
+                                alpha = finalOpacity * layerOpacity,
+                                blendMode = composeBlendMode
+                            )
                         }
-                        drawImage(
-                            image = drawImage,
-                            dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
-                            alpha = finalOpacity * layerOpacity,
-                            blendMode = composeBlendMode
-                        )
                     } else {
                         drawRect(
                             color = finalComposeColor,
@@ -16328,7 +16569,7 @@ fun BordersAndShadowsTabPanel(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "✨ Advanced Borders & Shadows Layer Styles",
+                    text = "Advanced Borders & Shadows Layer Styles",
                     style = Typography.bodyMedium,
                     color = EnergeticYellow,
                     fontWeight = FontWeight.Bold
@@ -17030,43 +17271,43 @@ data class BrushPresetItem(
 
 val ALL_AVAILABLE_BRUSHES = listOf(
     BrushPresetItem(0, "Solid Ink", "Simple", 16f, "✎", "Direct clean solid line for rapid digital sketching and outlining."),
-    BrushPresetItem(7, "Glass Pen", "Ink", 3f, "🍷", "Fine transparent pen with glossy reflection tracing."),
-    BrushPresetItem(8, "Vector Dip Pen", "Vector", 3f, "➿", "Smoothed path tracing pen simulating vector coordinates."),
-    BrushPresetItem(9, "Vector Felt Tip", "Vector", 8f, "✒", "Uniform weighted vector felt pen for clean illustration lines."),
-    BrushPresetItem(10, "Pencil (#1)", "Sketch", 9f, "✏", "Faint graphite sketching pencil with paper grain feel."),
-    BrushPresetItem(11, "Pencil (#2)", "Sketch", 9f, "✏", "Softer graphite drawing pencil for smooth outlines and shading."),
-    BrushPresetItem(12, "Pencil (Graphite)", "Sketch", 9f, "✏", "Traditional carbon graphite pencil with deep, rich value ranges."),
-    BrushPresetItem(13, "Pencil (Rough)", "Sketch", 9f, "✏", "A highly textured, dynamic sketching pencil with jittery rough tooth."),
-    BrushPresetItem(14, "Hard Japanese Pen", "Comic", 3f, "✒", "Traditional Sumi-Ink styled Japanese calligraphy pen with flex."),
-    BrushPresetItem(15, "Soft Falcon Pen", "Ink", 3f, "✒", "Highly flexible bleed copperplate pen for fine calligraphy."),
-    BrushPresetItem(16, "Hard Falcon Pen", "Ink", 3f, "✒", "Smooth solid metal nib brush pen with clean round endpoints."),
-    BrushPresetItem(17, "Technical Pen", "Ink", 3f, "🖋", "Strict constant-width drafting pen with hard square boundaries."),
-    BrushPresetItem(18, "Ruling Pen", "Ink", 3f, "📏", "Parallel twin metal blades drawing distinct outlines."),
-    BrushPresetItem(19, "Drawing Pen", "Ink", 3f, "✍", "Classic standard steel mapping and drawing pen."),
-    BrushPresetItem(20, "Ballpoint Pen", "Ink", 3f, "✍", "Fine personal pen with subtle texture gaps mimicking drag."),
-    BrushPresetItem(21, "Texture Pen", "Watercolor (Flat)", 3f, "🖌", "Uniquely textured pattern brush mimicking canvas fiber."),
-    BrushPresetItem(22, "Soft Mapping Pen", "Watercolor (Flat)", 3f, "✒", "Manga speedball G-nib with soft textured feathering."),
-    BrushPresetItem(23, "Hard Mapping Pen", "Watercolor (Flat)", 3f, "✒", "Clean comic G-nib with crisp precision rendering."),
-    BrushPresetItem(24, "Soft Turnip Pen", "Comic", 3f, "✒", "Slightly soft porous kabura comic pen for broad lines."),
-    BrushPresetItem(25, "Hard Turnip Pen", "Comic", 3f, "✒", "Firm manga outline brush pen with robust tapered behavior."),
-    BrushPresetItem(26, "Soft School Pen", "Comic", 3f, "🎒", "Soft bleed manga/anime drafting pen favorited by manga students."),
-    BrushPresetItem(27, "Hard School Pen", "Comic", 3f, "🏫", "Stiff uniform manga/anime drafting pen favorited by manga students."),
-    BrushPresetItem(28, "Airbrush (Normal)", "Airbrush", 80f, "☁", "Smooth outer blur mist spray for soft color blending."),
+    BrushPresetItem(7, "Glass Pen", "Ink", 3f, "", "Fine transparent pen with glossy reflection tracing."),
+    BrushPresetItem(8, "Vector Dip Pen", "Vector", 3f, "", "Smoothed path tracing pen simulating vector coordinates."),
+    BrushPresetItem(9, "Vector Felt Tip", "Vector", 8f, "", "Uniform weighted vector felt pen for clean illustration lines."),
+    BrushPresetItem(10, "Pencil (#1)", "Sketch", 9f, "", "Faint graphite sketching pencil with paper grain feel."),
+    BrushPresetItem(11, "Pencil (#2)", "Sketch", 9f, "", "Softer graphite drawing pencil for smooth outlines and shading."),
+    BrushPresetItem(12, "Pencil (Graphite)", "Sketch", 9f, "", "Traditional carbon graphite pencil with deep, rich value ranges."),
+    BrushPresetItem(13, "Pencil (Rough)", "Sketch", 9f, "", "A highly textured, dynamic sketching pencil with jittery rough tooth."),
+    BrushPresetItem(14, "Hard Japanese Pen", "Comic", 3f, "", "Traditional Sumi-Ink styled Japanese calligraphy pen with flex."),
+    BrushPresetItem(15, "Soft Falcon Pen", "Ink", 3f, "", "Highly flexible bleed copperplate pen for fine calligraphy."),
+    BrushPresetItem(16, "Hard Falcon Pen", "Ink", 3f, "", "Smooth solid metal nib brush pen with clean round endpoints."),
+    BrushPresetItem(17, "Technical Pen", "Ink", 3f, "", "Strict constant-width drafting pen with hard square boundaries."),
+    BrushPresetItem(18, "Ruling Pen", "Ink", 3f, "", "Parallel twin metal blades drawing distinct outlines."),
+    BrushPresetItem(19, "Drawing Pen", "Ink", 3f, "", "Classic standard steel mapping and drawing pen."),
+    BrushPresetItem(20, "Ballpoint Pen", "Ink", 3f, "", "Fine personal pen with subtle texture gaps mimicking drag."),
+    BrushPresetItem(21, "Texture Pen", "Watercolor (Flat)", 3f, "", "Uniquely textured pattern brush mimicking canvas fiber."),
+    BrushPresetItem(22, "Soft Mapping Pen", "Watercolor (Flat)", 3f, "", "Manga speedball G-nib with soft textured feathering."),
+    BrushPresetItem(23, "Hard Mapping Pen", "Watercolor (Flat)", 3f, "", "Clean comic G-nib with crisp precision rendering."),
+    BrushPresetItem(24, "Soft Turnip Pen", "Comic", 3f, "", "Slightly soft porous kabura comic pen for broad lines."),
+    BrushPresetItem(25, "Hard Turnip Pen", "Comic", 3f, "", "Firm manga outline brush pen with robust tapered behavior."),
+    BrushPresetItem(26, "Soft School Pen", "Comic", 3f, "", "Soft bleed manga/anime drafting pen favorited by manga students."),
+    BrushPresetItem(27, "Hard School Pen", "Comic", 3f, "", "Stiff uniform manga/anime drafting pen favorited by manga students."),
+    BrushPresetItem(28, "Airbrush (Normal)", "Airbrush", 80f, "", "Smooth outer blur mist spray for soft color blending."),
     BrushPresetItem(29, "Airbrush (Triangle)", "Airbrush", 80f, "▲", "Fuzzy triangular gradient air spray shape."),
     BrushPresetItem(30, "Airbrush (Trap 20%)", "Airbrush", 80f, "▮", "Wide flattened airbrush overlay with 20% trapezoid falloff."),
     BrushPresetItem(31, "Airbrush (Trap 40%)", "Airbrush", 80f, "▰", "Medium flattened airbrush overlay with 40% trapezoid falloff."),
     BrushPresetItem(32, "Airbrush (Trap 60%)", "Airbrush", 80f, "▩", "Compact flattened airbrush overlay with 60% trapezoid falloff."),
     BrushPresetItem(33, "Airbrush (Particle)", "Airbrush", 80f, "░", "Granular noise spray for stipple shading and dust textures."),
     BrushPresetItem(34, "Airbrush (Particle L)", "Airbrush", 80f, "▓", "Coarser, wider spray droplets for paint splatters and sand."),
-    BrushPresetItem(35, "Dip Pen (Bleed)", "Simple", 3f, "✒", "Traditional high-capacity fountain brush with heavy bleed."),
-    BrushPresetItem(36, "Felt Tip Pen (Soft)", "Simple", 5f, "🖍", "Soft-edged porous highlighter marker pen."),
-    BrushPresetItem(37, "Felt Tip Pen (Hard)", "Simple", 9.9f, "🖊", "Clean bullet-tip modern marker with bold solid ink."),
-    BrushPresetItem(38, "Pen (Fade)", "Simple", 14.7f, "⏳", "Pressure tapered pen that fades beautifully at ends."),
-    BrushPresetItem(39, "Impasto Brush - Flat", "Watercolor (Flat)", 48f, "🖌", "Thick layered painterly stroke with realistic bristly edges."),
-    BrushPresetItem(40, "Digital Pen", "Simple", 34f, "👾", "Crisp aliased pixel pen for retro game art and clear flat colors."),
-    BrushPresetItem(1, "Calligraphy Wedge", "Vector", 16f, "✒", "Slanted chisel tip pen producing sharp dynamic width shifts."),
-    BrushPresetItem(2, "Neon Light Aura", "Watercolor (Flat)", 16f, "⚡", "Brilliant bright glowing core surrounded by colorful neon light."),
-    BrushPresetItem(3, "Soft Airbrush", "Airbrush", 16f, "☁", "Gentle blurred air mist for gradients and atmosphere."),
+    BrushPresetItem(35, "Dip Pen (Bleed)", "Simple", 3f, "", "Traditional high-capacity fountain brush with heavy bleed."),
+    BrushPresetItem(36, "Felt Tip Pen (Soft)", "Simple", 5f, "", "Soft-edged porous highlighter marker pen."),
+    BrushPresetItem(37, "Felt Tip Pen (Hard)", "Simple", 9.9f, "", "Clean bullet-tip modern marker with bold solid ink."),
+    BrushPresetItem(38, "Pen (Fade)", "Simple", 14.7f, "", "Pressure tapered pen that fades beautifully at ends."),
+    BrushPresetItem(39, "Impasto Brush - Flat", "Watercolor (Flat)", 48f, "", "Thick layered painterly stroke with realistic bristly edges."),
+    BrushPresetItem(40, "Digital Pen", "Simple", 34f, "", "Crisp aliased pixel pen for retro game art and clear flat colors."),
+    BrushPresetItem(1, "Calligraphy Wedge", "Vector", 16f, "", "Slanted chisel tip pen producing sharp dynamic width shifts."),
+    BrushPresetItem(2, "Neon Light Aura", "Watercolor (Flat)", 16f, "", "Brilliant bright glowing core surrounded by colorful neon light."),
+    BrushPresetItem(3, "Soft Airbrush", "Airbrush", 16f, "", "Gentle blurred air mist for gradients and atmosphere."),
     BrushPresetItem(4, "Felt Marker Tip", "Simple", 16f, "▮", "Flat rectangular marker drawing overlapping transparent layers."),
     BrushPresetItem(5, "Dotted Stroke", "Watercolor (Flat)", 16f, "⁏", "Rhythmic dashes aligned perfectly along drawing coordinates."),
     BrushPresetItem(6, "Spray Splatter", "Watercolor (Flat)", 16f, "❖", "Coarse chaotic paint sprays randomly dispersed along brush.")
@@ -17093,10 +17334,10 @@ fun BrushesLibraryOverlay(
     val scope = rememberCoroutineScope()
 
     val onlineBrushes = listOf(
-        BrushPresetItem(12, "Deep Carbon Graphite", "Sketch", 12f, "✏", "Heavy dense sketching carbon block."),
-        BrushPresetItem(13, "Chalk Pastel (Rough)", "Sketch", 24f, "✏", "Granular porous dry media block."),
-        BrushPresetItem(21, "Sponge Textured roller", "Watercolor (Flat)", 35f, "🖌", "Perforated fluid sponge texture roller."),
-        BrushPresetItem(1, "Scribe Pen (Chisel)", "Vector", 18f, "✒", "Broad metal ink chisel tip."),
+        BrushPresetItem(12, "Deep Carbon Graphite", "Sketch", 12f, "", "Heavy dense sketching carbon block."),
+        BrushPresetItem(13, "Chalk Pastel (Rough)", "Sketch", 24f, "", "Granular porous dry media block."),
+        BrushPresetItem(21, "Sponge Textured roller", "Watercolor (Flat)", 35f, "", "Perforated fluid sponge texture roller."),
+        BrushPresetItem(1, "Scribe Pen (Chisel)", "Vector", 18f, "", "Broad metal ink chisel tip."),
         BrushPresetItem(33, "Stipple Shader Particle", "Airbrush", 75f, "░", "Stipple shading spraying particle nozzle.")
     )
 
@@ -18110,7 +18351,7 @@ private fun RulerControlPane(
                     contentPadding = PaddingValues(0.dp),
                     shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text(if (activeRuler.locked) "🔒 LOCK" else "🔓 FREE", style = Typography.labelSmall, fontSize = 8.sp, color = if (activeRuler.locked) Color.White else TextPrimary)
+                    Text(if (activeRuler.locked) " LOCK" else " FREE", style = Typography.labelSmall, fontSize = 8.sp, color = if (activeRuler.locked) Color.White else TextPrimary)
                 }
                 
                 Button(
@@ -18120,7 +18361,7 @@ private fun RulerControlPane(
                     contentPadding = PaddingValues(0.dp),
                     shape = RoundedCornerShape(4.dp)
                 ) {
-                    Text(if (allRulersLocked) "🔒 LOCK ALL" else "🔓 ALL FREE", style = Typography.labelSmall, fontSize = 8.sp, color = if (allRulersLocked) Color.White else TextPrimary)
+                    Text(if (allRulersLocked) " LOCK ALL" else " ALL FREE", style = Typography.labelSmall, fontSize = 8.sp, color = if (allRulersLocked) Color.White else TextPrimary)
                 }
             }
             
@@ -18132,7 +18373,7 @@ private fun RulerControlPane(
                 contentPadding = PaddingValues(horizontal = 4.dp),
                 shape = RoundedCornerShape(4.dp)
             ) {
-                Text(if (snapToRuler) "🧲 MAGNET SNAP: ON" else "🧲 MAGNET SNAP: OFF", style = Typography.labelSmall, fontSize = 8.sp, color = if (snapToRuler) DarkOnyx else TextPrimary)
+                Text(if (snapToRuler) " MAGNET SNAP: ON" else " MAGNET SNAP: OFF", style = Typography.labelSmall, fontSize = 8.sp, color = if (snapToRuler) DarkOnyx else TextPrimary)
             }
         }
         
@@ -18373,7 +18614,7 @@ private fun LeftTelemetryAndStatsColumn(
                             shape = RoundedCornerShape(4.dp),
                             modifier = Modifier.fillMaxWidth().height(28.dp)
                         ) {
-                            val tab1Title = if (selectedLayer.type == LayerType.TEXT) "Type 🔤" else "Shape 📐"
+                            val tab1Title = if (selectedLayer.type == LayerType.TEXT) "Type" else "Shape"
                             Text(tab1Title, style = Typography.labelSmall, color = if (activeTabOfPanel == 1) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
                         }
 
@@ -18387,7 +18628,7 @@ private fun LeftTelemetryAndStatsColumn(
                             shape = RoundedCornerShape(4.dp),
                             modifier = Modifier.fillMaxWidth().height(28.dp)
                         ) {
-                            Text("Color 🎨", style = Typography.labelSmall, color = if (activeTabOfPanel == 2) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                            Text("Color", style = Typography.labelSmall, color = if (activeTabOfPanel == 2) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
@@ -18413,7 +18654,7 @@ private fun LeftTelemetryAndStatsColumn(
                             shape = RoundedCornerShape(4.dp),
                             modifier = Modifier.fillMaxWidth().height(28.dp)
                         ) {
-                            Text("Stroke & Shadows ✨", style = Typography.labelSmall, fontSize = 9.sp, color = if (activeTabOfPanel == 4) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                            Text("Stroke & Shadows", style = Typography.labelSmall, fontSize = 9.sp, color = if (activeTabOfPanel == 4) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
                         }
                         Spacer(Modifier.height(2.dp))
                         Text("Type: ${selectedLayer.type}", style = Typography.labelSmall, fontSize = 9.sp, color = MatteBlue)
@@ -18478,7 +18719,7 @@ private fun BrushStudioControlPane(
                     modifier = Modifier.size(36.dp)
                 )
                 Spacer(Modifier.height(8.dp))
-                Text("ERASER STUDIO ☁", style = Typography.labelMedium, color = TextPrimary)
+                Text("ERASER STUDIO ", style = Typography.labelMedium, color = TextPrimary)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = "Alpha blending Mode (DST_OUT) subtracts path values to cut cleanly through Vector shapes, Text, and Image layers.",
@@ -18538,15 +18779,15 @@ private fun BrushStudioControlPane(
                         tint = DarkOnyx,
                         modifier = Modifier.size(12.dp)
                     )
-                    Text("BRUSHES (41) ⚡", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                    Text("BRUSHES (41) ", style = Typography.labelSmall, fontSize = 9.sp, color = DarkOnyx, fontWeight = FontWeight.Bold)
                 }
             }
 
             val presets = listOf(
                 Triple(0, "Solid Ink", "✎"),
-                Triple(1, "Calligraphy", "✒"),
-                Triple(2, "Neon Glow", "⚡"),
-                Triple(3, "Airbrush", "☁"),
+                Triple(1, "Calligraphy", ""),
+                Triple(2, "Neon Glow", ""),
+                Triple(3, "Airbrush", ""),
                 Triple(4, "Felt Marker", "▮"),
                 Triple(5, "Dotted Line", "⁏"),
                 Triple(6, "Splatter Spray", "❖")

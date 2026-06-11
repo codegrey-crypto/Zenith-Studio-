@@ -798,6 +798,20 @@ object PhotoshopEffectTemplates {
                     "EyeDirection" to EffectParameter("Eye Angle", 0f, -50f, 50f, "°")
                 )
             )
+            "PixelStretch" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Pixel Stretch & Warp",
+                category = "Advanced & AI Engines",
+                effectType = effectType,
+                parameters = mapOf(
+                    "SliceLine" to EffectParameter("Slice Position", 0.5f, 0f, 1f),
+                    "Orientation" to EffectParameter("Horiz(=1) vs Vert(=0)", 0f, 0f, 1f),
+                    "WarpBend" to EffectParameter("Warp Curvature Bend", 30f, -250f, 250f, "px"),
+                    "WarpFrequency" to EffectParameter("Warp Wave Frequency", 1f, 0f, 5f),
+                    "SubjectCutout" to EffectParameter("Subject Cutout Opacity", 1f, 0f, 1f),
+                    "CutoutThreshold" to EffectParameter("Cutout Threshold", 230f, 0f, 255f)
+                )
+            )
             "ColorGrading" -> StudioEffect.PhotoshopEffect(
                 id = id,
                 name = "Color Grading",
@@ -893,7 +907,7 @@ object PhotoshopEffectTemplates {
             "Artistic", "BrushStrokes", "Sketch", "Texture"
         ),
         "Advanced & AI Engines" to listOf(
-            "Liquify", "CameraRaw", "NeuralFilters"
+            "Liquify", "CameraRaw", "NeuralFilters", "PixelStretch"
         )
     )
 }
