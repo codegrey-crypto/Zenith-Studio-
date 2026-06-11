@@ -139,17 +139,34 @@ fun extractPixelStretchBitmap(
     try {
         if (horizontalOrientation) {
             val targetX = (sliceLine * (srcW - 1)).toInt().coerceIn(0, srcW - 1)
-            val sliceBmp = android.graphics.Bitmap.createBitmap(1, srcH, android.graphics.Bitmap.Config.ARGB_8888)
-            val pixels = IntArray(srcH)
-            source.getPixels(pixels, 0, 1, targetX, 0, 1, srcH)
-            sliceBmp.setPixels(pixels, 0, 1, 0, 0, 1, srcH)
+            // Replicate the 1-pixel column across 256 pixels to form a robust 2D texture for Skia/drawBitmapMesh
+            val sliceBmp = android.graphics.Bitmap.createBitmap(256, srcH, android.graphics.Bitmap.Config.ARGB_8888)
+            val column = IntArray(srcH)
+            source.getPixels(column, 0, 1, targetX, 0, 1, srcH)
+            
+            val pixels = IntArray(256 * srcH)
+            for (y in 0 until srcH) {
+                val color = column[y]
+                val rowOffset = y * 256
+                for (x in 0 until 256) {
+                    pixels[rowOffset + x] = color
+                }
+            }
+            sliceBmp.setPixels(pixels, 0, 256, 0, 0, 256, srcH)
             return sliceBmp
         } else {
             val targetY = (sliceLine * (srcH - 1)).toInt().coerceIn(0, srcH - 1)
-            val sliceBmp = android.graphics.Bitmap.createBitmap(srcW, 1, android.graphics.Bitmap.Config.ARGB_8888)
-            val pixels = IntArray(srcW)
-            source.getPixels(pixels, 0, srcW, 0, targetY, srcW, 1)
-            sliceBmp.setPixels(pixels, 0, srcW, 0, 0, srcW, 1)
+            // Replicate the 1-pixel row across 256 pixels to form a robust 2D texture for Skia/drawBitmapMesh
+            val sliceBmp = android.graphics.Bitmap.createBitmap(srcW, 256, android.graphics.Bitmap.Config.ARGB_8888)
+            val row = IntArray(srcW)
+            source.getPixels(row, 0, srcW, 0, targetY, srcW, 1)
+            
+            val pixels = IntArray(srcW * 256)
+            for (y in 0 until 256) {
+                val rowOffset = y * srcW
+                System.arraycopy(row, 0, pixels, rowOffset, srcW)
+            }
+            sliceBmp.setPixels(pixels, 0, srcW, 0, 0, srcW, 256)
             return sliceBmp
         }
     } catch (e: Exception) {
