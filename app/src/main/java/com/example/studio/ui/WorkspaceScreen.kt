@@ -138,12 +138,46 @@ fun extractPixelStretchBitmap(
     val srcH = source.height
     try {
         if (horizontalOrientation) {
-            val targetX = (sliceLine * (srcW - 1)).toInt().coerceIn(0, srcW - 1)
-            // Replicate the 1-pixel column across 256 pixels to form a robust 2D texture for Skia/drawBitmapMesh
-            val sliceBmp = android.graphics.Bitmap.createBitmap(256, srcH, android.graphics.Bitmap.Config.ARGB_8888)
+            val initialX = (sliceLine * (srcW - 1)).toInt().coerceIn(0, srcW - 1)
+            var targetX = initialX
             val column = IntArray(srcH)
-            source.getPixels(column, 0, 1, targetX, 0, 1, srcH)
+            var foundNonTransparent = false
             
+            // Check initial target column
+            source.getPixels(column, 0, 1, targetX, 0, 1, srcH)
+            if (column.any { ((it shr 24) and 0xff) > 5 }) {
+                foundNonTransparent = true
+            } else {
+                // Outward content-aware scan to locate nearest non-transparent column
+                for (offset in 1 until srcW) {
+                    val leftX = initialX - offset
+                    if (leftX >= 0) {
+                        source.getPixels(column, 0, 1, leftX, 0, 1, srcH)
+                        if (column.any { ((it shr 24) and 0xff) > 5 }) {
+                            targetX = leftX
+                            foundNonTransparent = true
+                            break
+                        }
+                    }
+                    val rightX = initialX + offset
+                    if (rightX < srcW) {
+                        source.getPixels(column, 0, 1, rightX, 0, 1, srcH)
+                        if (column.any { ((it shr 24) and 0xff) > 5 }) {
+                            targetX = rightX
+                            foundNonTransparent = true
+                            break
+                        }
+                    }
+                }
+            }
+            
+            // Fallback if fully transparent
+            if (!foundNonTransparent) {
+                targetX = initialX
+                source.getPixels(column, 0, 1, targetX, 0, 1, srcH)
+            }
+            
+            val sliceBmp = android.graphics.Bitmap.createBitmap(256, srcH, android.graphics.Bitmap.Config.ARGB_8888)
             val pixels = IntArray(256 * srcH)
             for (y in 0 until srcH) {
                 val color = column[y]
@@ -155,12 +189,46 @@ fun extractPixelStretchBitmap(
             sliceBmp.setPixels(pixels, 0, 256, 0, 0, 256, srcH)
             return sliceBmp
         } else {
-            val targetY = (sliceLine * (srcH - 1)).toInt().coerceIn(0, srcH - 1)
-            // Replicate the 1-pixel row across 256 pixels to form a robust 2D texture for Skia/drawBitmapMesh
-            val sliceBmp = android.graphics.Bitmap.createBitmap(srcW, 256, android.graphics.Bitmap.Config.ARGB_8888)
+            val initialY = (sliceLine * (srcH - 1)).toInt().coerceIn(0, srcH - 1)
+            var targetY = initialY
             val row = IntArray(srcW)
-            source.getPixels(row, 0, srcW, 0, targetY, srcW, 1)
+            var foundNonTransparent = false
             
+            // Check initial target row
+            source.getPixels(row, 0, srcW, 0, targetY, srcW, 1)
+            if (row.any { ((it shr 24) and 0xff) > 5 }) {
+                foundNonTransparent = true
+            } else {
+                // Outward content-aware scan to locate nearest non-transparent row
+                for (offset in 1 until srcH) {
+                    val upY = initialY - offset
+                    if (upY >= 0) {
+                        source.getPixels(row, 0, srcW, 0, upY, srcW, 1)
+                        if (row.any { ((it shr 24) and 0xff) > 5 }) {
+                            targetY = upY
+                            foundNonTransparent = true
+                            break
+                        }
+                    }
+                    val downY = initialY + offset
+                    if (downY < srcH) {
+                        source.getPixels(row, 0, srcW, 0, downY, srcW, 1)
+                        if (row.any { ((it shr 24) and 0xff) > 5 }) {
+                            targetY = downY
+                            foundNonTransparent = true
+                            break
+                        }
+                    }
+                }
+            }
+            
+            // Fallback if fully transparent
+            if (!foundNonTransparent) {
+                targetY = initialY
+                source.getPixels(row, 0, srcW, 0, targetY, srcW, 1)
+            }
+            
+            val sliceBmp = android.graphics.Bitmap.createBitmap(srcW, 256, android.graphics.Bitmap.Config.ARGB_8888)
             val pixels = IntArray(srcW * 256)
             for (y in 0 until 256) {
                 val rowOffset = y * srcW
@@ -208,6 +276,38 @@ fun extractSubjectForeground(
         
         val threshInt = threshold.toInt()
         val opacityMul = subjectOpacity
+        
+        // Detect if the canvas already has transparency (like text, shapes, vector icons).
+        // If so, do not execute destructive luma thresholding, just apply the opacity overlay.
+        var transparentCount = 0
+        val sampleCount = minOf(150, pixels.size)
+        val sampleStep = maxOf(1, pixels.size / sampleCount)
+        var sampledPixels = 0
+        for (i in 0 until pixels.size step sampleStep) {
+            val a = (pixels[i] shr 24) and 0xff
+            if (a < 240) {
+                transparentCount++
+            }
+            sampledPixels++
+        }
+        val isAlreadyTransparent = sampledPixels > 0 && (transparentCount.toFloat() / sampledPixels.toFloat()) > 0.05f
+        
+        if (isAlreadyTransparent) {
+            for (i in pixels.indices) {
+                val color = pixels[i]
+                val a = (color shr 24) and 0xff
+                val r = (color shr 16) and 0xff
+                val g = (color shr 8) and 0xff
+                val b = color and 0xff
+                val alphaMask = (a * opacityMul).toInt().coerceIn(0, 255)
+                pixels[i] = (alphaMask shl 24) or (r shl 16) or (g shl 8) or b
+            }
+            result.setPixels(pixels, 0, w, 0, 0, w, h)
+            if (needsResize && workingSource != source) {
+                try { workingSource.recycle() } catch (e: Exception) {}
+            }
+            return result
+        }
         
         // 3. Dual-path outer loop to completely remove inside-loop branching conditions
         if (threshInt >= 128) {
@@ -3940,8 +4040,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                              it.effectType in listOf("CameraRaw", "ColorGrading", "Solarize", "Emboss", "FindEdges", "ColorHalftone", "Sketch", "Mosaic", "Twirl", "Spherize", "GaussianBlur", "SmartSharpen", "UnsharpMask", "AddNoise")) 
                                         }
                                     val hasGlassEffect = layer.effects.any { it.isEnabled && it is com.example.studio.model.StudioEffect.PhotoshopEffect && (it.effectType == "GlassMorphism" || it.effectType == "ReededGlass") }
-                                    val needsBackdrop = hasGlassEffect || hasAdjustmentEffect
-                                    val currentBackdrop = if (needsBackdrop && android.os.Build.VERSION.SDK_INT >= 33) {
+                                    val needsBackdrop = hasGlassEffect || hasAdjustmentEffect || layer.effects.any { it.isEnabled && it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType !in listOf("BrushConfig", "DropShadow", "InnerShadow", "BordersAndShadows", "OuterGlow", "InnerGlow", "BevelEmboss", "Satin", "GradientOverlay", "PatternOverlay", "Stroke", "GlassMorphism", "ReededGlass") }
+                                    val currentBackdrop = if (needsBackdrop) {
                                         val computedBackdrop = generateBackdropForLayer(
                                             layers = layers,
                                             currentIndex = index,
@@ -14303,7 +14403,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                  it.effectType in listOf("CameraRaw", "ColorGrading", "Solarize", "Emboss", "FindEdges", "ColorHalftone", "Sketch", "Mosaic", "Twirl", "Spherize", "GaussianBlur", "SmartSharpen", "UnsharpMask", "AddNoise")) 
             }
 
-        val adjustedBmp = if (hasAdj && backdropBitmap != null) {
+        val hasAnyAdj = hasAdj || (layer.type != com.example.studio.model.LayerType.IMAGE_CARD && 
+            layer.type != com.example.studio.model.LayerType.TEXT && 
+            layer.type != com.example.studio.model.LayerType.FREEHAND_DRAWING &&
+            activeList.any { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType !in listOf("BrushConfig", "DropShadow", "InnerShadow", "BordersAndShadows", "OuterGlow", "InnerGlow", "BevelEmboss", "Satin", "GradientOverlay", "PatternOverlay", "Stroke", "GlassMorphism", "ReededGlass") })
+        val adjustedBmp = if (hasAnyAdj && backdropBitmap != null) {
             val rx = globalX
             val ry = globalY
             val rw = layer.width
@@ -16743,7 +16847,6 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.generateBackdropFor
     pathPointsCountCache: android.util.SparseIntArray,
     existingBitmap: android.graphics.Bitmap?
 ): android.graphics.Bitmap? {
-    if (android.os.Build.VERSION.SDK_INT < 33) return null
     val w = canvasWidth.toInt().coerceIn(100, 4000)
     val h = canvasHeight.toInt().coerceIn(100, 4000)
     
