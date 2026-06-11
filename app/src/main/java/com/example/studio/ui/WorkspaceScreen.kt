@@ -116,7 +116,17 @@ fun interpolateMultiColor(colors: List<androidx.compose.ui.graphics.Color>, frac
     )
 }
 
-val processedImageBitmapCache = java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
+val processedImageBitmapCache = object : java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.graphics.ImageBitmap>() {
+    override fun put(key: String, value: androidx.compose.ui.graphics.ImageBitmap): androidx.compose.ui.graphics.ImageBitmap? {
+        if (this.size > 16) {
+            val keysToEvict = this.keys().toList().take(8)
+            for (k in keysToEvict) {
+                this.remove(k)
+            }
+        }
+        return super.put(key, value)
+    }
+}
 val pixelStretchBitmapsCache = java.util.concurrent.ConcurrentHashMap<String, android.graphics.Bitmap>()
 
 fun extractPixelStretchBitmap(
@@ -153,43 +163,110 @@ fun extractSubjectForeground(
     threshold: Float,
     subjectOpacity: Float
 ): android.graphics.Bitmap {
-    val w = source.width
-    val h = source.height
+    // 1. Cache Eviction & Memory Protection: recycle and remove oldest entries if cache is growing
+    if (pixelStretchBitmapsCache.size > 12) {
+        synchronized(pixelStretchBitmapsCache) {
+            if (pixelStretchBitmapsCache.size > 12) {
+                val keys = pixelStretchBitmapsCache.keys().toList()
+                val keysToEvict = keys.take(6)
+                for (k in keysToEvict) {
+                    val bmp = pixelStretchBitmapsCache.remove(k)
+                    if (bmp != null && bmp != source && !bmp.isRecycled) {
+                        try {
+                            bmp.recycle()
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. High-performance downsampling (maintains crisp detail but avoids processing millions of pixels in Kotlin)
+    val maxDimension = 1024
+    var workingSource = source
+    val srcW = source.width
+    val srcH = source.height
+    val needsResize = srcW > maxDimension || srcH > maxDimension
+    if (needsResize) {
+        val (newW, newH) = if (srcW > srcH) {
+            maxDimension to (srcH * maxDimension / srcW)
+        } else {
+            (srcW * maxDimension / srcH) to maxDimension
+        }
+        try {
+            workingSource = android.graphics.Bitmap.createScaledBitmap(source, newW, newH, true)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    val w = workingSource.width
+    val h = workingSource.height
     try {
         val result = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
         val pixels = IntArray(w * h)
-        source.getPixels(pixels, 0, w, 0, 0, w, h)
+        workingSource.getPixels(pixels, 0, w, 0, 0, w, h)
         
-        for (i in pixels.indices) {
-            val color = pixels[i]
-            val a = (color shr 24) and 0xff
-            val r = (color shr 16) and 0xff
-            val g = (color shr 8) and 0xff
-            val b = color and 0xff
-            
-            val luma = 0.299f * r + 0.587f * g + 0.114f * b
-            
-            val alphaMask = if (threshold >= 128f) {
-                if (luma > threshold) {
-                    val diff = luma - threshold
-                    val pct = (diff / (255f - threshold)).coerceIn(0f, 1f)
-                    (a * (1f - pct) * subjectOpacity).toInt()
+        val threshInt = threshold.toInt()
+        val opacityMul = subjectOpacity
+        
+        // 3. Dual-path outer loop to completely remove inside-loop branching conditions
+        if (threshInt >= 128) {
+            val denom = 255f - threshold
+            val floatDenom = if (denom <= 0f) 1f else denom
+            for (i in pixels.indices) {
+                val color = pixels[i]
+                val a = (color shr 24) and 0xff
+                val r = (color shr 16) and 0xff
+                val g = (color shr 8) and 0xff
+                val b = color and 0xff
+                
+                // Ultra-fast integer-only luminance approximation (0.299R + 0.587G + 0.114B becomes integer math)
+                val luma = (r * 77 + g * 150 + b * 29) shr 8
+                
+                val alphaMask = if (luma > threshInt) {
+                    val diff = luma - threshInt
+                    val pct = (diff / floatDenom).coerceIn(0f, 1f)
+                    (a * (1f - pct) * opacityMul).toInt()
                 } else {
-                    (a * subjectOpacity).toInt()
+                    (a * opacityMul).toInt()
                 }
-            } else {
-                if (luma < threshold) {
-                    val pct = (luma / threshold).coerceIn(0f, 1f)
-                    (a * pct * subjectOpacity).toInt()
-                } else {
-                    (a * subjectOpacity).toInt()
-                }
+                
+                pixels[i] = (alphaMask shl 24) or (r shl 16) or (g shl 8) or b
             }
-            
-            pixels[i] = (alphaMask shl 24) or (r shl 16) or (g shl 8) or b
+        } else {
+            val floatThreshold = if (threshold <= 0f) 1f else threshold
+            for (i in pixels.indices) {
+                val color = pixels[i]
+                val a = (color shr 24) and 0xff
+                val r = (color shr 16) and 0xff
+                val g = (color shr 8) and 0xff
+                val b = color and 0xff
+                
+                val luma = (r * 77 + g * 150 + b * 29) shr 8
+                
+                val alphaMask = if (luma < threshInt) {
+                    val pct = (luma / floatThreshold).coerceIn(0f, 1f)
+                    (a * pct * opacityMul).toInt()
+                } else {
+                    (a * opacityMul).toInt()
+                }
+                
+                pixels[i] = (alphaMask shl 24) or (r shl 16) or (g shl 8) or b
+            }
         }
         
         result.setPixels(pixels, 0, w, 0, 0, w, h)
+        
+        if (needsResize && workingSource != source) {
+            try {
+                workingSource.recycle()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
         return result
     } catch (e: Exception) {
         e.printStackTrace()
