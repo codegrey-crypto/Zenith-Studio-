@@ -784,7 +784,8 @@ object PhotoshopEffectTemplates {
                     "Saturation" to EffectParameter("Saturation", 0f, -100f, 100f, "%"),
                     "Texture" to EffectParameter("Texture", 0f, -100f, 100f, "%"),
                     "Clarity" to EffectParameter("Clarity", 0f, -100f, 100f, "%"),
-                    "Dehaze" to EffectParameter("Dehaze", 0f, -100f, 100f, "%")
+                    "Dehaze" to EffectParameter("Dehaze", 0f, -100f, 100f, "%"),
+                    "Profile" to EffectParameter("Profile Matrix Mapping", 0f, 0f, 4f, "")
                 )
             )
             "NeuralFilters" -> StudioEffect.PhotoshopEffect(

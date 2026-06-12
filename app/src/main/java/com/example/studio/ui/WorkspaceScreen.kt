@@ -392,195 +392,7 @@ fun List<Offset>.toAnchorPoints(): List<AnchorPoint> {
     return results
 }
 
-const val LIGHTROOM_VERTEX_SHADER = """
-attribute vec4 position;
-attribute vec4 inputTextureCoordinate;
-
-varying vec2 textureCoordinate;
-
-void main() {
-    gl_Position = position;
-    textureCoordinate = inputTextureCoordinate.xy;
-}
-"""
-
-const val LIGHTROOM_FRAGMENT_SHADER = """
-varying highp vec2 textureCoordinate;
-uniform sampler2D inputImageTexture;
-
-uniform highp float uExposure;
-uniform highp float uContrast;
-uniform highp float uHighlights;
-uniform highp float uShadows;
-uniform highp float uWhites;
-uniform highp float uBlacks;
-uniform highp float uTemp;
-uniform highp float uTint;
-uniform highp float uVibrance;
-uniform highp float uSaturation;
-uniform highp float uClarity;
-uniform highp float uDehaze;
-
-void main() {
-    highp vec4 color = texture2D(inputImageTexture, textureCoordinate);
-    
-    // 1. Temperature & Tint (White Balance)
-    color.r += uTemp * 0.0030 + uTint * 0.0015;
-    color.g -= uTint * 0.0020;
-    color.b -= uTemp * 0.0030 - uTint * 0.0015;
-    
-    // 2. Exposure
-    color.rgb *= pow(2.0, uExposure);
-    
-    // Compute luminance
-    highp float luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
-    
-    // 3. Highlights & Shadows
-    highp float highlightWeight = clamp((luma - 0.5) * 2.0, 0.0, 1.0);
-    highp float shadowWeight = clamp((0.5 - luma) * 2.0, 0.0, 1.0);
-    
-    color.rgb += color.rgb * (uHighlights * 0.004) * highlightWeight;
-    color.rgb += color.rgb * (uShadows * 0.004) * shadowWeight;
-    
-    // 4. Whites & Blacks
-    highp float whiteWeight = clamp((luma - 0.6) * 2.5, 0.0, 1.0);
-    highp float blackWeight = clamp((0.4 - luma) * 2.5, 0.0, 1.0);
-    
-    color.rgb += color.rgb * (uWhites * 0.005) * whiteWeight;
-    color.rgb += color.rgb * (uBlacks * 0.005) * blackWeight;
-    
-    // 5. Contrast
-    highp float cFactor = (uContrast + 100.0) / 100.0;
-    if (cFactor < 1.0) {
-        cFactor = mix(0.2, 1.0, cFactor);
-    } else {
-        cFactor = mix(1.0, 3.0, (cFactor - 1.0));
-    }
-    color.rgb = (color.rgb - 0.5) * cFactor + 0.5;
-    
-    // 6. Clarity (midtone contrast)
-    highp float midtoneWeight = 1.0 - clamp(abs(luma - 0.5) * 2.0, 0.0, 1.0);
-    highp float clarityFactor = (uClarity * 0.006);
-    color.rgb += (color.rgb - 0.5) * clarityFactor * midtoneWeight;
-    
-    // 7. Dehaze
-    if (uDehaze != 0.0) {
-        highp float dehazeFactor = uDehaze * 0.004;
-        color.rgb = (color.rgb - 0.2) * (1.0 + dehazeFactor) + 0.2;
-    }
-    
-    // Recompute luma
-    luma = dot(color.rgb, vec3(0.299, 0.587, 0.114));
-    
-    // 8. Saturation
-    highp float satFactor = (uSaturation + 100.0) / 100.0;
-    if (satFactor < 1.0) {
-        satFactor = mix(0.0, 1.0, satFactor);
-    } else {
-        satFactor = mix(1.0, 2.5, (satFactor - 1.0) / 1.0);
-    }
-    highp vec3 desat = vec3(luma);
-    highp vec3 satColor = mix(desat, color.rgb, satFactor);
-    color.rgb = satColor;
-    
-    // 9. Vibrance
-    highp float maxSample = max(color.r, max(color.g, color.b));
-    highp float minSample = min(color.r, min(color.g, color.b));
-    highp float currentSat = maxSample - minSample;
-    highp float vibFactor = uVibrance * 0.015 * (1.0 - currentSat);
-    color.rgb = mix(color.rgb, color.rgb * (1.0 + vibFactor), clamp(vibFactor, -1.0, 1.0));
-    
-    color.rgb = clamp(color.rgb, 0.0, 1.0);
-    gl_FragColor = vec4(color.rgb, color.a);
-}
-"""
-
-class LightroomFilter(
-    var exposure: Float = 0f,
-    var contrast: Float = 0f,
-    var highlights: Float = 0f,
-    var shadows: Float = 0f,
-    var whites: Float = 0f,
-    var blacks: Float = 0f,
-    var temp: Float = 0f,
-    var tint: Float = 0f,
-    var vibrance: Float = 0f,
-    var saturation: Float = 0f,
-    var clarity: Float = 0f,
-    var dehaze: Float = 0f
-) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(
-    LIGHTROOM_VERTEX_SHADER,
-    LIGHTROOM_FRAGMENT_SHADER
-) {
-    private var uExposureLocation: Int = -1
-    private var uContrastLocation: Int = -1
-    private var uHighlightsLocation: Int = -1
-    private var uShadowsLocation: Int = -1
-    private var uWhitesLocation: Int = -1
-    private var uBlacksLocation: Int = -1
-    private var uTempLocation: Int = -1
-    private var uTintLocation: Int = -1
-    private var uVibranceLocation: Int = -1
-    private var uSaturationLocation: Int = -1
-    private var uClarityLocation: Int = -1
-    private var uDehazeLocation: Int = -1
-
-    override fun onInit() {
-        super.onInit()
-        uExposureLocation = android.opengl.GLES20.glGetUniformLocation(program, "uExposure")
-        uContrastLocation = android.opengl.GLES20.glGetUniformLocation(program, "uContrast")
-        uHighlightsLocation = android.opengl.GLES20.glGetUniformLocation(program, "uHighlights")
-        uShadowsLocation = android.opengl.GLES20.glGetUniformLocation(program, "uShadows")
-        uWhitesLocation = android.opengl.GLES20.glGetUniformLocation(program, "uWhites")
-        uBlacksLocation = android.opengl.GLES20.glGetUniformLocation(program, "uBlacks")
-        uTempLocation = android.opengl.GLES20.glGetUniformLocation(program, "uTemp")
-        uTintLocation = android.opengl.GLES20.glGetUniformLocation(program, "uTint")
-        uVibranceLocation = android.opengl.GLES20.glGetUniformLocation(program, "uVibrance")
-        uSaturationLocation = android.opengl.GLES20.glGetUniformLocation(program, "uSaturation")
-        uClarityLocation = android.opengl.GLES20.glGetUniformLocation(program, "uClarity")
-        uDehazeLocation = android.opengl.GLES20.glGetUniformLocation(program, "uDehaze")
-    }
-
-    override fun onInitialized() {
-        super.onInitialized()
-        applyParameters()
-    }
-
-    fun updateParams(
-        exposure: Float, contrast: Float, highlights: Float, shadows: Float,
-        whites: Float, blacks: Float, temp: Float, tint: Float,
-        vibrance: Float, saturation: Float, clarity: Float, dehaze: Float
-    ) {
-        this.exposure = exposure
-        this.contrast = contrast
-        this.highlights = highlights
-        this.shadows = shadows
-        this.whites = whites
-        this.blacks = blacks
-        this.temp = temp
-        this.tint = tint
-        this.vibrance = vibrance
-        this.saturation = saturation
-        this.clarity = clarity
-        this.dehaze = dehaze
-        applyParameters()
-    }
-
-    private fun applyParameters() {
-        if (uExposureLocation != -1) setFloat(uExposureLocation, exposure)
-        if (uContrastLocation != -1) setFloat(uContrastLocation, contrast)
-        if (uHighlightsLocation != -1) setFloat(uHighlightsLocation, highlights)
-        if (uShadowsLocation != -1) setFloat(uShadowsLocation, shadows)
-        if (uWhitesLocation != -1) setFloat(uWhitesLocation, whites)
-        if (uBlacksLocation != -1) setFloat(uBlacksLocation, blacks)
-        if (uTempLocation != -1) setFloat(uTempLocation, temp)
-        if (uTintLocation != -1) setFloat(uTintLocation, tint)
-        if (uVibranceLocation != -1) setFloat(uVibranceLocation, vibrance)
-        if (uSaturationLocation != -1) setFloat(uSaturationLocation, saturation)
-        if (uClarityLocation != -1) setFloat(uClarityLocation, clarity)
-        if (uDehazeLocation != -1) setFloat(uDehazeLocation, dehaze)
-    }
-}
+// Shaders and LightroomFilter are managed by CameraRAWFilterEngine.kt
 
 private fun getLayerGeometryHash(layer: StudioLayer): Int {
     var result = layer.id.hashCode()
@@ -658,7 +470,7 @@ void main() {
 }
 """
 
-private fun applyGPUImageFilters(
+fun applyGPUImageFilters(
     context: android.content.Context,
     originalBitmap: android.graphics.Bitmap,
     effects: List<com.example.studio.model.StudioEffect>
@@ -720,6 +532,7 @@ private fun applyGPUImageFilters(
                             val texture = effect.parameters["Texture"]?.value ?: 0f
                             val clarity = effect.parameters["Clarity"]?.value ?: 0f
                             val dehaze = effect.parameters["Dehaze"]?.value ?: 0f
+                            val profile = effect.parameters["Profile"]?.value ?: 0f
 
                             val lrFilter = LightroomFilter().apply {
                                 updateParams(
@@ -734,7 +547,8 @@ private fun applyGPUImageFilters(
                                     vibrance = vibrance,
                                     saturation = saturation,
                                     clarity = clarity,
-                                    dehaze = dehaze
+                                    dehaze = dehaze,
+                                    profile = profile
                                 )
                             }
                             filterGroup.addFilter(lrFilter)
@@ -1483,6 +1297,43 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var canvasPanX by remember { mutableStateOf(0f) }
     var canvasPanY by remember { mutableStateOf(0f) }
     var canvasRotation by remember { mutableStateOf(0f) }
+
+    // Start Unidirectional Asynchronous Event Loop
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        com.example.studio.ui.CanvasEventLoop.startProcessing(
+            onUpdateTransform = { panX, panY, scale, rotation ->
+                canvasPanX = panX
+                canvasPanY = panY
+                scaleFactor = scale
+                canvasRotation = rotation
+            },
+            onUpdateSlider = { layerId, effectId, paramName, newValue ->
+                layers = layers.map { layer ->
+                    if (layer.id == layerId) {
+                        val updatedEffects = layer.effects.map { eff ->
+                            if (eff.id == effectId) {
+                                eff.updateParameter(paramName, newValue)
+                            } else eff
+                        }
+                        layer.copy(effects = updatedEffects)
+                    } else layer
+                }
+            },
+            onUpdateLayerProp = { layerId, propName, newValue ->
+                layers = layers.map { layer ->
+                    if (layer.id == layerId) {
+                        when (propName) {
+                            "opacity" -> layer.copy(opacity = newValue)
+                            "positionX" -> layer.copy(positionX = newValue)
+                            "positionY" -> layer.copy(positionY = newValue)
+                            else -> layer
+                        }
+                    } else layer
+                }
+            }
+        )
+    }
+
     var isCanvasLocked by remember { mutableStateOf(false) }
     var isCanvasControlMinimized by remember { mutableStateOf(false) }
     var isMultiSelectMode by remember { mutableStateOf(false) }
@@ -2120,16 +1971,14 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 },
                 onUpdateEffectParam = { effectId, paramName, newValue ->
                     if (selectedLayer != null) {
-                        layers = layers.map { layer ->
-                            if (layer.id == selectedLayer.id) {
-                                val updatedEffects = layer.effects.map { eff ->
-                                    if (eff.id == effectId) {
-                                        eff.updateParameter(paramName, newValue)
-                                    } else eff
-                                }
-                                layer.copy(effects = updatedEffects)
-                            } else layer
-                        }
+                        com.example.studio.ui.CanvasEventLoop.emit(
+                            com.example.studio.ui.CanvasEvent.UpdateSlider(
+                                layerId = selectedLayer.id,
+                                effectId = effectId,
+                                paramName = paramName,
+                                value = newValue
+                            )
+                        )
                     }
                 },
                 onRemoveEffect = { effectId ->
@@ -2576,21 +2425,27 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                             val rotation = if (isCanvasLocked) 0f else event.calculateRotation()
                                             val pan = if (isCanvasLocked) Offset.Zero else event.calculatePan()
 
-                                            if (zoom != 1f) {
-                                                scaleFactor = (scaleFactor * zoom).coerceIn(0.3f, 5.0f)
-                                            }
-                                            if (rotation != 0f) {
-                                                canvasRotation = (canvasRotation + rotation) % 360f
-                                            }
+                                             var newScale = scaleFactor
+                                             var newRotation = canvasRotation
+                                             var newPanX = canvasPanX
+                                             var newPanY = canvasPanY
+                                             if (zoom != 1f) {
+                                                 newScale = (scaleFactor * zoom).coerceIn(0.3f, 5.0f)
+                                             }
+                                             if (rotation != 0f) {
+                                                 newRotation = (canvasRotation + rotation) % 360f
+                                             }
                                             if (pan != Offset.Zero) {
                                                 val snappedNewPanX = canvasPanX + pan.x
                                                  val snappedNewPanY = canvasPanY + pan.y
                                                  val snappedFinalX = if (Math.abs(snappedNewPanX) < 25f) 0f else snappedNewPanX
                                                  val snappedFinalY = if (Math.abs(snappedNewPanY) < 25f) 0f else snappedNewPanY
-                                                 val pan = androidx.compose.ui.geometry.Offset(snappedFinalX - canvasPanX, snappedFinalY - canvasPanY)
-                                                 canvasPanX += pan.x
-                                                canvasPanY += pan.y
+                                                 newPanX = snappedFinalX
+                                                 newPanY = snappedFinalY
                                             }
+                                            com.example.studio.ui.CanvasEventLoop.emit(
+                                                com.example.studio.ui.CanvasEvent.UpdateTransform(newPanX, newPanY, newScale, newRotation)
+                                            )
 
                                             event.changes.forEach { it.consume() }
                                         } else if (activePointers.size == 1 && !isTransforming) {
@@ -3421,6 +3276,18 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 for (index in layers.indices.reversed()) {
                                     val originalLayer = layers[index]
                                     if (!originalLayer.isVisible) continue
+
+                                    val isVisibleOnScreen = com.example.studio.ui.isLayerVisibleInViewport(
+                                        layer = originalLayer,
+                                        viewportWidth = currentViewportWidthState.value,
+                                        viewportHeight = currentViewportHeightState.value,
+                                        panX = currentCanvasPanXState.value,
+                                        panY = currentCanvasPanYState.value,
+                                        scale = ts,
+                                        canvasWidth = currentCanvasWidthState.value,
+                                        canvasHeight = currentCanvasHeightState.value
+                                    )
+                                    if (!isVisibleOnScreen) continue
                                     val layerOpacity = originalLayer.opacity
                                     val composeBlendMode = originalLayer.blendMode.toComposeBlendMode()
 
@@ -4081,7 +3948,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 activeTool = activeTool,
                                                 allLayers = layers,
                                                 liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
-                                                liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f
+                                                liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f,
+                                                viewportWidth = currentViewportWidthState.value,
+                                                viewportHeight = currentViewportHeightState.value,
+                                                panX = currentCanvasPanXState.value,
+                                                panY = currentCanvasPanYState.value,
+                                                canvasWidth = canvasWidth,
+                                                canvasHeight = canvasHeight
                                             )
 
                                             // 2. Perform Advanced multi-layer clipping composition
@@ -4108,7 +3981,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 globalX = layer.positionX,
                                                 globalY = layer.positionY,
                                                 activeTool = activeTool,
-                                                allLayers = layers
+                                                allLayers = layers,
+                                                viewportWidth = currentViewportWidthState.value,
+                                                viewportHeight = currentViewportHeightState.value,
+                                                panX = currentCanvasPanXState.value,
+                                                panY = currentCanvasPanYState.value,
+                                                canvasWidth = canvasWidth,
+                                                canvasHeight = canvasHeight
                                             )
 
                                             // Inner saveLayer (groups all consecutive clipped layers together using BlendMode.SrcIn)
@@ -4136,7 +4015,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                      globalX = clipped.positionX,
                                                      globalY = clipped.positionY,
                                                      activeTool = activeTool,
-                                                     allLayers = layers
+                                                     allLayers = layers,
+                                                     viewportWidth = currentViewportWidthState.value,
+                                                     viewportHeight = currentViewportHeightState.value,
+                                                     panX = currentCanvasPanXState.value,
+                                                     panY = currentCanvasPanYState.value,
+                                                     canvasWidth = canvasWidth,
+                                                     canvasHeight = canvasHeight
                                                  )
                                              }
 
@@ -4164,7 +4049,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                               activeTool = activeTool,
                                               allLayers = layers,
                                               liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
-                                              liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f
+                                              liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f,
+                                              viewportWidth = currentViewportWidthState.value,
+                                              viewportHeight = currentViewportHeightState.value,
+                                              panX = currentCanvasPanXState.value,
+                                              panY = currentCanvasPanYState.value,
+                                              canvasWidth = canvasWidth,
+                                              canvasHeight = canvasHeight
                                           )
                                                                             }
                                       if (false) {
@@ -14128,14 +14019,35 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     backdropBitmap: android.graphics.Bitmap? = null,
     globalX: Float = 0f,
     globalY: Float = 0f,
-    activeTool: String = "Brush"
+    activeTool: String = "Brush",
+    viewportWidth: Float = 0f,
+    viewportHeight: Float = 0f,
+    panX: Float = 0f,
+    panY: Float = 0f,
+    canvasWidth: Float = 0f,
+    canvasHeight: Float = 0f
 ) {
     val activeStretchEffects = layer.effects.filter { it.isEnabled }
     val pixelStretchEffect = activeStretchEffects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "PixelStretch" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
 
     if (pixelStretchEffect != null) {
-        val layW = maxOf(2, layer.width.toInt().coerceAtMost(2048))
-        val layH = maxOf(2, layer.height.toInt().coerceAtMost(2048))
+        val isViewportValid = viewportWidth > 0f && viewportHeight > 0f
+        val visibleRect = if (isViewportValid) {
+            com.example.studio.ui.getLayerVisibleLocalRect(
+                layer = layer,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+                panX = panX,
+                panY = panY,
+                scale = totalScale,
+                canvasWidth = canvasWidth,
+                canvasHeight = canvasHeight
+            )
+        } else {
+            android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
+        }
+        val layW = maxOf(2, (if (isViewportValid) visibleRect.width() else layer.width.toInt()).coerceAtMost(2048))
+        val layH = maxOf(2, (if (isViewportValid) visibleRect.height() else layer.height.toInt()).coerceAtMost(2048))
         
         val sliceLine = pixelStretchEffect.parameters["SliceLine"]?.value ?: 0.5f
         val orientationVal = pixelStretchEffect.parameters["Orientation"]?.value ?: 0f
@@ -15034,17 +14946,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
                     if (loadedBitmap != null) {
                         val activeEffects = layer.effects.filter { it.isEnabled }
+                        val _drawTrigger = rawFilterRedrawTrigger.value
                         val drawImage = if (activeEffects.isNotEmpty()) {
                             val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
                             val processedKey = "${layer.id}_${uriStr}_${effectHash}"
                             var cachedProcessed = processedImageBitmapCache[processedKey]
                             if (cachedProcessed == null) {
-                                val androidBmp = loadedBitmap.asAndroidBitmap()
-                                val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
-                                cachedProcessed = filteredBmp.asImageBitmap()
-                                processedImageBitmapCache[processedKey] = cachedProcessed
+                                CameraRAWFilterEngine.triggerBackgroundFilterRender(
+                                    processedKey = processedKey,
+                                    layerId = layer.id,
+                                    loadedBitmap = loadedBitmap,
+                                    activeEffects = activeEffects,
+                                    context = globalAppContext
+                                )
+                                loadedBitmap
+                            } else {
+                                cachedProcessed
                             }
-                            cachedProcessed
                         } else {
                             loadedBitmap
                         }
@@ -15427,17 +15345,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                         val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
                         if (loadedBitmap != null) {
                             val activeEffects = layer.effects.filter { it.isEnabled }
+                            val _drawTrigger = rawFilterRedrawTrigger.value
                             val drawImage = if (activeEffects.isNotEmpty()) {
                                 val effectHash = activeEffects.map { it.id + "_" + it.parameters.values.joinToString { p -> p.value.toString() } }.hashCode()
                                 val processedKey = "${layer.id}_${uriStr}_${effectHash}"
                                 var cachedProcessed = processedImageBitmapCache[processedKey]
                                 if (cachedProcessed == null) {
-                                    val androidBmp = loadedBitmap.asAndroidBitmap()
-                                    val filteredBmp = globalAppContext?.let { applyGPUImageFilters(it, androidBmp, activeEffects) } ?: androidBmp
-                                    cachedProcessed = filteredBmp.asImageBitmap()
-                                    processedImageBitmapCache[processedKey] = cachedProcessed
+                                    CameraRAWFilterEngine.triggerBackgroundFilterRender(
+                                        processedKey = processedKey,
+                                        layerId = layer.id,
+                                        loadedBitmap = loadedBitmap,
+                                        activeEffects = activeEffects,
+                                        context = globalAppContext
+                                    )
+                                    loadedBitmap
+                                } else {
+                                    cachedProcessed
                                 }
-                                cachedProcessed
                             } else {
                                 loadedBitmap
                             }
@@ -16714,7 +16638,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     activeTool: String = "Brush",
     allLayers: List<com.example.studio.model.StudioLayer> = emptyList(),
     liveDragScaleX: Float = 1.0f,
-    liveDragScaleY: Float = 1.0f
+    liveDragScaleY: Float = 1.0f,
+    viewportWidth: Float = 0f,
+    viewportHeight: Float = 0f,
+    panX: Float = 0f,
+    panY: Float = 0f,
+    canvasWidth: Float = 0f,
+    canvasHeight: Float = 0f
 ) {
     // Recursively resolve all ancestor parent groups, from top-most ancestor down to immediate parent
     val parentGroups = mutableListOf<com.example.studio.model.StudioLayer>()
@@ -16810,21 +16740,123 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
         translate(-centerX, -centerY)
     }
     drawContext.canvas.concat(matrix)
-    drawAllEffectsAndLayersLocal(
-        layer = layer,
-        layerOpacity = computedOpacity,
-        selectedLayerId = selectedLayerId,
-        pathCache = pathCache,
-        pathPointsCountCache = pathPointsCountCache,
-        totalScale = totalScale,
-        dashEffect = dashEffect,
-        imageBitmapCache = imageBitmapCache,
-        composeBlendMode = composeBlendMode,
-        backdropBitmap = backdropBitmap,
-        globalX = globalX,
-        globalY = globalY,
-        activeTool = activeTool
-    )
+
+    // Graphite-inspired Parametric Layer Caching via State Hash Tracking
+    val isPainting = (activeTool == "Brush" || activeTool == "Eraser" || activeTool == "Sudge" || activeTool == "BlurTool") && layer.id == selectedLayerId
+    val forceRealtime = isPainting || layer.type == com.example.studio.model.LayerType.FREEHAND_DRAWING
+
+    if (forceRealtime) {
+        drawAllEffectsAndLayersLocal(
+            layer = layer,
+            layerOpacity = computedOpacity,
+            selectedLayerId = selectedLayerId,
+            pathCache = pathCache,
+            pathPointsCountCache = pathPointsCountCache,
+            totalScale = totalScale,
+            dashEffect = dashEffect,
+            imageBitmapCache = imageBitmapCache,
+            composeBlendMode = composeBlendMode,
+            backdropBitmap = backdropBitmap,
+            globalX = globalX,
+            globalY = globalY,
+            activeTool = activeTool,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
+            panX = panX,
+            panY = panY,
+            canvasWidth = canvasWidth,
+            canvasHeight = canvasHeight
+        )
+    } else {
+        val cacheNode = com.example.studio.ui.ParametricLayerCache.getOrCreateNode(layer.id)
+        val currentHash = com.example.studio.ui.ParametricLayerCache.computeParamHash(layer)
+
+        if (cacheNode.paramHash != currentHash || cacheNode.isDirty || cacheNode.cachedImageBitmap == null) {
+            val w = maxOf(2, layer.width.toInt().coerceAtMost(2048))
+            val h = maxOf(2, layer.height.toInt().coerceAtMost(2048))
+            val existingBmp = cacheNode.cachedBitmap
+            val bmp = if (existingBmp != null && existingBmp.width == w && existingBmp.height == h) {
+                existingBmp.eraseColor(android.graphics.Color.TRANSPARENT)
+                existingBmp
+            } else {
+                existingBmp?.recycle()
+                android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            }
+            val nativeCanvas = android.graphics.Canvas(bmp)
+            val tempCanvas = androidx.compose.ui.graphics.Canvas(nativeCanvas)
+            val drawScope = androidx.compose.ui.graphics.drawscope.CanvasDrawScope()
+            drawScope.draw(
+                density = androidx.compose.ui.unit.Density(1.0f),
+                layoutDirection = androidx.compose.ui.unit.LayoutDirection.Ltr,
+                canvas = tempCanvas,
+                size = androidx.compose.ui.geometry.Size(w.toFloat(), h.toFloat())
+            ) {
+                drawAllEffectsAndLayersLocal(
+                    layer = layer,
+                    layerOpacity = 1.0f,
+                    selectedLayerId = null, // don't bake selected design markers in cache
+                    pathCache = pathCache,
+                    pathPointsCountCache = pathPointsCountCache,
+                    totalScale = 1.0f,
+                    dashEffect = dashEffect,
+                    imageBitmapCache = imageBitmapCache,
+                    composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+                    backdropBitmap = backdropBitmap,
+                    globalX = 0f,
+                    globalY = 0f,
+                    activeTool = activeTool,
+                    viewportWidth = viewportWidth,
+                    viewportHeight = viewportHeight,
+                    panX = panX,
+                    panY = panY,
+                    canvasWidth = canvasWidth,
+                    canvasHeight = canvasHeight
+                )
+            }
+            cacheNode.cachedBitmap = bmp
+            cacheNode.cachedImageBitmap = bmp.asImageBitmap()
+            cacheNode.paramHash = currentHash
+            cacheNode.isDirty = false
+        }
+
+        cacheNode.cachedImageBitmap?.let { imgBmp ->
+            drawImage(
+                image = imgBmp,
+                topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                alpha = computedOpacity,
+                blendMode = composeBlendMode
+            )
+        }
+
+        if (layer.id == selectedLayerId) {
+            val EnergeticYellow = androidx.compose.ui.graphics.Color(0xFFFFD600)
+            val IndustrialAmber = androidx.compose.ui.graphics.Color(0xFFFF9100)
+            drawRect(
+                color = IndustrialAmber.copy(0.8f),
+                topLeft = androidx.compose.ui.geometry.Offset(-6f, -6f),
+                size = androidx.compose.ui.geometry.Size(layer.width + 12f, layer.height + 12f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = 1.5f / totalScale.coerceAtLeast(0.5f),
+                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(12f / totalScale.coerceAtLeast(0.5f), 8f / totalScale.coerceAtLeast(0.5f)))
+                )
+            )
+            drawCircle(
+                color = EnergeticYellow,
+                radius = 8f / totalScale.coerceAtLeast(0.5f),
+                center = androidx.compose.ui.geometry.Offset.Zero
+            )
+            drawCircle(
+                color = EnergeticYellow,
+                radius = 11f / totalScale.coerceAtLeast(0.5f),
+                center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
+            )
+            drawCircle(
+                color = androidx.compose.ui.graphics.Color(0xFFFF5722),
+                radius = 5.5f / totalScale.coerceAtLeast(0.5f),
+                center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
+            )
+        }
+    }
     drawContext.canvas.restore()
 }
 
