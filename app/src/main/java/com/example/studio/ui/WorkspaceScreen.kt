@@ -995,6 +995,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val sharedTransformMatrix = remember { androidx.compose.ui.graphics.Matrix() }
     var reusableBackdropBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var activeBezierPointIndex by remember { mutableStateOf(-1) }
+    var activeGradientStopIndex by remember { mutableStateOf(-1) }
 
     var isResizingActive by remember { mutableStateOf(false) }
     var activeResizingLayerId by remember { mutableStateOf<String?>(null) }
@@ -2568,9 +2569,170 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                 }
                                                             }
 
+                                                            // Gradient overlay linear handles click/drag match detection on-canvas
+                                                            var matchedGradientOption = false
+                                                            val gradOverlay = currentSelected.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                            val gradientTypeOrdinal = (gradOverlay?.parameters["GradientType"]?.value ?: 0f).toInt()
+                                                            
+                                                            if (gradOverlay != null && gradientTypeOrdinal == 0) { // Linear Gradient
+                                                                val goScale = (gradOverlay.parameters["Scale"]?.value ?: 100f) / 100f
+                                                                val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
+                                                                
+                                                                val hasCustomHandles = gradOverlay.parameters["StartX"] != null
+                                                                val startX: Float
+                                                                val startY: Float
+                                                                val endX: Float
+                                                                val endY: Float
+                                                                if (hasCustomHandles) {
+                                                                    startX = (gradOverlay.parameters["StartX"]?.value ?: 0f) * currentSelected.width
+                                                                    startY = (gradOverlay.parameters["StartY"]?.value ?: 0f) * currentSelected.height
+                                                                    endX = (gradOverlay.parameters["EndX"]?.value ?: 1f) * currentSelected.width
+                                                                    endY = (gradOverlay.parameters["EndY"]?.value ?: 1f) * currentSelected.height
+                                                                } else {
+                                                                    val rads = Math.toRadians(goAngle.toDouble())
+                                                                    val cos = Math.cos(rads).toFloat()
+                                                                    val sin = Math.sin(rads).toFloat()
+                                                                    startX = currentSelected.width / 2f - (currentSelected.width / 2f * cos * goScale)
+                                                                    startY = currentSelected.height / 2f - (currentSelected.height / 2f * sin * goScale)
+                                                                    endX = currentSelected.width / 2f + (currentSelected.width / 2f * cos * goScale)
+                                                                    endY = currentSelected.height / 2f + (currentSelected.height / 2f * sin * goScale)
+                                                                }
+                                                                
+                                                                val touchLocal = canvasToLayerLocal(localStartOffset, currentSelected)
+                                                                val handleThreshold = 40f / ts.coerceAtLeast(0.5f)
+                                                                val handleThresholdSq = handleThreshold * handleThreshold
+                                                                
+                                                                val distToStartSq = (touchLocal.x - startX) * (touchLocal.x - startX) + (touchLocal.y - startY) * (touchLocal.y - startY)
+                                                                val distToEndSq = (touchLocal.x - endX) * (touchLocal.x - endX) + (touchLocal.y - endY) * (touchLocal.y - endY)
+                                                                
+                                                                if (distToStartSq < handleThresholdSq) {
+                                                                    dragMode = "gradient_start"
+                                                                    matchedGradientOption = true
+                                                                } else if (distToEndSq < handleThresholdSq) {
+                                                                    dragMode = "gradient_end"
+                                                                    matchedGradientOption = true
+                                                                } else {
+                                                                    val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+                                                                    var nearestStopIdx = -1
+                                                                    var minStopSq = Float.MAX_VALUE
+                                                                    for (idx in 0 until stopCount) {
+                                                                        val fraction = gradOverlay.parameters["CustomStop_${idx}_Pos"]?.value ?: (idx.toFloat() / (stopCount - 1).coerceAtLeast(1))
+                                                                        val stopX = startX + (endX - startX) * fraction
+                                                                        val stopY = startY + (endY - startY) * fraction
+                                                                        val distSq = (touchLocal.x - stopX) * (touchLocal.x - stopX) + (touchLocal.y - stopY) * (touchLocal.y - stopY)
+                                                                        if (distSq < handleThresholdSq && distSq < minStopSq) {
+                                                                            minStopSq = distSq
+                                                                            nearestStopIdx = idx
+                                                                        }
+                                                                    }
+                                                                    if (nearestStopIdx != -1) {
+                                                                        dragMode = "gradient_stop"
+                                                                        activeGradientStopIndex = nearestStopIdx
+                                                                        matchedGradientOption = true
+                                                                        
+                                                                        // Update selected stop parameter
+                                                                        layers = layers.map { layer ->
+                                                                            if (layer.id == currentSelected.id) {
+                                                                                val updatedEffects = layer.effects.map { eff ->
+                                                                                    if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                                        val map = eff.parameters.toMutableMap()
+                                                                                        map["SelectedStopIndex"] = com.example.studio.model.EffectParameter("SelectedStopIndex", nearestStopIdx.toFloat(), 0f, 10f)
+                                                                                        eff.copy(parameters = map)
+                                                                                    } else eff
+                                                                                }
+                                                                                layer.copy(effects = updatedEffects)
+                                                                            } else layer
+                                                                        }
+                                                                    } else {
+                                                                        // Check projection to add new color stop
+                                                                        val ab = Offset(endX - startX, endY - startY)
+                                                                        val ap = Offset(touchLocal.x - startX, touchLocal.y - startY)
+                                                                        val abLenSq = ab.x * ab.x + ab.y * ab.y
+                                                                        if (abLenSq > 0f) {
+                                                                            val tFraction = (ap.x * ab.x + ap.y * ab.y) / abLenSq
+                                                                            if (tFraction in 0f..1f) {
+                                                                                val projX = startX + tFraction * ab.x
+                                                                                val projY = startY + tFraction * ab.y
+                                                                                val distToLineSq = (touchLocal.x - projX) * (touchLocal.x - projX) + (touchLocal.y - projY) * (touchLocal.y - projY)
+                                                                                val lineThresholdSq = (30f / ts.coerceAtLeast(0.5f)) * (30f / ts.coerceAtLeast(0.5f))
+                                                                                
+                                                                                if (distToLineSq < lineThresholdSq && stopCount < 6) {
+                                                                                    // Interpolate the colors list
+                                                                                    val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
+                                                                                    val customColorsList = mutableListOf<androidx.compose.ui.graphics.Color>()
+                                                                                    for (idx in 0 until stopCount) {
+                                                                                        val rKey = "CustomStop_${idx}_R"
+                                                                                        val gKey = "CustomStop_${idx}_G"
+                                                                                        val bKey = "CustomStop_${idx}_B"
+                                                                                        val rVal = gradOverlay.parameters[rKey]?.value ?: when(idx) {
+                                                                                            0 -> gradOverlay.parameters["CustomStart_R"]?.value ?: 1.0f
+                                                                                            1 -> gradOverlay.parameters["CustomEnd_R"]?.value ?: 0.0f
+                                                                                            else -> 0.5f
+                                                                                        }
+                                                                                        val gVal = gradOverlay.parameters[gKey]?.value ?: when(idx) {
+                                                                                            0 -> gradOverlay.parameters["CustomStart_G"]?.value ?: 0.0f
+                                                                                            1 -> gradOverlay.parameters["CustomEnd_G"]?.value ?: 0.0f
+                                                                                            else -> 0.5f
+                                                                                        }
+                                                                                        val bVal = gradOverlay.parameters[bKey]?.value ?: when(idx) {
+                                                                                            0 -> gradOverlay.parameters["CustomStart_B"]?.value ?: 0.0f
+                                                                                            1 -> gradOverlay.parameters["CustomEnd_B"]?.value ?: 1.0f
+                                                                                            else -> 0.5f
+                                                                                        }
+                                                                                        customColorsList.add(Color(rVal, gVal, bVal))
+                                                                                    }
+                                                                                    val previewColors = if (goPresetIdx == 7) {
+                                                                                        customColorsList
+                                                                                    } else {
+                                                                                        gradientPresets[goPresetIdx.coerceIn(0, gradientPresets.size - 1)]
+                                                                                    }
+                                                                                    val interpolatedColor = interpolateMultiColor(previewColors, tFraction)
+                                                                                    
+                                                                                    undoStack.add(layers)
+                                                                                    redoStack.clear()
+                                                                                    layers = layers.map { layer ->
+                                                                                        if (layer.id == currentSelected.id) {
+                                                                                            val updatedEffects = layer.effects.map { eff ->
+                                                                                                if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                                                    val map = eff.parameters.toMutableMap()
+                                                                                                    val count = stopCount + 1
+                                                                                                    map["Preset"] = com.example.studio.model.EffectParameter("Preset", 7f, 0f, 10f) // switch to custom stops
+                                                                                                    map["CustomStopCount"] = com.example.studio.model.EffectParameter("CustomStopCount", count.toFloat(), 0f, 10f)
+                                                                                                    // Populate existing custom stops with previewColors if switching preset format
+                                                                                                    for (i in previewColors.indices) {
+                                                                                                        val col = previewColors[i]
+                                                                                                        map["CustomStop_${i}_R"] = com.example.studio.model.EffectParameter("CustomStop_${i}_R", col.red, 0f, 1f)
+                                                                                                        map["CustomStop_${i}_G"] = com.example.studio.model.EffectParameter("CustomStop_${i}_G", col.green, 0f, 1f)
+                                                                                                        map["CustomStop_${i}_B"] = com.example.studio.model.EffectParameter("CustomStop_${i}_B", col.blue, 0f, 1f)
+                                                                                                        map["CustomStop_${i}_Pos"] = com.example.studio.model.EffectParameter("CustomStop_${i}_Pos", i.toFloat() / (previewColors.size - 1).coerceAtLeast(1), 0f, 1f)
+                                                                                                    }
+                                                                                                    
+                                                                                                    map["CustomStop_${stopCount}_Pos"] = com.example.studio.model.EffectParameter("CustomStop_${stopCount}_Pos", tFraction, 0f, 1f)
+                                                                                                    map["CustomStop_${stopCount}_R"] = com.example.studio.model.EffectParameter("CustomStop_${stopCount}_R", interpolatedColor.red, 0f, 1f)
+                                                                                                    map["CustomStop_${stopCount}_G"] = com.example.studio.model.EffectParameter("CustomStop_${stopCount}_G", interpolatedColor.green, 0f, 1f)
+                                                                                                    map["CustomStop_${stopCount}_B"] = com.example.studio.model.EffectParameter("CustomStop_${stopCount}_B", interpolatedColor.blue, 0f, 1f)
+                                                                                                    map["SelectedStopIndex"] = com.example.studio.model.EffectParameter("SelectedStopIndex", stopCount.toFloat(), 0f, 10f)
+                                                                                                    eff.copy(parameters = map)
+                                                                                                } else eff
+                                                                                            }
+                                                                                            layer.copy(effects = updatedEffects)
+                                                                                        } else layer
+                                                                                    }
+                                                                                    dragMode = "gradient_stop"
+                                                                                    activeGradientStopIndex = stopCount
+                                                                                    matchedGradientOption = true
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+
                                                             val threshold = 60f / ts.coerceAtLeast(0.3f)
                                                             val thresholdSq = threshold * threshold
-                                                            if (distBr < thresholdSq) {
+                                                            if (matchedGradientOption) {
+                                                                // Handled on-canvas gradient selection/stops append
+                                                            } else if (distBr < thresholdSq) {
                                                                 dragMode = "resize"
                                                                 isResizingActive = true
                                                                 activeResizingLayerId = selId
@@ -2698,6 +2860,93 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                 val newH = if (layer.isAspectLocked) computedNewH else (localChangeY - layer.positionY).coerceIn(20f, 2000f)
                                                                 layer.copy(width = newW, height = newH)
                                                             } else layer
+                                                        }
+                                                    } else if (dragMode == "gradient_start") {
+                                                        val currentSelected = layers.find { it.id == selId }
+                                                        if (currentSelected != null) {
+                                                            val localTouch = canvasToLayerLocal(localChangeOffset, currentSelected)
+                                                            val startRatioX = localTouch.x / currentSelected.width.coerceAtLeast(1f)
+                                                            val startRatioY = localTouch.y / currentSelected.height.coerceAtLeast(1f)
+                                                            layers = layers.map { layer ->
+                                                                if (layer.id == selId) {
+                                                                    val updatedEffects = layer.effects.map { eff ->
+                                                                        if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                            val map = eff.parameters.toMutableMap()
+                                                                            map["StartX"] = com.example.studio.model.EffectParameter("StartX", startRatioX, 0f, 1f)
+                                                                            map["StartY"] = com.example.studio.model.EffectParameter("StartY", startRatioY, 0f, 1f)
+                                                                            eff.copy(parameters = map)
+                                                                        } else eff
+                                                                    }
+                                                                    layer.copy(effects = updatedEffects)
+                                                                } else layer
+                                                            }
+                                                        }
+                                                    } else if (dragMode == "gradient_end") {
+                                                        val currentSelected = layers.find { it.id == selId }
+                                                        if (currentSelected != null) {
+                                                            val localTouch = canvasToLayerLocal(localChangeOffset, currentSelected)
+                                                            val endRatioX = localTouch.x / currentSelected.width.coerceAtLeast(1f)
+                                                            val endRatioY = localTouch.y / currentSelected.height.coerceAtLeast(1f)
+                                                            layers = layers.map { layer ->
+                                                                if (layer.id == selId) {
+                                                                    val updatedEffects = layer.effects.map { eff ->
+                                                                        if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                            val map = eff.parameters.toMutableMap()
+                                                                            map["EndX"] = com.example.studio.model.EffectParameter("EndX", endRatioX, 0f, 1f)
+                                                                            map["EndY"] = com.example.studio.model.EffectParameter("EndY", endRatioY, 0f, 1f)
+                                                                            eff.copy(parameters = map)
+                                                                        } else eff
+                                                                    }
+                                                                    layer.copy(effects = updatedEffects)
+                                                                } else layer
+                                                            }
+                                                        }
+                                                    } else if (dragMode == "gradient_stop") {
+                                                        val currentSelected = layers.find { it.id == selId }
+                                                        val gradOverlay = currentSelected?.effects?.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                        if (currentSelected != null && gradOverlay != null) {
+                                                            val hasCustomHandles = gradOverlay.parameters["StartX"] != null
+                                                            val startX: Float
+                                                            val startY: Float
+                                                            val endX: Float
+                                                            val endY: Float
+                                                            if (hasCustomHandles) {
+                                                                startX = (gradOverlay.parameters["StartX"]?.value ?: 0f) * currentSelected.width
+                                                                startY = (gradOverlay.parameters["StartY"]?.value ?: 0f) * currentSelected.height
+                                                                endX = (gradOverlay.parameters["EndX"]?.value ?: 1f) * currentSelected.width
+                                                                endY = (gradOverlay.parameters["EndY"]?.value ?: 1f) * currentSelected.height
+                                                            } else {
+                                                                val goScale = (gradOverlay.parameters["Scale"]?.value ?: 100f) / 100f
+                                                                val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
+                                                                val rads = Math.toRadians(goAngle.toDouble())
+                                                                val cos = Math.cos(rads).toFloat()
+                                                                val sin = Math.sin(rads).toFloat()
+                                                                startX = currentSelected.width / 2f - (currentSelected.width / 2f * cos * goScale)
+                                                                startY = currentSelected.height / 2f - (currentSelected.height / 2f * sin * goScale)
+                                                                endX = currentSelected.width / 2f + (currentSelected.width / 2f * cos * goScale)
+                                                                endY = currentSelected.width / 2f + (currentSelected.width / 2f * sin * goScale)
+                                                            }
+                                                            
+                                                            val localTouch = canvasToLayerLocal(localChangeOffset, currentSelected)
+                                                            val ab = Offset(endX - startX, endY - startY)
+                                                            val ap = Offset(localTouch.x - startX, localTouch.y - startY)
+                                                            val abLenSq = ab.x * ab.x + ab.y * ab.y
+                                                            val tFraction = if (abLenSq > 0f) {
+                                                                ((ap.x * ab.x + ap.y * ab.y) / abLenSq).coerceIn(0f, 1f)
+                                                            } else 0f
+                                                             
+                                                            layers = layers.map { layer ->
+                                                                if (layer.id == selId) {
+                                                                    val updatedEffects = layer.effects.map { eff ->
+                                                                        if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                            val map = eff.parameters.toMutableMap()
+                                                                            map["CustomStop_${activeGradientStopIndex}_Pos"] = com.example.studio.model.EffectParameter("CustomStop_${activeGradientStopIndex}_Pos", tFraction, 0f, 1f)
+                                                                            eff.copy(parameters = map)
+                                                                        } else eff
+                                                                    }
+                                                                    layer.copy(effects = updatedEffects)
+                                                                } else layer
+                                                            }
                                                         }
                                                     } else if (dragMode == "bezier") {
                                                         layers = layers.map { layer ->
@@ -5644,8 +5893,6 @@ fun GradientPickerPanel(
     val goOpacity = gradOverlay.parameters["Opacity"]?.value ?: 1.0f
     val gradientTypeOrdinal = (gradOverlay.parameters["GradientType"]?.value ?: 0f).toInt().coerceIn(0, 6)
 
-    var selectedStopIndex by remember { mutableStateOf(0) }
-
     val updateParam = { key: String, newVal: Float ->
         val updatedGo = gradOverlay.updateParameter(key, newVal)
         val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) updatedGo else it }
@@ -5657,8 +5904,9 @@ fun GradientPickerPanel(
     var localScale by remember(goScale) { mutableStateOf(goScale) }
     var localOpacity by remember(goOpacity) { mutableStateOf(goOpacity) }
 
-    val isCustomMode = goPreset.toInt() == 7
+    val isCustomMode = true
     val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+    val selectedStopIndex = (gradOverlay.parameters["SelectedStopIndex"]?.value ?: 0f).toInt().coerceAtLeast(0)
     val activeStopIndex = selectedStopIndex.coerceAtMost(stopCount - 1)
 
     // Assemble modern list of custom colors
@@ -5707,56 +5955,11 @@ fun GradientPickerPanel(
             .verticalScroll(androidx.compose.foundation.rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // --- High-Contrast Dual-Tab Switcher for Preset Library vs Custom Maker ---
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(32.dp)
-                .background(Color(0xFF0F0F14), RoundedCornerShape(8.dp))
-                .padding(2.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (!isCustomMode) MidSlate else Color.Transparent)
-                    .clickable { 
-                        updateParam("Preset", 0f) 
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Preset Library",
-                    style = Typography.labelSmall.copy(
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 10.sp,
-                        color = if (!isCustomMode) IndustrialAmber else Color.LightGray
-                    )
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .weight(1.1f)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (isCustomMode) MidSlate else Color.Transparent)
-                    .clickable { 
-                        updateParam("Preset", 7f) 
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Custom Stops",
-                    style = Typography.labelSmall.copy(
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 10.sp,
-                        color = if (isCustomMode) IndustrialAmber else Color.LightGray
-                    )
-                )
-            }
-        }
+        // Minimalist active header
+        Text(
+            text = "Interactive Vector Gradient Controller",
+            style = Typography.labelSmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold, color = IndustrialAmber)
+        )
 
         // --- 1. Gradient Style selection row ---
         Text(
@@ -5888,11 +6091,11 @@ fun GradientPickerPanel(
                                     nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_G", col.green) as StudioEffect.PhotoshopEffect
                                     nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_B", col.blue) as StudioEffect.PhotoshopEffect
                                 }
-                                selectedStopIndex = idx
-                                val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) nextOverlay else it }
+                                var finalOverlay = nextOverlay.updateParameter("SelectedStopIndex", idx.toFloat()) as StudioEffect.PhotoshopEffect
+                                val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) finalOverlay else it }
                                 onUpdateLayer(selectedLayer.copy(effects = nextEffects))
                             } else {
-                                selectedStopIndex = idx
+                                updateParam("SelectedStopIndex", idx.toFloat())
                             }
                         }
                 ) {
@@ -5923,46 +6126,7 @@ fun GradientPickerPanel(
             }
         }
 
-        // --- Tab 1 Content: PRESET LIBRARY patterns ---
-        if (!isCustomMode) {
-            Text(
-                text = "Preset Library Shortcuts",
-                style = Typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
-                color = Color.LightGray
-            )
-            androidx.compose.foundation.lazy.LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(38.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                items(gradientPresets.size) { index ->
-                    val colors = gradientPresets[index]
-                    val isSelected = index == goPreset.toInt()
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(RoundedCornerShape(15.dp))
-                            .background(
-                                brush = androidx.compose.ui.graphics.Brush.linearGradient(colors = colors)
-                            )
-                            .border(
-                                BorderStroke(
-                                    if (isSelected) 2.5.dp else 1.dp,
-                                    if (isSelected) IndustrialAmber else Color(0x33FFFFFF)
-                                ),
-                                RoundedCornerShape(15.dp)
-                            )
-                            .clickable {
-                                updateParam("Preset", index.toFloat())
-                            }
-                    )
-                }
-            }
-        }
-
-        // --- Tab 2 Content: CUSTOM STOPS DESIGNER ---
+        // --- CUSTOM STOPS DESIGNER ---
         if (isCustomMode) {
             // Number of Stops Selection Row
             Row(
@@ -15932,12 +16096,36 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         val rads = Math.toRadians(goAngle.toDouble())
         val cos = Math.cos(rads).toFloat()
         val sin = Math.sin(rads).toFloat()
-        val startX = layer.width / 2f - (layer.width / 2f * cos * goScale)
-        val startY = layer.height / 2f - (layer.height / 2f * sin * goScale)
-        val endX = layer.width / 2f + (layer.width / 2f * cos * goScale)
-        val endY = layer.height / 2f + (layer.height / 2f * sin * goScale)
+        val hasCustomHandles = gradOverlay.parameters["StartX"] != null
+        val startX: Float
+        val startY: Float
+        val endX: Float
+        val endY: Float
+        if (hasCustomHandles) {
+            startX = (gradOverlay.parameters["StartX"]?.value ?: 0f) * layer.width
+            startY = (gradOverlay.parameters["StartY"]?.value ?: 0f) * layer.height
+            endX = (gradOverlay.parameters["EndX"]?.value ?: 1f) * layer.width
+            endY = (gradOverlay.parameters["EndY"]?.value ?: 1f) * layer.height
+        } else {
+            startX = layer.width / 2f - (layer.width / 2f * cos * goScale)
+            startY = layer.height / 2f - (layer.height / 2f * sin * goScale)
+            endX = layer.width / 2f + (layer.width / 2f * cos * goScale)
+            endY = layer.height / 2f + (layer.height / 2f * sin * goScale)
+        }
 
         val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
+        val stopPositions = if (goPresetIdx == 7) {
+            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+            val list = mutableListOf<Float>()
+            for (i in 0 until stopCount) {
+                val posVal = gradOverlay.parameters["CustomStop_${i}_Pos"]?.value ?: (i.toFloat() / (stopCount - 1).coerceAtLeast(1))
+                list.add(posVal)
+            }
+            list
+        } else {
+            null
+        }
+
         val originalColors = if (goPresetIdx == 7) {
             val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
             val list = mutableListOf<androidx.compose.ui.graphics.Color>()
@@ -15977,13 +16165,27 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             gradientPresets[goPresetIdx.coerceIn(0, gradientPresets.size - 1)]
         }
 
+        val colorStops = if (stopPositions != null) {
+            stopPositions.zip(originalColors).map { Pair(it.first, it.second) }.sortedBy { it.first }.toTypedArray()
+        } else {
+            null
+        }
+
         when (gradientTypeOrdinal) {
             0 -> { // Linear Gradient
-                val gradBrush = androidx.compose.ui.graphics.Brush.linearGradient(
-                    colors = originalColors,
-                    start = androidx.compose.ui.geometry.Offset(startX, startY),
-                    end = androidx.compose.ui.geometry.Offset(endX, endY)
-                )
+                val gradBrush = if (colorStops != null) {
+                    androidx.compose.ui.graphics.Brush.linearGradient(
+                        colorStops = colorStops,
+                        start = androidx.compose.ui.geometry.Offset(startX, startY),
+                        end = androidx.compose.ui.geometry.Offset(endX, endY)
+                    )
+                } else {
+                    androidx.compose.ui.graphics.Brush.linearGradient(
+                        colors = originalColors,
+                        start = androidx.compose.ui.geometry.Offset(startX, startY),
+                        end = androidx.compose.ui.geometry.Offset(endX, endY)
+                    )
+                }
                 drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
             }
             1 -> { // Radial Gradient
@@ -16615,6 +16817,104 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             radius = 5.5f / totalScale.coerceAtLeast(0.5f),
             center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
         )
+
+        // Draw On-Canvas Gradient Overlay Vector Handle Guide Line and Pins
+        val gradOverlay = layer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        val gradientTypeOrdinal = (gradOverlay?.parameters["GradientType"]?.value ?: 0f).toInt()
+        
+        if (gradOverlay != null && gradientTypeOrdinal == 0) { // Linear Gradient
+            val goScale = (gradOverlay.parameters["Scale"]?.value ?: 100f) / 100f
+            val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
+            
+            val hasCustomHandles = gradOverlay.parameters["StartX"] != null
+            val startX: Float
+            val startY: Float
+            val endX: Float
+            val endY: Float
+            if (hasCustomHandles) {
+                startX = (gradOverlay.parameters["StartX"]?.value ?: 0f) * layer.width
+                startY = (gradOverlay.parameters["StartY"]?.value ?: 0f) * layer.height
+                endX = (gradOverlay.parameters["EndX"]?.value ?: 1f) * layer.width
+                endY = (gradOverlay.parameters["EndY"]?.value ?: 1f) * layer.height
+            } else {
+                val rads = Math.toRadians(goAngle.toDouble())
+                val cos = Math.cos(rads).toFloat()
+                val sin = Math.sin(rads).toFloat()
+                startX = layer.width / 2f - (layer.width / 2f * cos * goScale)
+                startY = layer.height / 2f - (layer.height / 2f * sin * goScale)
+                endX = layer.width / 2f + (layer.width / 2f * cos * goScale)
+                endY = layer.height / 2f + (layer.height / 2f * sin * goScale)
+            }
+            
+            val startPt = androidx.compose.ui.geometry.Offset(startX, startY)
+            val endPt = androidx.compose.ui.geometry.Offset(endX, endY)
+            
+            // Draw guideline
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.5f),
+                start = startPt,
+                end = endPt,
+                strokeWidth = 2f / totalScale.coerceAtLeast(0.5f)
+            )
+            // Amber center line
+            drawLine(
+                color = IndustrialAmber,
+                start = startPt,
+                end = endPt,
+                strokeWidth = 1f / totalScale.coerceAtLeast(0.5f)
+            )
+            
+            // Draw start square handle
+            val handleHalf = 7f / totalScale.coerceAtLeast(0.5f)
+            drawRect(
+                color = IndustrialAmber,
+                topLeft = androidx.compose.ui.geometry.Offset(startX - handleHalf, startY - handleHalf),
+                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2)
+            )
+            drawRect(
+                color = androidx.compose.ui.graphics.Color.White,
+                topLeft = androidx.compose.ui.geometry.Offset(startX - handleHalf, startY - handleHalf),
+                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f / totalScale.coerceAtLeast(0.5f))
+            )
+            
+            // Draw end square handle
+            drawRect(
+                color = IndustrialAmber,
+                topLeft = androidx.compose.ui.geometry.Offset(endX - handleHalf, endY - handleHalf),
+                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2)
+            )
+            drawRect(
+                color = androidx.compose.ui.graphics.Color.White,
+                topLeft = androidx.compose.ui.geometry.Offset(endX - handleHalf, endY - handleHalf),
+                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f / totalScale.coerceAtLeast(0.5f))
+            )
+            
+            // Let's draw interior stop tracking markers along the line
+            val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
+            val activeStopIndex = (gradOverlay.parameters["SelectedStopIndex"]?.value ?: 0f).toInt()
+            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+            for (idx in 0 until stopCount) {
+                val fraction = gradOverlay.parameters["CustomStop_${idx}_Pos"]?.value ?: (idx.toFloat() / (stopCount - 1).coerceAtLeast(1))
+                val stopX = startX + (endX - startX) * fraction
+                val stopY = startY + (endY - startY) * fraction
+                
+                // Draw a circle tracking marker
+                val markerRadius = 5.5f / totalScale.coerceAtLeast(0.5f)
+                drawCircle(
+                    color = androidx.compose.ui.graphics.Color.White,
+                    radius = markerRadius,
+                    center = androidx.compose.ui.geometry.Offset(stopX, stopY)
+                )
+                // If it is the currently selected stop in the color designer, draw an inner orange dot
+                drawCircle(
+                    color = if (idx == activeStopIndex) EnergeticYellow else androidx.compose.ui.graphics.Color(0xFF161622),
+                    radius = markerRadius - 1.5f / totalScale.coerceAtLeast(0.5f),
+                    center = androidx.compose.ui.geometry.Offset(stopX, stopY)
+                )
+            }
+        }
     }
     if (didSaveLayer) {
         drawContext.canvas.nativeCanvas.restore()
