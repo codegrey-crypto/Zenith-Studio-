@@ -1,7 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.google.devtools.ksp)
     alias(libs.plugins.roborazzi)
     alias(libs.plugins.secrets)
 }
@@ -74,7 +73,7 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     
-    // Core Compose Components mapped cleanly through Catalog
+    // Core Compose Components
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
@@ -90,11 +89,8 @@ dependencies {
     implementation(libs.gpuimage)
 
     // Storage and Concurrency 
-    implementation(libs.androidx.room.ktx)
-    implementation(libs.androidx.room.runtime)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.moshi.kotlin)
 
     // Local Test Framework Deployments
     testImplementation(libs.androidx.compose.ui.test.junit4)
@@ -117,13 +113,9 @@ dependencies {
     // Debugging Tooling Links
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
-
-    // Annotation Processing Modules
-    ksp(libs.androidx.room.compiler)
-    ksp(libs.moshi.kotlin.codegen)
 }
 
-// FORCE BYPASS HOOK: Intercepts and disables any lingering AAR validation checks
+// FORCE BYPASS HOOK
 tasks.whenTaskAdded {
     if (name.contains("AarMetadata")) {
         enabled = false
