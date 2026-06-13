@@ -2945,8 +2945,12 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                         val startL = startingLayerForResize
                                                         if (startL != null) {
                                                             val localTouch = canvasToLayerLocal(Offset(localChangeX, localChangeY), startL)
-                                                            var scaleX = localTouch.x / startL.width.coerceAtLeast(1f)
-                                                            var scaleY = localTouch.y / startL.height.coerceAtLeast(1f)
+                                                            val pivotX = startL.width / 2f
+                                                            val pivotY = startL.height / 2f
+                                                            val targetW = 2f * Math.abs(localTouch.x - pivotX)
+                                                            val targetH = 2f * Math.abs(localTouch.y - pivotY)
+                                                            var scaleX = targetW / startL.width.coerceAtLeast(1f)
+                                                            var scaleY = targetH / startL.height.coerceAtLeast(1f)
                                                             
                                                             val minW = 20f
                                                             val minH = 20f
@@ -3467,7 +3471,14 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 if (layer.id == targetId) {
                                                     val newW = (startL.width * finalDragScaleXSnapshot).coerceIn(20f, 2000f)
                                                     val newH = (startL.height * finalDragScaleYSnapshot).coerceIn(20f, 2000f)
-                                                    layer.copy(width = newW, height = newH)
+                                                    val newX = startL.positionX + (startL.width - newW) / 2f
+                                                    val newY = startL.positionY + (startL.height - newH) / 2f
+                                                    layer.copy(
+                                                        width = newW,
+                                                        height = newH,
+                                                        positionX = newX,
+                                                        positionY = newY
+                                                    )
                                                 } else layer
                                             }
                                         }
@@ -3751,7 +3762,32 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                         withTransform({
                                             translate(left = layer.positionX, top = layer.positionY)
                                         }) {
-                                            val matrix = sharedTransformMatrix.apply {
+                                            val centerX = layer.width * layer.pivotX
+                                            val centerY = layer.height * layer.pivotY
+
+                                            val nativeMatrix = CanvasMatrixHolder.transformMatrix.apply {
+                                                reset()
+                                                // 1. Move pivot center to local origin (0, 0)
+                                                preTranslate(-centerX, -centerY)
+
+                                                val vals = CanvasMatrixHolder.matrixValues
+                                                getValues(vals)
+                                                vals[android.graphics.Matrix.MSKEW_X] = layer.skewX
+                                                vals[android.graphics.Matrix.MSKEW_Y] = layer.skewY
+                                                vals[6] = layer.perspX // MPERSP_0 control point
+                                                vals[7] = layer.perspY // MPERSP_1 control point
+                                                setValues(vals)
+
+                                                // 3. Move coordinate framework back to position
+                                                postTranslate(centerX, centerY)
+
+                                                // 4. Apply scale and rotation around center pivot
+                                                postScale(layer.scaleX * additionalScale, layer.scaleY * additionalScale, centerX, centerY)
+                                                postRotate(layer.rotation + additionalTwirl, centerX, centerY)
+                                            }
+                                            drawContext.canvas.nativeCanvas.concat(nativeMatrix)
+                                            if (false) {
+                                                val matrix = sharedTransformMatrix.apply {
                                                 reset()
                                                 val centerX = layer.width * layer.pivotX
                                                 val centerY = layer.height * layer.pivotY
@@ -3787,6 +3823,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 translate(-centerX, -centerY)
                                             }
                                             drawContext.canvas.concat(matrix)
+                                            }
                                             drawAllEffectsAndLayersLocal(
                                                 layer = layer,
                                                 layerOpacity = layerOpacity,
@@ -8281,30 +8318,27 @@ fun exportCanvasToBitmap(
         val centerX = originalLayer.width * originalLayer.pivotX
         val centerY = originalLayer.height * originalLayer.pivotY
         
-        val m = android.graphics.Matrix()
-        m.reset()
-        m.postTranslate(centerX, centerY)
-        
-        val sx = originalLayer.skewX
-        val sy = originalLayer.skewY
-        val px = originalLayer.perspX
-        val py = originalLayer.perspY
-        
-        if (sx != 0f || sy != 0f || px != 0f || py != 0f) {
-            val skewPersp = android.graphics.Matrix()
+        val m = android.graphics.Matrix().apply {
+            reset()
+            // 1. Move pivot center to local origin (0, 0)
+            preTranslate(-centerX, -centerY)
+
+            // 2. Inject true 3D perspective and skew coefficients
             val vals = FloatArray(9)
-            skewPersp.getValues(vals)
-            vals[android.graphics.Matrix.MSKEW_X] = sx
-            vals[android.graphics.Matrix.MSKEW_Y] = sy
-            vals[android.graphics.Matrix.MPERSP_0] = px
-            vals[android.graphics.Matrix.MPERSP_1] = py
-            skewPersp.setValues(vals)
-            m.postConcat(skewPersp)
+            getValues(vals)
+            vals[android.graphics.Matrix.MSKEW_X] = originalLayer.skewX
+            vals[android.graphics.Matrix.MSKEW_Y] = originalLayer.skewY
+            vals[6] = originalLayer.perspX // MPERSP_0 control point
+            vals[7] = originalLayer.perspY // MPERSP_1 control point
+            setValues(vals)
+
+            // 3. Move coordinate framework back to position
+            postTranslate(centerX, centerY)
+
+            // 4. Apply scale and rotation around center pivot
+            postScale(originalLayer.scaleX, originalLayer.scaleY, centerX, centerY)
+            postRotate(originalLayer.rotation, centerX, centerY)
         }
-        
-        m.postRotate(originalLayer.rotation)
-        m.postScale(originalLayer.scaleX, originalLayer.scaleY)
-        m.postTranslate(-centerX, -centerY)
         canvas.concat(m)
         
         when (originalLayer.type) {
@@ -17722,6 +17756,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     }
 }
 
+private object CanvasMatrixHolder {
+    val transformMatrix = android.graphics.Matrix()
+    val matrixValues = FloatArray(9)
+}
+
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnectedLayer(
     layer: com.example.studio.model.StudioLayer,
     layerOpacity: Float,
@@ -17803,45 +17842,38 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     }
     drawContext.canvas.translate(layer.positionX, layer.positionY)
     if (liveDragScaleX != 1.0f || liveDragScaleY != 1.0f) {
+        val pivotX = layer.width / 2f
+        val pivotY = layer.height / 2f
+        drawContext.canvas.translate(pivotX, pivotY)
         drawContext.canvas.scale(liveDragScaleX, liveDragScaleY)
+        drawContext.canvas.translate(-pivotX, -pivotY)
     }
 
-    val matrix = sharedTransformMatrix.apply {
+    val centerX = layer.width * layer.pivotX
+    val centerY = layer.height * layer.pivotY
+
+    val nativeMatrix = CanvasMatrixHolder.transformMatrix.apply {
         reset()
-        val centerX = layer.width * layer.pivotX
-        val centerY = layer.height * layer.pivotY
-        
-        translate(centerX, centerY)
-        
-        val sx = layer.skewX
-        val sy = layer.skewY
-        val px = layer.perspX
-        val py = layer.perspY
-        
-        if (sx != 0f || sy != 0f || px != 0f || py != 0f) {
-            val skewPersp = androidx.compose.ui.graphics.Matrix().apply {
-                reset()
-                if (sx != 0f) {
-                    values[4] = sx
-                }
-                if (sy != 0f) {
-                    values[1] = sy
-                }
-                if (px != 0f) {
-                    values[3] = px
-                }
-                if (py != 0f) {
-                    values[7] = py
-                }
-            }
-            timesAssign(skewPersp)
-        }
-        
-        rotateZ(layer.rotation + additionalTwirl)
-        scale(layer.scaleX * additionalScale, layer.scaleY * additionalScale, 1f)
-        translate(-centerX, -centerY)
+        // 1. Move pivot center to local origin (0, 0)
+        preTranslate(-centerX, -centerY)
+
+        // 2. Inject true 3D perspective and skew coefficients
+        val vals = CanvasMatrixHolder.matrixValues
+        getValues(vals)
+        vals[android.graphics.Matrix.MSKEW_X] = layer.skewX
+        vals[android.graphics.Matrix.MSKEW_Y] = layer.skewY
+        vals[6] = layer.perspX // MPERSP_0 control point
+        vals[7] = layer.perspY // MPERSP_1 control point
+        setValues(vals)
+
+        // 3. Move coordinate framework back to position
+        postTranslate(centerX, centerY)
+
+        // 4. Apply scale and rotation around center pivot
+        postScale(layer.scaleX * additionalScale, layer.scaleY * additionalScale, centerX, centerY)
+        postRotate(layer.rotation + additionalTwirl, centerX, centerY)
     }
-    drawContext.canvas.concat(matrix)
+    drawContext.canvas.nativeCanvas.concat(nativeMatrix)
 
     // Graphite-inspired Parametric Layer Caching via State Hash Tracking
     val isPainting = (activeTool == "Brush" || activeTool == "Eraser" || activeTool == "Sudge" || activeTool == "BlurTool") && layer.id == selectedLayerId

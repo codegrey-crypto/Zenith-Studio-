@@ -91,30 +91,27 @@ object PsdExportEngine {
         val centerX = layer.width * layer.pivotX
         val centerY = layer.height * layer.pivotY
 
-        val m = Matrix()
-        m.reset()
-        m.postTranslate(centerX, centerY)
+        val m = Matrix().apply {
+            reset()
+            // 1. Move pivot center to local origin (0, 0)
+            preTranslate(-centerX, -centerY)
 
-        val sx = layer.skewX
-        val sy = layer.skewY
-        val px = layer.perspX
-        val py = layer.perspY
-
-        if (sx != 0f || sy != 0f || px != 0f || py != 0f) {
-            val skewPersp = Matrix()
+            // 2. Inject true 3D perspective and skew coefficients
             val vals = FloatArray(9)
-            skewPersp.getValues(vals)
-            vals[Matrix.MSKEW_X] = sx
-            vals[Matrix.MSKEW_Y] = sy
-            vals[Matrix.MPERSP_0] = px
-            vals[Matrix.MPERSP_1] = py
-            skewPersp.setValues(vals)
-            m.postConcat(skewPersp)
-        }
+            getValues(vals)
+            vals[Matrix.MSKEW_X] = layer.skewX
+            vals[Matrix.MSKEW_Y] = layer.skewY
+            vals[6] = layer.perspX // MPERSP_0 control point
+            vals[7] = layer.perspY // MPERSP_1 control point
+            setValues(vals)
 
-        m.postRotate(layer.rotation)
-        m.postScale(layer.scaleX, layer.scaleY)
-        m.postTranslate(-centerX, -centerY)
+            // 3. Move coordinate framework back to position
+            postTranslate(centerX, centerY)
+
+            // 4. Apply scale and rotation around center pivot
+            postScale(layer.scaleX, layer.scaleY, centerX, centerY)
+            postRotate(layer.rotation, centerX, centerY)
+        }
         canvas.concat(m)
 
         when (layer.type) {
