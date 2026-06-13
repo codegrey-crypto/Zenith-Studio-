@@ -680,10 +680,14 @@ fun TypographyOrShapeDetailView(
                             value = selectedLayer.width,
                             onValueChange = {
                                 val newW = it.coerceIn(10f, 1500f)
+                                val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                val newX = oldCenterX - newW / 2f
                                 if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
-                                    onUpdateLayer(selectedLayer.copy(width = newW, height = newW))
+                                    val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                    val newY = oldCenterY - newW / 2f
+                                    onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = newY))
                                 } else {
-                                    onUpdateLayer(selectedLayer.copy(width = newW))
+                                    onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
                                 }
                             },
                             valueRange = 10f..1200f,
@@ -692,7 +696,18 @@ fun TypographyOrShapeDetailView(
                         )
                         val trigger = LocalSliderValueEditTrigger.current
                         Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                            trigger?.invoke(SliderValueEditConfig("Shape Width", selectedLayer.width, 10f..1200f, isInt = true) { onUpdateLayer(selectedLayer.copy(width = it)) })
+                            trigger?.invoke(SliderValueEditConfig("Shape Width", selectedLayer.width, 10f..1200f, isInt = true) { w ->
+                                val newW = w.coerceIn(10f, 1500f)
+                                val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                val newX = oldCenterX - newW / 2f
+                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                    val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                    val newY = oldCenterY - newW / 2f
+                                    onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = newY))
+                                } else {
+                                    onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                                }
+                            })
                         }, textAlign = TextAlign.End)
                     }
 
@@ -702,10 +717,14 @@ fun TypographyOrShapeDetailView(
                             value = selectedLayer.height,
                             onValueChange = {
                                 val newH = it.coerceIn(10f, 1500f)
+                                val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                val newY = oldCenterY - newH / 2f
                                 if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
-                                    onUpdateLayer(selectedLayer.copy(width = newH, height = newH))
+                                    val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                    val newX = oldCenterX - newH / 2f
+                                    onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = newX, positionY = newY))
                                 } else {
-                                    onUpdateLayer(selectedLayer.copy(height = newH))
+                                    onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
                                 }
                             },
                             valueRange = 10f..1200f,
@@ -714,7 +733,18 @@ fun TypographyOrShapeDetailView(
                         )
                         val trigger = LocalSliderValueEditTrigger.current
                         Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                            trigger?.invoke(SliderValueEditConfig("Shape Height", selectedLayer.height, 10f..1200f, isInt = true) { onUpdateLayer(selectedLayer.copy(height = it)) })
+                            trigger?.invoke(SliderValueEditConfig("Shape Height", selectedLayer.height, 10f..1200f, isInt = true) { h ->
+                                val newH = h.coerceIn(10f, 1500f)
+                                val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                val newY = oldCenterY - newH / 2f
+                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                    val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                    val newX = oldCenterX - newH / 2f
+                                    onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = newX, positionY = newY))
+                                } else {
+                                    onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                                }
+                            })
                         }, textAlign = TextAlign.End)
                     }
 
