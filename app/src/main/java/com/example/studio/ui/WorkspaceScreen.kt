@@ -1367,6 +1367,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var isLayersPanelVisible by remember { mutableStateOf(true) }
     var isBottomPanelVisible by remember { mutableStateOf(true) }
     var showEffectsGallery by remember { mutableStateOf(false) }
+    var activeFullScreenSheet by remember { mutableStateOf<String?>(null) }
 
     // Layer Renaming States
     var renamingLayerId by remember { mutableStateOf<String?>(null) }
@@ -2080,6 +2081,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 onRulerLockedChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(locked = value) else it } },
                 snapToRuler = snapToRuler,
                 onSnapToRulerChange = { snapToRuler = it },
+                activeFullScreenSheet = activeFullScreenSheet,
+                onActiveFullScreenSheetChange = { activeFullScreenSheet = it },
                 isLandscape = isLandscapeMode
             )
             }
@@ -2316,7 +2319,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             // -- MAIN CREATIVE CORE GRID --
             Row(
                 modifier = Modifier
-                    .weight(1f)
+                    .weight(if (activeFullScreenSheet != null) 0.6f else 1f)
                     .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -5154,19 +5157,343 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     }
                 }
 
-                if (isLandscape && isBottomPanelVisible) {
+                if (isLandscape && isBottomPanelVisible && activeFullScreenSheet == null) {
                     RenderBottomEffectPanel(isLandscapeMode = true)
                 }
             }
 
-            // -- BOTTOM EFFECTS & PARAMETERS PANEL (with smooth animated transition) --
-            if (!isLandscape) {
-                AnimatedVisibility(
-                    visible = isBottomPanelVisible,
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
+            // -- BOTTOM EFFECTS & PARAMETERS PANEL / SPLIT-SHEET OVERLAY (with smooth animated transition) --
+            if (activeFullScreenSheet != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.4f)
+                        .background(SlatePanel)
+                        .border(BorderStroke(1.2.dp, HighslateOutline))
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
-                    RenderBottomEffectPanel(isLandscapeMode = false)
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // Header Area
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                IconButton(
+                                    onClick = { activeFullScreenSheet = null },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Default.ArrowBack, "Back", tint = EnergeticYellow, modifier = Modifier.size(24.dp))
+                                }
+                                Column {
+                                    val headerText = when (activeFullScreenSheet) {
+                                        "Color" -> "Color & Fill Designer"
+                                        "Border" -> "Border & Shadows Studio"
+                                        "Transform" -> "Geometrical Canvas Transforms"
+                                        "Shape" -> "Edit Shape & Typography"
+                                        "Effects" -> "Filters & FX Config Stack"
+                                        "Brush" -> "Paint Brush Studio Settings"
+                                        "Grid" -> "Grid Alignment Calibration"
+                                        "Ruler" -> "Ruler Guideline Calibration"
+                                        else -> "Border & Shadows Studio"
+                                    }
+                                    Text(headerText, style = Typography.titleMedium, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                                    selectedLayer?.let {
+                                        Text("Active Item: ${it.name}", style = Typography.labelSmall, color = TextSecondary, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                            
+                            IconButton(
+                                onClick = { activeFullScreenSheet = null },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Close, "Close Panel", tint = TextSecondary, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(0.5.dp)
+                                .background(HighslateOutline)
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        // Render lightweight property panel inside the lower 40% bounds
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        ) {
+                            when (activeFullScreenSheet) {
+                                "Color" -> {
+                                    if (selectedLayer != null) {
+                                        HsvColorPickerPanel(
+                                            currentColor = selectedLayer.baseColor,
+                                            currentOpacity = selectedLayer.opacity,
+                                            onColorChanged = { newColor ->
+                                                layers = layers.map { if (it.id == selectedLayer.id) it.copy(baseColor = newColor) else it }
+                                            },
+                                            selectedLayer = selectedLayer,
+                                            onUpdateLayer = { updatedLayer ->
+                                                layers = layers.map { if (it.id == updatedLayer.id) updatedLayer else it }
+                                            },
+                                            onOpenColorPickerDialog = { idx ->
+                                                activeGradientStopIndex = idx
+                                                showGradientColorPickerDialog = true
+                                            },
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Text("No selected shape layer.", color = TextSecondary, style = Typography.bodyMedium)
+                                    }
+                                }
+                                "Border" -> {
+                                    if (selectedLayer != null) {
+                                        BordersAndShadowsTabPanel(
+                                            selectedLayer = selectedLayer,
+                                            onAddEffect = { effect ->
+                                                undoStack.add(layers)
+                                                redoStack.clear()
+                                                layers = layers.map { layer ->
+                                                    if (layer.id == selectedLayer.id) {
+                                                        layer.copy(effects = layer.effects + effect)
+                                                    } else layer
+                                                }
+                                                selectedEffectIndex = selectedLayer.effects.size
+                                            },
+                                            onUpdateEffectParam = { effectId, paramName, newValue ->
+                                                layers = layers.map { layer ->
+                                                    if (layer.id == selectedLayer.id) {
+                                                        val updatedEffects = layer.effects.map { eff ->
+                                                            if (eff.id == effectId) {
+                                                                eff.updateParameter(paramName, newValue)
+                                                            } else eff
+                                                        }
+                                                        layer.copy(effects = updatedEffects)
+                                                    } else layer
+                                                }
+                                            }
+                                        )
+                                    } else {
+                                        Text("No selected shape/vector layer.", color = TextSecondary, style = Typography.bodyMedium)
+                                    }
+                                }
+                                "Transform" -> {
+                                    if (selectedLayer != null) {
+                                        TransformDetailView(
+                                            selectedLayer = selectedLayer,
+                                            onUpdateLayer = { updatedLayer ->
+                                                layers = layers.map { if (it.id == updatedLayer.id) updatedLayer else it }
+                                            }
+                                        )
+                                    } else {
+                                        Text("No selected shape layer.", color = TextSecondary, style = Typography.bodyMedium)
+                                    }
+                                }
+                                "Shape" -> {
+                                    if (selectedLayer != null) {
+                                        TypographyOrShapeDetailView(
+                                            selectedLayer = selectedLayer,
+                                            onUpdateLayer = { updatedLayer ->
+                                                layers = layers.map { if (it.id == updatedLayer.id) updatedLayer else it }
+                                            },
+                                            fontSearchQuery = fontSearchQuery,
+                                            onFontSearchQueryChange = { fontSearchQuery = it },
+                                            selectedCategoryFilter = selectedCategoryFilter,
+                                            onSelectedCategoryFilterChange = { selectedCategoryFilter = it },
+                                            onImportFontClick = { showFontScannerDialog = true }
+                                        )
+                                    } else {
+                                        Text("No selected shape layer.", color = TextSecondary, style = Typography.bodyMedium)
+                                    }
+                                }
+                                "Effects" -> {
+                                    if (selectedLayer != null) {
+                                        FiltersAndFxDetailView(
+                                            selectedLayer = selectedLayer,
+                                            selectedEffectIndex = selectedEffectIndex,
+                                            onSelectEffectIndex = { selectedEffectIndex = it },
+                                            onRemoveEffect = { effectId ->
+                                                undoStack.add(layers)
+                                                redoStack.clear()
+                                                layers = layers.map { layer ->
+                                                    if (layer.id == selectedLayer.id) {
+                                                        layer.copy(effects = layer.effects.filter { it.id != effectId })
+                                                    } else layer
+                                                }
+                                            },
+                                            onToggleEffectEnabled = { effectId ->
+                                                undoStack.add(layers)
+                                                redoStack.clear()
+                                                layers = layers.map { layer ->
+                                                    if (layer.id == selectedLayer.id) {
+                                                        val updatedEffects = layer.effects.map { eff ->
+                                                            if (eff.id == effectId) {
+                                                                eff.toggleEnabled()
+                                                            } else eff
+                                                        }
+                                                        layer.copy(effects = updatedEffects)
+                                                    } else layer
+                                                }
+                                            },
+                                            onUpdateEffectParam = { effectId, paramName, newValue ->
+                                                com.example.studio.ui.CanvasEventLoop.emit(
+                                                    com.example.studio.ui.CanvasEvent.UpdateSlider(
+                                                        layerId = selectedLayer.id,
+                                                        effectId = effectId,
+                                                        paramName = paramName,
+                                                        value = newValue
+                                                    )
+                                                )
+                                            },
+                                            onOpenEffectsGallery = { showEffectsGallery = true }
+                                        )
+                                    } else {
+                                        Text("No selected shape layer.", color = TextSecondary, style = Typography.bodyMedium)
+                                    }
+                                }
+                                "Brush" -> {
+                                    val currentSmoothing = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                                        val valSmooth = (selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect)?.parameters?.get("Smoothing")?.value ?: 0.0f
+                                        valSmooth > 0.5f
+                                    } else {
+                                        brushSmoothing
+                                    }
+                                    val currentPreset = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                                        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+                                        config?.parameters?.get("Preset")?.value?.toInt() ?: brushPresetIndex
+                                    } else {
+                                        brushPresetIndex
+                                    }
+                                    val currentSize = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                                        (selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect)?.parameters?.get("Size")?.value ?: brushSize
+                                    } else {
+                                        brushSize
+                                    }
+                                    val currentOpacity = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                                        (selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect)?.parameters?.get("Opacity")?.value ?: brushOpacity
+                                    } else {
+                                        brushOpacity
+                                    }
+                                    val updateBrushParamsLocal = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color? ->
+                                        if (newSize != null) brushSize = newSize
+                                        if (newOpacity != null) brushOpacity = newOpacity
+                                        if (newSmooth != null) brushSmoothing = newSmooth
+                                        if (newPreset != null) brushPresetIndex = newPreset
+                                        if (newColor != null) brushColor = newColor
+
+                                        if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+                                            val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+                                            if (config != null) {
+                                                var updatedConfig = config
+                                                if (newSize != null) updatedConfig = updatedConfig.updateParameter("Size", newSize) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                if (newOpacity != null) updatedConfig = updatedConfig.updateParameter("Opacity", newOpacity) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                if (newSmooth != null) updatedConfig = updatedConfig.updateParameter("Smoothing", if (newSmooth) 1.0f else 0.0f) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                if (newPreset != null) updatedConfig = updatedConfig.updateParameter("Preset", newPreset.toFloat()) as com.example.studio.model.StudioEffect.PhotoshopEffect
+
+                                                val updatedEffects = selectedLayer.effects.map { if (it.id == config.id) updatedConfig else it }
+                                                layers = layers.map {
+                                                    if (it.id == selectedLayer.id) {
+                                                        it.copy(
+                                                            baseColor = newColor ?: selectedLayer.baseColor,
+                                                            effects = updatedEffects
+                                                        )
+                                                    } else it
+                                                }
+                                            } else {
+                                                layers = layers.map {
+                                                    if (it.id == selectedLayer.id) {
+                                                        it.copy(baseColor = newColor ?: selectedLayer.baseColor)
+                                                    } else it
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    BrushStudioControlPane(
+                                        currentPreset = currentPreset,
+                                        currentSize = currentSize,
+                                        currentOpacity = currentOpacity,
+                                        currentColor = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) selectedLayer.baseColor else brushColor,
+                                        currentSmoothing = currentSmoothing,
+                                        updateBrushParams = updateBrushParamsLocal,
+                                        onOpenBrushesLibrary = { showBrushesLibrary = true },
+                                        gridEnabled = gridEnabled,
+                                        onGridEnabledChange = { gridEnabled = it },
+                                        rulerEnabled = rulerEnabled,
+                                        onRulerEnabledChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(enabled = value) else it } },
+                                        rulerOrientation = rulerOrientation,
+                                        onRulerOrientationChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(orientation = value) else it } },
+                                        rulerPosition = rulerPosition,
+                                        onRulerPositionChange = { value -> rulers = rulers.map { if (it.id == selectedRulerId) it.copy(position = value) else it } },
+                                        activeTool = activeTool,
+                                        eraserSize = eraserSize,
+                                        onEraserSizeChange = { eraserSize = it },
+                                        eraserHardness = eraserHardness,
+                                        onEraserHardnessChange = { eraserHardness = it },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                                "Grid" -> {
+                                    GridControlPane(
+                                        gridEnabled = gridEnabled,
+                                        onGridEnabledChange = { gridEnabled = it },
+                                        gridColumns = gridColumns,
+                                        onGridColumnsChange = { gridColumns = it },
+                                        gridRows = gridRows,
+                                        onGridRowsChange = { gridRows = it },
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                                "Ruler" -> {
+                                    val settings = WorkspaceRulerSettings(
+                                        rulers = rulers,
+                                        onRulersChange = { rulers = it },
+                                        selectedRulerId = selectedRulerId,
+                                        onSelectedRulerIdChange = { selectedRulerId = it },
+                                        snapToRuler = snapToRuler,
+                                        onSnapToRulerChange = { snapToRuler = it },
+                                        allRulersLocked = allRulersLocked,
+                                        onAllRulersLockedChange = { allRulersLocked = it }
+                                    )
+                                    CompositionLocalProvider(LocalRulerSettings provides settings) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                            Card(
+                                                colors = CardDefaults.cardColors(containerColor = MidSlate),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    Text("Guide Indicator Attributes", style = Typography.labelMedium, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                                        Text("Magnet: ${if (snapToRuler) "ON" else "OFF"}", style = Typography.labelSmall, color = if (snapToRuler) Color(0xFF00FF66) else TextSecondary)
+                                                        Text("Angle Lock: ${if (allRulersLocked) "LOCKED" else "FREE"}", style = Typography.labelSmall, color = if (allRulersLocked) Color.Red else TextSecondary)
+                                                    }
+                                                }
+                                            }
+                                            RulerControlPane(
+                                                modifier = Modifier.fillMaxWidth().weight(1f)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                if (!isLandscape) {
+                    AnimatedVisibility(
+                        visible = isBottomPanelVisible,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        RenderBottomEffectPanel(isLandscapeMode = false)
+                    }
                 }
             }
 
@@ -9749,9 +10076,11 @@ fun BottomEffectPanel(
     onRulerLockedChange: (Boolean) -> Unit = {},
     snapToRuler: Boolean = true,
     onSnapToRulerChange: (Boolean) -> Unit = {},
+    activeFullScreenSheet: String? = null,
+    onActiveFullScreenSheetChange: (String?) -> Unit = {},
     isLandscape: Boolean = false
 ) {
-    var activeTabOfPanel by remember { mutableStateOf(0) } // 0: Transform, 1: Edit Shape, 2: Color, 3: Filters & FX Stack, 4: Stroke & Shadows
+    var activeTabOfPanel by remember { mutableStateOf(0) } 
     var isDetailViewActive by remember { mutableStateOf(false) }
 
     val isBrushStudioActive = (activeTool == "Brush" || activeTool == "Eraser") || (selectedLayer?.type == LayerType.FREEHAND_DRAWING)
@@ -9832,374 +10161,115 @@ fun BottomEffectPanel(
     val panelModifier = if (isLandscape) {
         Modifier
             .width(360.dp)
-            .fillMaxHeight()
+            .height(84.dp)
             .padding(top = 8.dp, bottom = 8.dp, end = 8.dp)
             .background(SlatePanel, RoundedCornerShape(16.dp))
             .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
-            .padding(10.dp)
+            .padding(8.dp)
     } else {
         Modifier
             .fillMaxWidth()
-            .height(260.dp)
+            .height(84.dp)
             .padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
             .background(SlatePanel, RoundedCornerShape(16.dp))
             .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
-            .padding(12.dp)
+            .padding(8.dp)
     }
 
     CompositionLocalProvider(LocalSliderValueEditTrigger provides { activeValueEditConfig = it }) {
-        if (isBrushStudioActive || activeTool == "Grid" || activeTool == "Ruler") {
-            Row(
-                modifier = panelModifier,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                LeftTelemetryAndStatsColumn(
-                    activeTool = activeTool,
-                    selectedLayer = selectedLayer,
-                    gridEnabled = gridEnabled,
-                    gridColumns = gridColumns,
-                    gridRows = gridRows,
-                    rulerEnabled = rulerEnabled,
-                    rulerAngle = rulerAngle,
-                    snapToRuler = snapToRuler,
-                    isBrushStudioActive = isBrushStudioActive,
-                    currentPreset = currentPreset,
-                    currentSize = currentSize,
-                    currentOpacity = currentOpacity,
-                    activeTabOfPanel = activeTabOfPanel,
-                    onActiveTabOfPanelChange = { activeTabOfPanel = it },
-                    onCloseBottomPanel = onCloseBottomPanel,
-                    onNavigateToDetail = { isDetailViewActive = true }
-                )
-
-                Spacer(Modifier.width(8.dp))
-
-                // PANEL RIGHT TAB VIEW
-                if (activeTool == "Grid") {
-                    GridControlPane(
-                        gridEnabled = gridEnabled,
-                        onGridEnabledChange = onGridEnabledChange,
-                        gridColumns = gridColumns,
-                        onGridColumnsChange = onGridColumnsChange,
-                        gridRows = gridRows,
-                        onGridRowsChange = onGridRowsChange,
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
-                } else if (activeTool == "Ruler") {
-                    RulerControlPane(
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
-                } else if (isBrushStudioActive) {
-                    BrushStudioControlPane(
-                        currentPreset = currentPreset,
-                        currentSize = currentSize,
-                        currentOpacity = currentOpacity,
-                        currentColor = currentColor,
-                        currentSmoothing = currentSmoothing,
-                        updateBrushParams = updateBrushParams,
-                        onOpenBrushesLibrary = onOpenBrushesLibrary,
-                        gridEnabled = gridEnabled,
-                        onGridEnabledChange = onGridEnabledChange,
-                        rulerEnabled = rulerEnabled,
-                        onRulerEnabledChange = onRulerEnabledChange,
-                        rulerOrientation = rulerOrientation,
-                        onRulerOrientationChange = onRulerOrientationChange,
-                        rulerPosition = rulerPosition,
-                        onRulerPositionChange = onRulerPositionChange,
-                        activeTool = activeTool,
-                        eraserSize = eraserSize,
-                        onEraserSizeChange = onEraserSizeChange,
-                        eraserHardness = eraserHardness,
-                        onEraserHardnessChange = onEraserHardnessChange,
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
-                }
-            }
-        } else if (selectedLayer != null) {
+        if (selectedLayer != null) {
             Box(modifier = panelModifier) {
-                AnimatedContent(
-                    targetState = isDetailViewActive,
-                    transitionSpec = {
-                        if (targetState) {
-                            slideInHorizontally { width -> width } togetherWith
-                                    slideOutHorizontally { width -> -width }
-                        } else {
-                            slideInHorizontally { width -> -width } togetherWith
-                                    slideOutHorizontally { width -> width }
-                        }
-                    },
-                    label = "ZenithPanelNavigation"
-                ) { showDetail ->
-                    if (showDetail) {
-                        // Level 2 (Detail View)
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    IconButton(
-                                        onClick = { isDetailViewActive = false },
-                                        modifier = Modifier.size(28.dp).testTag("panel_back_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.ArrowBack,
-                                            contentDescription = "Back to categories list",
-                                            tint = EnergeticYellow,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                    val detailTitle = when (activeTabOfPanel) {
-                                        0 -> "Dimensional Transforms"
-                                        1 -> if (selectedLayer.type == LayerType.TEXT) "Typography & Font Styling" else "Parametric Shape Editor"
-                                        2 -> "Color Designer"
-                                        3 -> "Filters & FX Config"
-                                        4 -> "Stroke & Shadows"
-                                        else -> "Zenith Parameters"
-                                    }
-                                    Text(
-                                        text = detailTitle,
-                                        style = Typography.labelMedium,
-                                        color = EnergeticYellow,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .background(DarkOnyx.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                                            .border(0.5.dp, HighslateOutline, RoundedCornerShape(12.dp))
-                                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                                    ) {
-                                        Text(
-                                            text = selectedLayer.name,
-                                            style = Typography.labelSmall,
-                                            fontSize = 8.sp,
-                                            color = MatteBlue,
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-
-                                IconButton(
-                                    onClick = onCloseBottomPanel,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Collapse bottom panel",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                            ) {
-                                when (activeTabOfPanel) {
-                                    0 -> TransformDetailView(
-                                        selectedLayer = selectedLayer,
-                                        onUpdateLayer = onUpdateLayer
-                                    )
-                                    1 -> TypographyOrShapeDetailView(
-                                        selectedLayer = selectedLayer,
-                                        onUpdateLayer = onUpdateLayer,
-                                        fontSearchQuery = fontSearchQuery,
-                                        onFontSearchQueryChange = onFontSearchQueryChange,
-                                        selectedCategoryFilter = selectedCategoryFilter,
-                                        onSelectedCategoryFilterChange = onSelectedCategoryFilterChange,
-                                        onImportFontClick = onImportFontClick
-                                    )
-                                    2 -> {
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(Color(0xFF131317), RoundedCornerShape(8.dp))
-                                                .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                                                .padding(10.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Text("Color Designer", style = Typography.labelSmall, color = EnergeticYellow)
-                                            HsvColorPickerPanel(
-                                                currentColor = selectedLayer.baseColor, onOpenColorPickerDialog = onOpenColorPickerDialog,
-                                                currentOpacity = selectedLayer.opacity,
-                                                onColorChanged = { newColor ->
-                                                    onUpdateLayer(selectedLayer.copy(baseColor = newColor))
-                                                },
-                                                modifier = Modifier.fillMaxWidth().weight(1f),
-                                                selectedLayer = selectedLayer,
-                                                onUpdateLayer = onUpdateLayer
-                                            )
-                                            if (selectedLayer.type == LayerType.TEXT) {
-                                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    Text("Source Text Content", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
-                                                    var txtInputBuf by remember(selectedLayer.id) { mutableStateOf(selectedLayer.textContent) }
-                                                    OutlinedTextField(
-                                                        value = txtInputBuf,
-                                                        onValueChange = {
-                                                            txtInputBuf = it
-                                                            onUpdateLayer(selectedLayer.copy(textContent = it))
-                                                        },
-                                                        modifier = Modifier.fillMaxWidth().height(46.dp),
-                                                        textStyle = Typography.labelSmall.copy(color = TextPrimary),
-                                                        singleLine = true,
-                                                        colors = OutlinedTextFieldDefaults.colors(
-                                                            focusedBorderColor = IndustrialAmber,
-                                                            unfocusedBorderColor = HighslateOutline,
-                                                            cursorColor = IndustrialAmber
-                                                        )
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                    3 -> FiltersAndFxDetailView(
-                                        selectedLayer = selectedLayer,
-                                        selectedEffectIndex = selectedEffectIndex,
-                                        onSelectEffectIndex = onSelectEffectIndex,
-                                        onRemoveEffect = onRemoveEffect,
-                                        onToggleEffectEnabled = onToggleEffectEnabled,
-                                        onUpdateEffectParam = onUpdateEffectParam,
-                                        onOpenEffectsGallery = onOpenEffectsGallery
-                                    )
-                                    4 -> BordersAndShadowsTabPanel(
-                                        selectedLayer = selectedLayer,
-                                        onAddEffect = onAddEffect,
-                                        onUpdateEffectParam = onUpdateEffectParam
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        // Level 1: Category Menu View
-                        Column(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text("Zenith Parameters", style = Typography.labelMedium, color = EnergeticYellow, fontWeight = FontWeight.Bold)
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Text(
-                                            text = selectedLayer.name,
-                                            style = Typography.bodyMedium,
-                                            color = TextPrimary,
-                                            fontWeight = FontWeight.Bold,
-                                            maxLines = 1
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .background(DarkOnyx.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                                                .border(0.5.dp, HighslateOutline, RoundedCornerShape(12.dp))
-                                                .padding(horizontal = 6.dp, vertical = 1.dp)
-                                        ) {
-                                            Text(
-                                                text = selectedLayer.type.name,
-                                                style = Typography.labelSmall,
-                                                fontSize = 8.sp,
-                                                color = MatteBlue
-                                            )
-                                        }
-                                    }
-                                }
-                                IconButton(
-                                    onClick = onCloseBottomPanel,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Collapse bottom panel",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            }
-
-                            Column(
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                val categories = listOf(
-                                    Triple(0, "Transform", Icons.Default.Transform),
-                                    Triple(1, if (selectedLayer.type == LayerType.TEXT) "Type" else "Shape", Icons.Default.Category),
-                                    Triple(2, "Color", Icons.Default.Palette),
-                                    Triple(3, "Filters & FX (${selectedLayer.effects.size})", Icons.Default.FilterFrames),
-                                    Triple(4, "Stroke & Shadows", Icons.Default.Deblur)
-                                )
-
-                                categories.forEach { (index, label, icon) ->
-                                    Button(
-                                        onClick = {
-                                            activeTabOfPanel = index
-                                            isDetailViewActive = true
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (activeTabOfPanel == index && isDetailViewActive) IndustrialAmber else MidSlate
-                                        ),
-                                        shape = RoundedCornerShape(8.dp),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(38.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Icon(
-                                                    imageVector = icon,
-                                                    contentDescription = label,
-                                                    tint = if (activeTabOfPanel == index && isDetailViewActive) DarkOnyx else EnergeticYellow,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                                Text(
-                                                    text = label,
-                                                    style = Typography.labelSmall,
-                                                    color = if (activeTabOfPanel == index && isDetailViewActive) DarkOnyx else TextPrimary,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Icon(
-                                                imageVector = Icons.Default.ChevronRight,
-                                                contentDescription = "Open detail list of sliders",
-                                                tint = if (activeTabOfPanel == index && isDetailViewActive) DarkOnyx else TextSecondary,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CompactToolButton(
+                        label = "Color & Fill",
+                        icon = Icons.Default.Palette,
+                        onClick = { onActiveFullScreenSheetChange("Color") }
+                    )
+                    CompactToolButton(
+                        label = "Border & Shadow",
+                        icon = Icons.Default.Deblur,
+                        onClick = { onActiveFullScreenSheetChange("Border") }
+                    )
+                    CompactToolButton(
+                        label = "Transform",
+                        icon = Icons.Default.AspectRatio,
+                        onClick = { onActiveFullScreenSheetChange("Transform") }
+                    )
+                    CompactToolButton(
+                        label = if (selectedLayer.type == LayerType.TEXT) "Edit Text" else "Edit Shape",
+                        icon = Icons.Default.Category,
+                        onClick = { onActiveFullScreenSheetChange("Shape") }
+                    )
+                    CompactToolButton(
+                        label = "Effects",
+                        icon = Icons.Default.FilterFrames,
+                        badgeCount = selectedLayer.effects.size,
+                        onClick = { onActiveFullScreenSheetChange("Effects") }
+                    )
+                    
+                    if (isBrushStudioActive) {
+                        CompactToolButton(
+                            label = "Brush Setup",
+                            icon = Icons.Default.Brush,
+                            onClick = { onActiveFullScreenSheetChange("Brush") }
+                        )
+                    }
+                    if (activeTool == "Grid") {
+                        CompactToolButton(
+                            label = "Grid Config",
+                            icon = Icons.Default.GridOn,
+                            onClick = { onActiveFullScreenSheetChange("Grid") }
+                        )
+                    }
+                    if (activeTool == "Ruler") {
+                        CompactToolButton(
+                            label = "Ruler Config",
+                            icon = Icons.Default.Tune,
+                            onClick = { onActiveFullScreenSheetChange("Ruler") }
+                        )
                     }
                 }
             }
         } else {
             Box(modifier = panelModifier, contentAlignment = Alignment.Center) {
-                Text("Select Canvas Layer first", style = Typography.labelSmall, color = TextSecondary)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Select Canvas Layer First", style = Typography.labelSmall, color = TextSecondary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (activeTool == "Grid") {
+                            Button(
+                                onClick = { onActiveFullScreenSheetChange("Grid") },
+                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                modifier = Modifier.height(30.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp)
+                            ) {
+                                Text("Grid Config", fontSize = 10.sp, color = EnergeticYellow)
+                            }
+                        }
+                        if (activeTool == "Ruler") {
+                            Button(
+                                onClick = { onActiveFullScreenSheetChange("Ruler") },
+                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                                modifier = Modifier.height(30.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp)
+                            ) {
+                                Text("Ruler Config", fontSize = 10.sp, color = EnergeticYellow)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+
+
 
     if (activeValueEditConfig != null) {
         SliderValueEditDialog(
@@ -10208,6 +10278,59 @@ fun BottomEffectPanel(
         )
     }
 }
+
+@Composable
+fun CompactToolButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    badgeCount: Int = 0
+) {
+    Column(
+        modifier = Modifier
+            .width(66.dp)
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(contentAlignment = Alignment.TopEnd) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = EnergeticYellow,
+                modifier = Modifier.size(24.dp)
+            )
+            if (badgeCount > 0) {
+                Box(
+                    modifier = Modifier
+                        .offset(x = 6.dp, y = (-4).dp)
+                        .background(Color.Red, androidx.compose.foundation.shape.CircleShape)
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = badgeCount.toString(),
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = label,
+            style = Typography.labelSmall,
+            fontSize = 8.sp,
+            color = TextPrimary,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+    }
+}
+
 
 @Composable
 fun OldBottomEffectPanel(
@@ -13616,260 +13739,269 @@ fun EffectsGalleryOverlay(
     onAddEffect: (StudioEffect) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf("Layer Styles (fx)") }
+    var selectedCategory by remember { mutableStateOf("Experimental") }
 
-    val categories = listOf("Layer Styles (fx)", "Core Filters", "Filter Gallery", "Advanced & AI Engines")
+    val categoriesAlight = listOf("Experimental", "Color & Light", "Drawing & Edge", "Blur", "Distortion/Warp")
 
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onClose,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true
+        )
     ) {
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = SlatePanel,
-            border = BorderStroke(1.5.dp, HighslateOutline),
-            modifier = Modifier
-                .fillMaxWidth(0.98f)
-                .fillMaxHeight(0.88f)
+            modifier = Modifier.fillMaxSize(),
+            color = Color(0xFF131317)
         ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Header Bar
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFF131317))
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                // Header Area
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
                             Icon(
-                                imageVector = Icons.Default.Palette,
-                                contentDescription = "Photoshop fx",
-                                tint = IndustrialAmber,
-                                modifier = Modifier.size(22.dp)
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Back to canvas",
+                                tint = EnergeticYellow,
+                                modifier = Modifier.size(24.dp)
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = "Photoshop Effects & Styling Gallery",
-                                    style = Typography.titleMedium,
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Browse, search, and apply non-destructive Layer Styles & image Filters.",
-                                    style = Typography.labelSmall,
-                                    color = TextSecondary,
-                                    fontSize = 10.sp
-                                )
-                            }
                         }
-                        IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, "Close Gallery", tint = TextSecondary)
+                        Column {
+                            Text(
+                                text = "Filters & FX Library",
+                                style = Typography.titleLarge,
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Instantly project non-destructive visual layers onto your canvas graphics.",
+                                style = Typography.labelSmall,
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
                         }
                     }
+                    IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, "Dismiss Browser", tint = TextSecondary, modifier = Modifier.size(20.dp))
+                    }
+                }
 
-                    // Work Area (Responsive single-column layout)
-                    Column(
+                // Search Bar
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, "Search FX", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                    },
+                    placeholder = {
+                        Text("Search 40+ high-fidelity VFX and layer styles...", style = Typography.labelSmall, color = TextSecondary)
+                    },
+                    singleLine = true,
+                    textStyle = Typography.labelSmall.copy(color = TextPrimary),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFF00FFCC),
+                        unfocusedBorderColor = HighslateOutline,
+                        cursorColor = Color(0xFF00FFCC)
+                    )
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                // Horizontal Category Tab Slider Panel
+                if (searchQuery.isBlank()) {
+                    androidx.compose.foundation.lazy.LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .weight(1f)
                             .fillMaxWidth()
-                            .padding(14.dp)
+                            .padding(vertical = 4.dp)
                     ) {
-                        // Search bar (takes full width)
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                            leadingIcon = {
-                                Icon(Icons.Default.Search, "Search", tint = TextSecondary, modifier = Modifier.size(16.dp))
-                            },
-                            placeholder = {
-                                Text("Search 40+ native Photoshop effects...", style = Typography.labelSmall, color = TextSecondary)
-                            },
-                            singleLine = true,
-                            textStyle = Typography.labelSmall.copy(color = TextPrimary),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = IndustrialAmber,
-                                unfocusedBorderColor = HighslateOutline,
-                                cursorColor = IndustrialAmber
-                            )
-                        )
-
-                        Spacer(Modifier.height(10.dp))
-
-                        // Category Selection: Horizontal chips list
-                        androidx.compose.foundation.lazy.LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                        ) {
-                            items(categories.size) { index ->
-                                val cat = categories[index]
-                                val isSelected = cat == selectedCategory
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(if (isSelected) IndustrialAmber else Color(0xFF1E1E24))
-                                        .border(
-                                            BorderStroke(
-                                                1.dp,
-                                                if (isSelected) IndustrialAmber else HighslateOutline
-                                            ),
-                                            RoundedCornerShape(12.dp)
-                                        )
-                                        .clickable { selectedCategory = cat }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = when (cat) {
-                                                "Layer Styles (fx)" -> Icons.Default.Layers
-                                                "Core Filters" -> Icons.Default.Brush
-                                                "Filter Gallery" -> Icons.Default.Palette
-                                                else -> Icons.Default.Bolt
-                                            },
-                                            contentDescription = cat,
-                                            tint = if (isSelected) DarkOnyx else TextSecondary,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(
-                                            text = cat,
-                                            style = Typography.labelSmall,
-                                            color = if (isSelected) DarkOnyx else TextSecondary,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                }
+                        items(categoriesAlight.size) { index ->
+                            val cat = categoriesAlight[index]
+                            val isSelected = cat == selectedCategory
+                            
+                            // Visual category color highlights
+                            val themeColor = when (cat) {
+                                "Experimental" -> Color(0xFFFFB300)
+                                "Color & Light" -> Color(0xFF00FFCC)
+                                "Drawing & Edge" -> Color(0xFFE91E63)
+                                "Blur" -> Color(0xFF29B6F6)
+                                "Distortion/Warp" -> Color(0xFFFF007F)
+                                else -> IndustrialAmber
                             }
-                        }
 
-                        Spacer(Modifier.height(10.dp))
-
-                        // List of effects
-                        val rawList = PhotoshopEffectTemplates.ALL_TYPES_BY_CATEGORY[selectedCategory] ?: emptyList()
-                        val sortedAndFiltered = rawList.map { effType ->
-                            PhotoshopEffectTemplates.create(effectType = effType) as StudioEffect.PhotoshopEffect
-                        }.filter {
-                            searchQuery.isBlank() || it.name.contains(searchQuery, ignoreCase = true) || it.effectType.contains(searchQuery, ignoreCase = true)
-                        }
-
-                        if (sortedAndFiltered.isEmpty()) {
                             Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (isSelected) themeColor.copy(alpha = 0.15f) else Color(0xFF1E1E24))
+                                    .border(
+                                        BorderStroke(
+                                            if (isSelected) 1.5.dp else 0.5.dp,
+                                            if (isSelected) themeColor else HighslateOutline
+                                        ),
+                                        RoundedCornerShape(16.dp)
+                                    )
+                                    .clickable { selectedCategory = cat }
+                                    .padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
                                 Text(
-                                    text = "No matching effects found.\nTry searching another keyword.",
+                                    text = cat,
                                     style = Typography.labelSmall,
-                                    color = TextSecondary,
-                                    textAlign = TextAlign.Center
+                                    color = if (isSelected) themeColor else TextSecondary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
                                 )
                             }
-                        } else {
-                            LazyColumn(
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxSize()
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                // Map FX list to Alight standard categories
+                val activeCategoryEffects = remember(selectedCategory, searchQuery) {
+                    val allTypes = listOf(
+                        // Experimental
+                        "Clouds", "LensFlare", "Crystallize", "Pointillize", "PixelStretch", "NeuralFilters",
+                        // Color & Light
+                        "ColorGrading", "ColorOverlay", "GradientOverlay", "Solarize", "CameraRaw", "OuterGlow", "InnerGlow", "LightingEffects",
+                        // Drawing & Edge
+                        "FindEdges", "Emboss", "Stroke", "OilPaint", "PatternOverlay", "BevelEmboss", "Satin", "UnsharpMask", "SmartSharpen", "HighPass",
+                        // Blur
+                        "GaussianBlur", "MotionBlur", "RadialBlur", "LensBlur", "AddNoise", "Despeckle", "DustScratches", "Median",
+                        // Distortion/Warp
+                        "Pinch", "Ripple", "Spherize", "Twirl", "Wave", "ZigZag", "GlassMorphism", "ReededGlass", "Liquify", "Mosaic", "Wind"
+                    )
+
+                    allTypes.map { type ->
+                        PhotoshopEffectTemplates.create(effectType = type) as StudioEffect.PhotoshopEffect
+                    }.filter { eff ->
+                        val matchesSearch = searchQuery.isBlank() || eff.name.contains(searchQuery, ignoreCase = true) || eff.effectType.contains(searchQuery, ignoreCase = true)
+                        if (!matchesSearch) return@filter false
+                        
+                        if (searchQuery.isNotBlank()) return@filter true
+
+                        // Category distribution mapping
+                        when (selectedCategory) {
+                            "Experimental" -> eff.effectType in listOf("Clouds", "LensFlare", "Crystallize", "Pointillize", "PixelStretch", "NeuralFilters")
+                            "Color & Light" -> eff.effectType in listOf("ColorGrading", "ColorOverlay", "GradientOverlay", "Solarize", "CameraRaw", "OuterGlow", "InnerGlow", "LightingEffects")
+                            "Drawing & Edge" -> eff.effectType in listOf("FindEdges", "Emboss", "Stroke", "OilPaint", "PatternOverlay", "BevelEmboss", "Satin", "UnsharpMask", "SmartSharpen", "HighPass")
+                            "Blur" -> eff.effectType in listOf("GaussianBlur", "MotionBlur", "RadialBlur", "LensBlur", "AddNoise", "Despeckle", "DustScratches", "Median")
+                            "Distortion/Warp" -> eff.effectType in listOf("Pinch", "Ripple", "Spherize", "Twirl", "Wave", "ZigZag", "GlassMorphism", "ReededGlass", "Liquify", "Mosaic", "Wind")
+                            else -> false
+                        }
+                    }
+                }
+
+                // Grid Builder
+                if (activeCategoryEffects.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No matching effects found in library.\nTry another search query.",
+                            style = Typography.labelSmall,
+                            color = TextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth().weight(1f)
+                    ) {
+                        items(activeCategoryEffects.size) { index ->
+                            val eff = activeCategoryEffects[index]
+
+                            // Visual branding based on effect groupings
+                            val (badgeColor, badgeText) = when (eff.effectType) {
+                                "GaussianBlur", "MotionBlur", "RadialBlur", "LensBlur" -> Pair(Color(0xFF29B6F6), "BLUR")
+                                "Pinch", "Ripple", "Spherize", "Twirl", "Wave", "ZigZag", "Liquify", "PixelStretch" -> Pair(Color(0xFFFF007F), "WARP")
+                                "ColorGrading", "ColorOverlay", "GradientOverlay", "Solarize" -> Pair(Color(0xFF00FFCC), "COLOR")
+                                "FindEdges", "Emboss", "Stroke", "OilPaint", "PatternOverlay" -> Pair(Color(0xFFFFB300), "STYLE")
+                                else -> Pair(Color(0xFFE91E63), "FX")
+                            }
+
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MidSlate),
+                                border = BorderStroke(0.5.dp, HighslateOutline),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onAddEffect(eff)
+                                        onClose()
+                                    }
                             ) {
-                                itemsIndexed(sortedAndFiltered) { _, eff ->
-                                    Row(
+                                Column(
+                                    modifier = Modifier.padding(10.dp)
+                                ) {
+                                    // Visual preview block
+                                    Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .height(84.dp)
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(MidSlate)
-                                            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
-                                            .clickable {
-                                                onAddEffect(eff)
-                                                onClose()
-                                            }
-                                            .padding(12.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                                            .background(Color(0xFF131317))
+                                            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp)),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Row(modifier = Modifier.weight(1f)) {
-                                            // Decorative thumbnail container/icon
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(36.dp)
-                                                    .background(Color(0xFF131317), RoundedCornerShape(6.dp))
-                                                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(6.dp)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = if (eff.category.contains("Styles")) "fx" else "F",
-                                                    style = Typography.labelSmall,
-                                                    color = IndustrialAmber,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            Spacer(Modifier.width(12.dp))
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = eff.name,
-                                                    style = Typography.bodyMedium,
-                                                    color = TextPrimary,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Text(
-                                                    text = getEffectDescription(eff.effectType),
-                                                    style = Typography.labelSmall,
-                                                    color = TextSecondary,
-                                                    fontSize = 10.sp
-                                                )
-                                                Spacer(Modifier.height(4.dp))
-                                                // Display sliders parameters as light grey pills
-                                                Row(
-                                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                                    modifier = Modifier.fillMaxWidth()
-                                                ) {
-                                                    eff.parameters.keys.forEach { term ->
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .background(Color(0xFF131317), RoundedCornerShape(3.dp))
-                                                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                                                        ) {
-                                                            Text(
-                                                                text = term,
-                                                                style = Typography.labelSmall,
-                                                                fontSize = 8.sp,
-                                                                color = TextSecondary
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Spacer(Modifier.width(8.dp))
-                                        Button(
-                                            onClick = {
-                                                onAddEffect(eff)
-                                                onClose()
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
-                                            border = BorderStroke(0.5.dp, IndustrialAmber),
-                                            shape = RoundedCornerShape(4.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(26.dp)
+                                        // Accent decorative glow gradient or design
+                                        Box(
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .background(badgeColor.copy(alpha = 0.12f), androidx.compose.foundation.shape.CircleShape)
+                                                .border(BorderStroke(1.dp, badgeColor.copy(alpha = 0.4f)), androidx.compose.foundation.shape.CircleShape),
+                                            contentAlignment = Alignment.Center
                                         ) {
                                             Text(
-                                                text = "Apply",
+                                                text = badgeText,
                                                 style = Typography.labelSmall,
-                                                fontSize = 9.sp,
-                                                color = IndustrialAmber,
-                                                fontWeight = FontWeight.Bold
+                                                color = badgeColor,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 9.sp
                                             )
                                         }
                                     }
+
+                                    Spacer(Modifier.height(8.dp))
+
+                                    Text(
+                                        text = eff.name,
+                                        style = Typography.labelMedium,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                    
+                                    Spacer(Modifier.height(4.dp))
+
+                                    Text(
+                                        text = getEffectDescription(eff.effectType),
+                                        style = Typography.labelSmall,
+                                        color = TextSecondary,
+                                        fontSize = 9.sp,
+                                        maxLines = 2,
+                                        minLines = 2,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         }
@@ -13878,6 +14010,7 @@ fun EffectsGalleryOverlay(
             }
         }
     }
+}
 
 private val advancedBrushResultCache = java.util.concurrent.ConcurrentHashMap<Int, com.example.studio.ui.RenderedStrokeResult>()
 
@@ -17614,7 +17747,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     canvasWidth: Float = 0f,
     canvasHeight: Float = 0f
 ) {
-    // Recursively resolve all ancestor parent groups, from top-most ancestor down to immediate parent
+    try {
+        // Recursively resolve all ancestor parent groups, from top-most ancestor down to immediate parent
     val parentGroups = mutableListOf<com.example.studio.model.StudioLayer>()
     var currentParentId = layer.parentGroupId
     val visitedGroupIds = mutableSetOf<String>()
@@ -17979,6 +18113,38 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
         }
     }
     drawContext.canvas.restore()
+} catch (e: Exception) {
+    if (e is IllegalArgumentException || e is NullPointerException) {
+        e.printStackTrace()
+        try {
+            drawAllEffectsAndLayersLocal(
+                layer = layer,
+                layerOpacity = layerOpacity,
+                selectedLayerId = selectedLayerId,
+                pathCache = pathCache,
+                pathPointsCountCache = pathPointsCountCache,
+                totalScale = totalScale,
+                dashEffect = dashEffect,
+                imageBitmapCache = imageBitmapCache,
+                composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+                backdropBitmap = backdropBitmap,
+                globalX = globalX,
+                globalY = globalY,
+                activeTool = activeTool,
+                viewportWidth = viewportWidth,
+                viewportHeight = viewportHeight,
+                panX = panX,
+                panY = panY,
+                canvasWidth = canvasWidth,
+                canvasHeight = canvasHeight
+            )
+        } catch (ex: Exception) {
+            ex.printStackTrace()
+        }
+    } else {
+        throw e
+    }
+}
 }
 
 private fun getOrCreateBackdropBitmap(width: Int, height: Int, existing: android.graphics.Bitmap?): android.graphics.Bitmap {
