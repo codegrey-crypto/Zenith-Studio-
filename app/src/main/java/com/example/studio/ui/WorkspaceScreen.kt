@@ -98,6 +98,10 @@ val gradientPresets = listOf(
     listOf(Color(0xFF200122), Color(0xFF6F0000))
 )
 
+object GradientEyedropperState {
+    var isActive by androidx.compose.runtime.mutableStateOf(false)
+}
+
 fun interpolateMultiColor(colors: List<androidx.compose.ui.graphics.Color>, fraction: Float): androidx.compose.ui.graphics.Color {
     if (colors.isEmpty()) return androidx.compose.ui.graphics.Color.Transparent
     if (colors.size == 1) return colors.first()
@@ -114,6 +118,23 @@ fun interpolateMultiColor(colors: List<androidx.compose.ui.graphics.Color>, frac
         blue = c1.blue + (c2.blue - c1.blue) * localFraction,
         alpha = c1.alpha + (c2.alpha - c1.alpha) * localFraction
     )
+}
+
+inline fun projectPointOnSegment(
+    px: Float, py: Float,
+    ax: Float, ay: Float,
+    bx: Float, by: Float
+): Triple<Float, Float, Float> {
+    val abX = bx - ax
+    val abY = by - ay
+    val abLenSq = abX * abX + abY * abY
+    if (abLenSq <= 0f) return Triple(0f, ax, ay)
+    val apX = px - ax
+    val apY = py - ay
+    val t = ((apX * abX + apY * abY) / abLenSq).coerceIn(0f, 1f)
+    val projX = ax + t * abX
+    val projY = ay + t * abY
+    return Triple(t, projX, projY)
 }
 
 val processedImageBitmapCache = object : java.util.concurrent.ConcurrentHashMap<String, androidx.compose.ui.graphics.ImageBitmap>() {
@@ -996,6 +1017,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var reusableBackdropBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var activeBezierPointIndex by remember { mutableStateOf(-1) }
     var activeGradientStopIndex by remember { mutableStateOf(-1) }
+    var showGradientColorPickerDialog by remember { mutableStateOf(false) }
 
     var isResizingActive by remember { mutableStateOf(false) }
     var activeResizingLayerId by remember { mutableStateOf<String?>(null) }
@@ -1959,6 +1981,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             CompositionLocalProvider(LocalRulerSettings provides rulerSettings) {
                 BottomEffectPanel(
                 selectedLayer = selectedLayer,
+                onOpenColorPickerDialog = { idx ->
+                    activeGradientStopIndex = idx
+                    showGradientColorPickerDialog = true
+                },
                 selectedEffectIndex = selectedEffectIndex,
                 onSelectEffectIndex = { selectedEffectIndex = it },
                 onAddEffect = { effect ->
@@ -2574,7 +2600,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                             val gradOverlay = currentSelected.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
                                                             val gradientTypeOrdinal = (gradOverlay?.parameters["GradientType"]?.value ?: 0f).toInt()
                                                             
-                                                            if (gradOverlay != null && gradientTypeOrdinal == 0) { // Linear Gradient
+                                                            if (gradOverlay != null) { // Support all gradient overlays on-canvas
                                                                 val goScale = (gradOverlay.parameters["Scale"]?.value ?: 100f) / 100f
                                                                 val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
                                                                 
@@ -2599,20 +2625,78 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                 }
                                                                 
                                                                 val touchLocal = canvasToLayerLocal(localStartOffset, currentSelected)
-                                                                val handleThreshold = 40f / ts.coerceAtLeast(0.5f)
+                                                                val handleThreshold = 80f / ts.coerceAtLeast(0.5f)
                                                                 val handleThresholdSq = handleThreshold * handleThreshold
                                                                 
                                                                 val distToStartSq = (touchLocal.x - startX) * (touchLocal.x - startX) + (touchLocal.y - startY) * (touchLocal.y - startY)
                                                                 val distToEndSq = (touchLocal.x - endX) * (touchLocal.x - endX) + (touchLocal.y - endY) * (touchLocal.y - endY)
                                                                 
-                                                                if (distToStartSq < handleThresholdSq) {
+                                                                if (GradientEyedropperState.isActive) {
+                                                                    var sampledColor = Color(0xFF29B6F6)
+                                                                    val layerUnderTouch = layers.find { layer ->
+                                                                        val left = layer.positionX
+                                                                        val top = layer.positionY
+                                                                        val right = left + layer.width
+                                                                        val bottom = top + layer.height
+                                                                        localStartX in left..right && localStartY in top..bottom
+                                                                    }
+                                                                    if (layerUnderTouch != null) {
+                                                                        sampledColor = layerUnderTouch.baseColor
+                                                                        val layerGradOverlay = layerUnderTouch.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                                        if (layerGradOverlay != null) {
+                                                                            val lStopCount = (layerGradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 100)
+                                                                            val lColors = mutableListOf<Color>()
+                                                                            for (i in 0 until lStopCount) {
+                                                                                val rVal = layerGradOverlay.parameters["CustomStop_${i}_R"]?.value ?: 0.5f
+                                                                                val gVal = layerGradOverlay.parameters["CustomStop_${i}_G"]?.value ?: 0.5f
+                                                                                val bVal = layerGradOverlay.parameters["CustomStop_${i}_B"]?.value ?: 0.5f
+                                                                                val aVal = layerGradOverlay.parameters["CustomStop_${i}_A"]?.value ?: 1.0f
+                                                                                lColors.add(Color(rVal, gVal, bVal, aVal))
+                                                                            }
+                                                                            val sX = (layerGradOverlay.parameters["StartX"]?.value ?: 0f) * layerUnderTouch.width
+                                                                            val sY = (layerGradOverlay.parameters["StartY"]?.value ?: 0f) * layerUnderTouch.height
+                                                                            val eX = (layerGradOverlay.parameters["EndX"]?.value ?: 1f) * layerUnderTouch.width
+                                                                            val eY = (layerGradOverlay.parameters["EndY"]?.value ?: 1f) * layerUnderTouch.height
+                                                                            val localTouch = canvasToLayerLocal(localStartOffset, layerUnderTouch)
+                                                                            val ab = Offset(eX - sX, eY - sY)
+                                                                            val ap = Offset(localTouch.x - sX, localTouch.y - sY)
+                                                                            val abLenSq = ab.x * ab.x + ab.y * ab.y
+                                                                            val t = if (abLenSq > 0f) {
+                                                                                ((ap.x * ab.x + ap.y * ab.y) / abLenSq).coerceIn(0f, 1f)
+                                                                            } else 0f
+                                                                            sampledColor = interpolateMultiColor(lColors, t)
+                                                                        }
+                                                                    } else {
+                                                                        sampledColor = Color(0xFF131317)
+                                                                    }
+                                                                    
+                                                                    val targetStopIndex = activeGradientStopIndex.coerceIn(0, 100)
+                                                                    layers = layers.map { layer ->
+                                                                        if (layer.id == currentSelected.id) {
+                                                                            val updatedEffects = layer.effects.map { eff ->
+                                                                                if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                                    val map = eff.parameters.toMutableMap()
+                                                                                    map["CustomStop_${targetStopIndex}_R"] = com.example.studio.model.EffectParameter("CustomStop_${targetStopIndex}_R", sampledColor.red, 0f, 1f)
+                                                                                    map["CustomStop_${targetStopIndex}_G"] = com.example.studio.model.EffectParameter("CustomStop_${targetStopIndex}_G", sampledColor.green, 0f, 1f)
+                                                                                    map["CustomStop_${targetStopIndex}_B"] = com.example.studio.model.EffectParameter("CustomStop_${targetStopIndex}_B", sampledColor.blue, 0f, 1f)
+                                                                                    map["CustomStop_${targetStopIndex}_A"] = com.example.studio.model.EffectParameter("CustomStop_${targetStopIndex}_A", sampledColor.alpha, 0f, 1f)
+                                                                                    eff.copy(parameters = map)
+                                                                                } else eff
+                                                                            }
+                                                                            layer.copy(effects = updatedEffects)
+                                                                        } else layer
+                                                                    }
+                                                                    GradientEyedropperState.isActive = false
+                                                                    android.widget.Toast.makeText(context, "Color sampled successfully!", android.widget.Toast.LENGTH_SHORT).show()
+                                                                    matchedGradientOption = true
+                                                                } else if (distToStartSq < handleThresholdSq) {
                                                                     dragMode = "gradient_start"
                                                                     matchedGradientOption = true
                                                                 } else if (distToEndSq < handleThresholdSq) {
                                                                     dragMode = "gradient_end"
                                                                     matchedGradientOption = true
                                                                 } else {
-                                                                    val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+                                                                    val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 100)
                                                                     var nearestStopIdx = -1
                                                                     var minStopSq = Float.MAX_VALUE
                                                                     for (idx in 0 until stopCount) {
@@ -2645,18 +2729,23 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                         }
                                                                     } else {
                                                                         // Check projection to add new color stop
-                                                                        val ab = Offset(endX - startX, endY - startY)
-                                                                        val ap = Offset(touchLocal.x - startX, touchLocal.y - startY)
-                                                                        val abLenSq = ab.x * ab.x + ab.y * ab.y
-                                                                        if (abLenSq > 0f) {
-                                                                            val tFraction = (ap.x * ab.x + ap.y * ab.y) / abLenSq
-                                                                            if (tFraction in 0f..1f) {
-                                                                                val projX = startX + tFraction * ab.x
-                                                                                val projY = startY + tFraction * ab.y
-                                                                                val distToLineSq = (touchLocal.x - projX) * (touchLocal.x - projX) + (touchLocal.y - projY) * (touchLocal.y - projY)
-                                                                                val lineThresholdSq = (30f / ts.coerceAtLeast(0.5f)) * (30f / ts.coerceAtLeast(0.5f))
-                                                                                
-                                                                                if (distToLineSq < lineThresholdSq && stopCount < 6) {
+                                                                        val proj = projectPointOnSegment(
+                                                                            px = touchLocal.x, py = touchLocal.y,
+                                                                            ax = startX, ay = startY,
+                                                                            bx = endX, by = endY
+                                                                        )
+                                                                        val tFraction = proj.first
+                                                                        val projX = proj.second
+                                                                        val projY = proj.third
+                                                                        
+                                                                        val dx = touchLocal.x - projX
+                                                                        val dy = touchLocal.y - projY
+                                                                        val localDist = kotlin.math.sqrt(dx * dx + dy * dy)
+                                                                        val distInScreenPx = localDist * ts
+                                                                        val densityValue = this.density
+                                                                        val distInDp = distInScreenPx / densityValue
+                                                                        
+                                                                        if (false && distInDp <= 24f && stopCount < 100) {
                                                                                     // Interpolate the colors list
                                                                                     val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
                                                                                     val customColorsList = mutableListOf<androidx.compose.ui.graphics.Color>()
@@ -2690,6 +2779,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                                     
                                                                                     undoStack.add(layers)
                                                                                     redoStack.clear()
+                                                                                    var tempTargetedIndex = stopCount
                                                                                     layers = layers.map { layer ->
                                                                                         if (layer.id == currentSelected.id) {
                                                                                             val updatedEffects = layer.effects.map { eff ->
@@ -2697,7 +2787,38 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                                                     val map = eff.parameters.toMutableMap()
                                                                                                     val count = stopCount + 1
                                                                                                     map["Preset"] = com.example.studio.model.EffectParameter("Preset", 7f, 0f, 10f) // switch to custom stops
-                                                                                                    map["CustomStopCount"] = com.example.studio.model.EffectParameter("CustomStopCount", count.toFloat(), 0f, 10f)
+                                                                                                    map["CustomStopCount"] = com.example.studio.model.EffectParameter("CustomStopCount", (stopCount + 1).toFloat(), 0f, 10f)
+                                                                                                     
+                                                                                                     // Gather and sort all stops (including alpha!)
+                                                                                                     val allStops = (0 until stopCount).map { i ->
+                                                                                                         val posVal = map["CustomStop_${i}_Pos"]?.value ?: (i.toFloat() / (stopCount - 1).coerceAtLeast(1))
+                                                                                                         val rVal = map["CustomStop_${i}_R"]?.value ?: 0.5f
+                                                                                                         val gVal = map["CustomStop_${i}_G"]?.value ?: 0.5f
+                                                                                                         val bVal = map["CustomStop_${i}_B"]?.value ?: 0.5f
+                                                                                                         val aVal = map["CustomStop_${i}_A"]?.value ?: 1.0f
+                                                                                                         Triple(posVal, Color(rVal, gVal, bVal, aVal), aVal)
+                                                                                                     }.toMutableList()
+                                                                                                     
+                                                                                                     // Append new stop at calculated tFraction projection coordinate
+                                                                                                     allStops.add(Triple(tFraction, interpolatedColor, 1.0f))
+                                                                                                     allStops.sortBy { it.first }
+                                                                                                     
+                                                                                                     val newSortedIndex = allStops.indexOfFirst { it.first == tFraction }.coerceIn(0, allStops.size - 1)
+                                                                                                     
+                                                                                                     // Write back keys sequentially to preserve perfect indexing
+                                                                                                     for (idx in allStops.indices) {
+                                                                                                         val stopNode = allStops[idx]
+                                                                                                         map["CustomStop_${idx}_Pos"] = com.example.studio.model.EffectParameter("CustomStop_${idx}_Pos", stopNode.first, 0f, 1f)
+                                                                                                         map["CustomStop_${idx}_R"] = com.example.studio.model.EffectParameter("CustomStop_${idx}_R", stopNode.second.red, 0f, 1f)
+                                                                                                         map["CustomStop_${idx}_G"] = com.example.studio.model.EffectParameter("CustomStop_${idx}_G", stopNode.second.green, 0f, 1f)
+                                                                                                         map["CustomStop_${idx}_B"] = com.example.studio.model.EffectParameter("CustomStop_${idx}_B", stopNode.second.blue, 0f, 1f)
+                                                                                                         map["CustomStop_${idx}_A"] = com.example.studio.model.EffectParameter("CustomStop_${idx}_A", stopNode.third, 0f, 1f)
+                                                                                                     }
+                                                                                                     
+                                                                                                     tempTargetedIndex = newSortedIndex
+                                                                                                     activeGradientStopIndex = newSortedIndex
+                                                                                                     map["SelectedStopIndex"] = com.example.studio.model.EffectParameter("SelectedStopIndex", newSortedIndex.toFloat(), 0f, 10f)
+                                                                                                     /*
                                                                                                     // Populate existing custom stops with previewColors if switching preset format
                                                                                                     for (i in previewColors.indices) {
                                                                                                         val col = previewColors[i]
@@ -2711,7 +2832,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                                                     map["CustomStop_${stopCount}_R"] = com.example.studio.model.EffectParameter("CustomStop_${stopCount}_R", interpolatedColor.red, 0f, 1f)
                                                                                                     map["CustomStop_${stopCount}_G"] = com.example.studio.model.EffectParameter("CustomStop_${stopCount}_G", interpolatedColor.green, 0f, 1f)
                                                                                                     map["CustomStop_${stopCount}_B"] = com.example.studio.model.EffectParameter("CustomStop_${stopCount}_B", interpolatedColor.blue, 0f, 1f)
-                                                                                                    map["SelectedStopIndex"] = com.example.studio.model.EffectParameter("SelectedStopIndex", stopCount.toFloat(), 0f, 10f)
+                                                                                                    */
                                                                                                     eff.copy(parameters = map)
                                                                                                 } else eff
                                                                                             }
@@ -2719,12 +2840,11 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                                         } else layer
                                                                                     }
                                                                                     dragMode = "gradient_stop"
-                                                                                    activeGradientStopIndex = stopCount
+                                                                                    activeGradientStopIndex = tempTargetedIndex
                                                                                     matchedGradientOption = true
+                                                                                    showGradientColorPickerDialog = true
                                                                                 }
                                                                             }
-                                                                        }
-                                                                    }
                                                                 }
                                                             }
 
@@ -2733,16 +2853,16 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                             if (matchedGradientOption) {
                                                                 // Handled on-canvas gradient selection/stops append
                                                             } else if (distBr < thresholdSq) {
-                                                                dragMode = "resize"
+                                                                dragMode = if (gradOverlay == null) "resize" else ""
                                                                 isResizingActive = true
                                                                 activeResizingLayerId = selId
                                                                 startingLayerForResize = currentSelected
                                                                 liveDragScaleX = 1.0f
                                                                 liveDragScaleY = 1.0f
                                                             } else if (isNearBezier) {
-                                                                dragMode = "bezier"
+                                                                dragMode = if (gradOverlay == null) "bezier" else ""
                                                             } else {
-                                                                dragMode = "move"
+                                                                dragMode = if (gradOverlay == null) "move" else ""
                                                             }
                                                         } else {
                                                             dragMode = "move"
@@ -2865,40 +2985,72 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                         val currentSelected = layers.find { it.id == selId }
                                                         if (currentSelected != null) {
                                                             val localTouch = canvasToLayerLocal(localChangeOffset, currentSelected)
-                                                            val startRatioX = localTouch.x / currentSelected.width.coerceAtLeast(1f)
-                                                            val startRatioY = localTouch.y / currentSelected.height.coerceAtLeast(1f)
-                                                            layers = layers.map { layer ->
-                                                                if (layer.id == selId) {
-                                                                    val updatedEffects = layer.effects.map { eff ->
-                                                                        if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
-                                                                            val map = eff.parameters.toMutableMap()
-                                                                            map["StartX"] = com.example.studio.model.EffectParameter("StartX", startRatioX, 0f, 1f)
-                                                                            map["StartY"] = com.example.studio.model.EffectParameter("StartY", startRatioY, 0f, 1f)
-                                                                            eff.copy(parameters = map)
-                                                                        } else eff
-                                                                    }
-                                                                    layer.copy(effects = updatedEffects)
-                                                                } else layer
+                                                            scope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                                                                val startRatioX = localTouch.x / currentSelected.width.coerceAtLeast(1f)
+                                                                val startRatioY = localTouch.y / currentSelected.height.coerceAtLeast(1f)
+                                                                val nextLayers = layers.map { layer ->
+                                                                    if (layer.id == selId) {
+                                                                        val updatedEffects = layer.effects.map { eff ->
+                                                                            if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                                val map = eff.parameters.toMutableMap()
+                                                                                if (map["EndX"] == null) {
+                                                                                    val goScale = (map["Scale"]?.value ?: 100f) / 100f
+                                                                                    val goAngle = map["Angle"]?.value ?: 90f
+                                                                                    val rads = Math.toRadians(goAngle.toDouble())
+                                                                                    val cos = Math.cos(rads).toFloat()
+                                                                                    val sin = Math.sin(rads).toFloat()
+                                                                                    val defaultEndX = (currentSelected.width / 2f + (currentSelected.width / 2f * cos * goScale)) / currentSelected.width.coerceAtLeast(1f)
+                                                                                    val defaultEndY = (currentSelected.height / 2f + (currentSelected.height / 2f * sin * goScale)) / currentSelected.height.coerceAtLeast(1f)
+                                                                                    map["EndX"] = com.example.studio.model.EffectParameter("EndX", defaultEndX, 0f, 1f)
+                                                                                    map["EndY"] = com.example.studio.model.EffectParameter("EndY", defaultEndY, 0f, 1f)
+                                                                                }
+                                                                                map["StartX"] = com.example.studio.model.EffectParameter("StartX", startRatioX, 0f, 1f)
+                                                                                map["StartY"] = com.example.studio.model.EffectParameter("StartY", startRatioY, 0f, 1f)
+                                                                                eff.copy(parameters = map)
+                                                                            } else eff
+                                                                        }
+                                                                        layer.copy(effects = updatedEffects)
+                                                                    } else layer
+                                                                }
+                                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                    layers = nextLayers
+                                                                }
                                                             }
                                                         }
                                                     } else if (dragMode == "gradient_end") {
                                                         val currentSelected = layers.find { it.id == selId }
                                                         if (currentSelected != null) {
                                                             val localTouch = canvasToLayerLocal(localChangeOffset, currentSelected)
-                                                            val endRatioX = localTouch.x / currentSelected.width.coerceAtLeast(1f)
-                                                            val endRatioY = localTouch.y / currentSelected.height.coerceAtLeast(1f)
-                                                            layers = layers.map { layer ->
-                                                                if (layer.id == selId) {
-                                                                    val updatedEffects = layer.effects.map { eff ->
-                                                                        if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
-                                                                            val map = eff.parameters.toMutableMap()
-                                                                            map["EndX"] = com.example.studio.model.EffectParameter("EndX", endRatioX, 0f, 1f)
-                                                                            map["EndY"] = com.example.studio.model.EffectParameter("EndY", endRatioY, 0f, 1f)
-                                                                            eff.copy(parameters = map)
-                                                                        } else eff
-                                                                    }
-                                                                    layer.copy(effects = updatedEffects)
-                                                                } else layer
+                                                            scope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                                                                val endRatioX = localTouch.x / currentSelected.width.coerceAtLeast(1f)
+                                                                val endRatioY = localTouch.y / currentSelected.height.coerceAtLeast(1f)
+                                                                val nextLayers = layers.map { layer ->
+                                                                    if (layer.id == selId) {
+                                                                        val updatedEffects = layer.effects.map { eff ->
+                                                                            if (eff is com.example.studio.model.StudioEffect.PhotoshopEffect && eff.effectType == "GradientOverlay") {
+                                                                                val map = eff.parameters.toMutableMap()
+                                                                                if (map["StartX"] == null) {
+                                                                                    val goScale = (map["Scale"]?.value ?: 100f) / 100f
+                                                                                    val goAngle = map["Angle"]?.value ?: 90f
+                                                                                    val rads = Math.toRadians(goAngle.toDouble())
+                                                                                    val cos = Math.cos(rads).toFloat()
+                                                                                    val sin = Math.sin(rads).toFloat()
+                                                                                    val defaultStartX = (currentSelected.width / 2f - (currentSelected.width / 2f * cos * goScale)) / currentSelected.width.coerceAtLeast(1f)
+                                                                                    val defaultStartY = (currentSelected.height / 2f - (currentSelected.height / 2f * sin * goScale)) / currentSelected.height.coerceAtLeast(1f)
+                                                                                    map["StartX"] = com.example.studio.model.EffectParameter("StartX", defaultStartX, 0f, 1f)
+                                                                                    map["StartY"] = com.example.studio.model.EffectParameter("StartY", defaultStartY, 0f, 1f)
+                                                                                }
+                                                                                map["EndX"] = com.example.studio.model.EffectParameter("EndX", endRatioX, 0f, 1f)
+                                                                                map["EndY"] = com.example.studio.model.EffectParameter("EndY", endRatioY, 0f, 1f)
+                                                                                eff.copy(parameters = map)
+                                                                            } else eff
+                                                                        }
+                                                                        layer.copy(effects = updatedEffects)
+                                                                    } else layer
+                                                                }
+                                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                                    layers = nextLayers
+                                                                }
                                                             }
                                                         }
                                                     } else if (dragMode == "gradient_stop") {
@@ -2924,7 +3076,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                 startX = currentSelected.width / 2f - (currentSelected.width / 2f * cos * goScale)
                                                                 startY = currentSelected.height / 2f - (currentSelected.height / 2f * sin * goScale)
                                                                 endX = currentSelected.width / 2f + (currentSelected.width / 2f * cos * goScale)
-                                                                endY = currentSelected.width / 2f + (currentSelected.width / 2f * sin * goScale)
+                                                                endY = currentSelected.height / 2f + (currentSelected.height / 2f * sin * goScale)
                                                             }
                                                             
                                                             val localTouch = canvasToLayerLocal(localChangeOffset, currentSelected)
@@ -2963,8 +3115,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                             } else layer
                                                         }
                                                     } else {
-                                                        layers = layers.map { layer ->
-                                                            if (layer.id == selId && !layer.isAlphaLocked) {
+                                                        val hasGradOverlay = layers.find { it.id == selId }?.effects?.any { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } ?: false
+                                                        if (!hasGradOverlay) {
+                                                            layers = layers.map { layer ->
+                                                                if (layer.id == selId && !layer.isAlphaLocked) {
                                                                 val updatedBrushPoints = if (layer.type == LayerType.VECTOR_BEZIER) {
                                                                     layer.brushPoints
                                                                 } else {
@@ -3288,6 +3442,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                     brushPoints = updatedBrushPoints
                                                                 )
                                                             } else layer
+                                                        }
                                                         }
                                                     }
                                                 }
@@ -5286,6 +5441,301 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             )
         }
 
+        // --- HOVER ACTIVE GRADIENT STOP COLOR PICKER OVERLAY ---
+        if (showGradientColorPickerDialog && selectedLayer != null && activeGradientStopIndex != -1) {
+            val idx = activeGradientStopIndex
+            val gradOverlay = selectedLayer.effects.find { it is StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? StudioEffect.PhotoshopEffect
+            if (gradOverlay != null) {
+                val rKey = "CustomStop_${idx}_R"
+                val gKey = "CustomStop_${idx}_G"
+                val bKey = "CustomStop_${idx}_B"
+                val aKey = "CustomStop_${idx}_A"
+                val posKey = "CustomStop_${idx}_Pos"
+
+                val rVal = gradOverlay.parameters[rKey]?.value ?: when(idx) {
+                    0 -> gradOverlay.parameters["CustomStart_R"]?.value ?: 1.0f
+                    1 -> gradOverlay.parameters["CustomEnd_R"]?.value ?: 0.0f
+                    else -> 0.5f
+                }
+                val gVal = gradOverlay.parameters[gKey]?.value ?: when(idx) {
+                    0 -> gradOverlay.parameters["CustomStart_G"]?.value ?: 0.0f
+                    1 -> gradOverlay.parameters["CustomEnd_G"]?.value ?: 0.0f
+                    else -> 0.5f
+                }
+                val bVal = gradOverlay.parameters[bKey]?.value ?: when(idx) {
+                    0 -> gradOverlay.parameters["CustomStart_B"]?.value ?: 0.0f
+                    1 -> gradOverlay.parameters["CustomEnd_B"]?.value ?: 1.0f
+                    else -> 0.5f
+                }
+                val aVal = gradOverlay.parameters[aKey]?.value ?: 1.0f
+                val posVal = gradOverlay.parameters[posKey]?.value ?: (idx.toFloat() / ((gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt() - 1).coerceAtLeast(1))
+
+                var r by remember(idx, selectedLayerId) { mutableStateOf(rVal) }
+                var g by remember(idx, selectedLayerId) { mutableStateOf(gVal) }
+                var b by remember(idx, selectedLayerId) { mutableStateOf(bVal) }
+                var alpha by remember(idx, selectedLayerId) { mutableStateOf(aVal) }
+                var stopPos by remember(idx, selectedLayerId) { mutableStateOf(posVal) }
+
+                var hsv by remember(r, g, b) {
+                    val hsvArr = FloatArray(3)
+                    android.graphics.Color.RGBToHSV((r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt(), hsvArr)
+                    mutableStateOf(Triple(hsvArr[0], hsvArr[1], hsvArr[2]))
+                }
+
+                AlertDialog(
+                    onDismissRequest = { showGradientColorPickerDialog = false },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(imageVector = Icons.Default.Palette, contentDescription = null, tint = IndustrialAmber, modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Edit Stop Node #${idx + 1}", style = Typography.titleMedium, color = TextPrimary)
+                        }
+                    },
+                    text = {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(60.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .drawBehind {
+                                            val cellSize = 8.dp.toPx()
+                                            for (x in 0 until (size.width / cellSize).toInt() + 1) {
+                                                for (y in 0 until (size.height / cellSize).toInt() + 1) {
+                                                    val color = if ((x + y) % 2 == 0) Color(0xFFD0D0D4) else Color(0xFFFFFFFF)
+                                                    drawRect(
+                                                        color = color,
+                                                        topLeft = Offset(x * cellSize, y * cellSize),
+                                                        size = Size(cellSize, cellSize)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        .background(Color(r, g, b, alpha))
+                                        .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(8.dp))
+                                )
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    val hexCode = String.format("#%02X%02X%02X%02X", (alpha * 255).toInt(), (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
+                                    Text("RGBA Hex: $hexCode", style = Typography.labelSmall, color = TextPrimary)
+                                    Text("Position: ${(stopPos * 100).toInt()}%", style = Typography.labelSmall, color = TextSecondary)
+                                }
+                                
+                                Button(
+                                    onClick = {
+                                        GradientEyedropperState.isActive = true
+                                        showGradientColorPickerDialog = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (GradientEyedropperState.isActive) IndustrialAmber else Color(0xFF161622)
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Colorize,
+                                        contentDescription = "Canvas Eyedropper",
+                                        tint = if (GradientEyedropperState.isActive) Color.Black else Color.White,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Sample Canvas", style = Typography.labelSmall.copy(fontSize = 10.sp), color = if (GradientEyedropperState.isActive) Color.Black else Color.White)
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .size(150.dp)
+                                    .clip(CircleShape)
+                                    .border(1.dp, HighslateOutline, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Canvas(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .pointerInput(idx) {
+                                            detectTapGestures { offset ->
+                                                val centerX = size.width / 2f
+                                                val centerY = size.height / 2f
+                                                val dx = offset.x - centerX
+                                                val dy = offset.y - centerY
+                                                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                                                val maxRadius = size.width / 2f
+                                                if (dist <= maxRadius) {
+                                                    val angleRad = kotlin.math.atan2(dy, dx)
+                                                    val angleDeg = (Math.toDegrees(angleRad.toDouble()).toFloat() + 360f) % 360f
+                                                    val sat = (dist / maxRadius).coerceIn(0f, 1f)
+                                                    hsv = Triple(angleDeg, sat, hsv.third)
+                                                    
+                                                    val rgbInt = android.graphics.Color.HSVToColor(floatArrayOf(hsv.first, hsv.second, hsv.third))
+                                                    r = android.graphics.Color.red(rgbInt) / 255f
+                                                    g = android.graphics.Color.green(rgbInt) / 255f
+                                                    b = android.graphics.Color.blue(rgbInt) / 255f
+                                                }
+                                            }
+                                        }
+                                        .pointerInput(idx) {
+                                            detectDragGestures { change, _ ->
+                                                val centerX = size.width / 2f
+                                                val centerY = size.height / 2f
+                                                val dx = change.position.x - centerX
+                                                val dy = change.position.y - centerY
+                                                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                                                val maxRadius = size.width / 2f
+                                                val angleRad = kotlin.math.atan2(dy, dx)
+                                                val angleDeg = (Math.toDegrees(angleRad.toDouble()).toFloat() + 360f) % 360f
+                                                val sat = (dist / maxRadius).coerceIn(0f, 1f)
+                                                hsv = Triple(angleDeg, sat, hsv.third)
+
+                                                val rgbInt = android.graphics.Color.HSVToColor(floatArrayOf(hsv.first, hsv.second, hsv.third))
+                                                r = android.graphics.Color.red(rgbInt) / 255f
+                                                g = android.graphics.Color.green(rgbInt) / 255f
+                                                b = android.graphics.Color.blue(rgbInt) / 255f
+                                            }
+                                        }
+                                ) {
+                                    val centerX = size.width / 2f
+                                    val centerY = size.height / 2f
+                                    val radius = size.width / 2f
+                                    
+                                    val sweepBrush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                                        colors = listOf(
+                                            Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red
+                                        ),
+                                        center = Offset(centerX, centerY)
+                                    )
+                                    drawCircle(brush = sweepBrush, radius = radius)
+                                    
+                                    val radialBrush = androidx.compose.ui.graphics.Brush.radialGradient(
+                                        colors = listOf(Color.White, Color.Transparent),
+                                        center = Offset(centerX, centerY),
+                                        radius = radius
+                                    )
+                                    drawCircle(brush = radialBrush, radius = radius)
+
+                                    val handleAngleRad = Math.toRadians(hsv.first.toDouble())
+                                    val handleDist = hsv.second * radius
+                                    val handleX = centerX + handleDist * kotlin.math.cos(handleAngleRad).toFloat()
+                                    val handleY = centerY + handleDist * kotlin.math.sin(handleAngleRad).toFloat()
+                                    
+                                    drawCircle(
+                                        color = Color.Black,
+                                        radius = 7.dp.toPx(),
+                                        center = Offset(handleX, handleY)
+                                    )
+                                    drawCircle(
+                                        color = Color.White,
+                                        radius = 5.dp.toPx(),
+                                        center = Offset(handleX, handleY)
+                                    )
+                                }
+                            }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Brightness (Value)", style = Typography.labelSmall, color = TextSecondary)
+                                    Text("${(hsv.third * 100).toInt()}%", style = Typography.labelSmall, color = TextPrimary)
+                                }
+                                Slider(
+                                    value = hsv.third,
+                                    onValueChange = { newVal ->
+                                        hsv = Triple(hsv.first, hsv.second, newVal)
+                                        val rgbInt = android.graphics.Color.HSVToColor(floatArrayOf(hsv.first, hsv.second, hsv.third))
+                                        r = android.graphics.Color.red(rgbInt) / 255f
+                                        g = android.graphics.Color.green(rgbInt) / 255f
+                                        b = android.graphics.Color.blue(rgbInt) / 255f
+                                    },
+                                    valueRange = 0f..1f,
+                                    colors = SliderDefaults.colors(
+                                        activeTrackColor = IndustrialAmber,
+                                        thumbColor = Color.White
+                                    )
+                                )
+                            }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Opacity (Stop Alpha)", style = Typography.labelSmall, color = TextSecondary)
+                                    Text("${(alpha * 100).toInt()}%", style = Typography.labelSmall, color = TextPrimary)
+                                }
+                                Slider(
+                                    value = alpha,
+                                    onValueChange = { alpha = it },
+                                    valueRange = 0f..1f,
+                                    colors = SliderDefaults.colors(
+                                        activeTrackColor = IndustrialAmber,
+                                        thumbColor = Color.White
+                                    )
+                                )
+                            }
+
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Stop Position along line", style = Typography.labelSmall, color = TextSecondary)
+                                    Text("${(stopPos * 100).toInt()}%", style = Typography.labelSmall, color = TextPrimary)
+                                }
+                                Slider(
+                                    value = stopPos,
+                                    onValueChange = { stopPos = it },
+                                    valueRange = 0f..1f,
+                                    colors = SliderDefaults.colors(
+                                        activeTrackColor = EnergeticYellow,
+                                        thumbColor = Color.White
+                                    )
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val updatedGo = gradOverlay.updateParameter("CustomStop_${idx}_R", r)
+                                    .updateParameter("CustomStop_${idx}_G", g)
+                                    .updateParameter("CustomStop_${idx}_B", b)
+                                    .updateParameter("CustomStop_${idx}_A", alpha)
+                                    .updateParameter("CustomStop_${idx}_Pos", stopPos)
+                                
+                                val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) updatedGo else it }
+                                val updatedLayer = selectedLayer.copy(effects = nextEffects)
+                                
+                                undoStack.add(layers)
+                                redoStack.clear()
+                                layers = layers.map { if (it.id == selectedLayer.id) updatedLayer else it }
+                                showGradientColorPickerDialog = false
+                            }
+                        ) {
+                            Text("Apply Aesthetics", color = EnergeticYellow, style = Typography.labelSmall)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showGradientColorPickerDialog = false }) {
+                            Text("Cancel", color = TextSecondary, style = Typography.labelSmall)
+                        }
+                    },
+                    containerColor = SlatePanel
+                )
+            }
+        }
+
         // Vector Shape addition overlay
         if (showAddShapeDialog) {
             val onSpawnShape = { name: String, type: LayerType, defaultColor: Color, w: Float, h: Float, isBezier: Boolean ->
@@ -5862,12 +6312,20 @@ private fun hsvToRgb(h: Float, s: Float, v: Float): FloatArray {
         (g1 + m).coerceIn(0f, 1f),
         (b1 + m).coerceIn(0f, 1f)
     )
-}@Composable
+}
+
+data class GradientStop(val index: Int, val color: Color)
+
+@Composable
 fun GradientPickerPanel(
     selectedLayer: StudioLayer?,
     onUpdateLayer: ((StudioLayer) -> Unit)?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenColorPickerDialog: ((Int) -> Unit)? = null
 ) {
+    val isGradientEyedropperActive = GradientEyedropperState.isActive
+    val onToggleGradientEyedropper: ((Boolean) -> Unit) = { GradientEyedropperState.isActive = it }
+
     val gradOverlay = remember(selectedLayer) {
         selectedLayer?.effects?.find { it is StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? StudioEffect.PhotoshopEffect
     }
@@ -5905,16 +6363,17 @@ fun GradientPickerPanel(
     var localOpacity by remember(goOpacity) { mutableStateOf(goOpacity) }
 
     val isCustomMode = true
-    val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+    val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 100)
     val selectedStopIndex = (gradOverlay.parameters["SelectedStopIndex"]?.value ?: 0f).toInt().coerceAtLeast(0)
-    val activeStopIndex = selectedStopIndex.coerceAtMost(stopCount - 1)
+    var activeStopIndex by remember(selectedLayer.id, selectedStopIndex) { mutableStateOf(selectedStopIndex.coerceAtMost(stopCount - 1)) }
 
-    // Assemble modern list of custom colors
+    // Assemble modern list of custom colors supporting individual stop alpha
     val customColorsList = mutableListOf<androidx.compose.ui.graphics.Color>()
     for (idx in 0 until stopCount) {
         val rKey = "CustomStop_${idx}_R"
         val gKey = "CustomStop_${idx}_G"
         val bKey = "CustomStop_${idx}_B"
+        val aKey = "CustomStop_${idx}_A"
         val r = gradOverlay.parameters[rKey]?.value ?: when(idx) {
             0 -> gradOverlay.parameters["CustomStart_R"]?.value ?: 1.0f
             1 -> gradOverlay.parameters["CustomEnd_R"]?.value ?: 0.0f
@@ -5939,7 +6398,12 @@ fun GradientPickerPanel(
             4 -> 0.0f
             else -> 1.0f
         }
-        customColorsList.add(Color(r, g, b))
+        val a = gradOverlay.parameters[aKey]?.value ?: 1.0f
+        customColorsList.add(Color(r, g, b, a))
+    }
+
+    val gradientStops = remember(gradOverlay, stopCount, customColorsList) {
+        customColorsList.mapIndexed { idx, col -> GradientStop(idx, col) }
     }
 
     val previewColors = if (isCustomMode) {
@@ -6056,10 +6520,14 @@ fun GradientPickerPanel(
                 drawRect(brush = brush)
             }
 
-            // Distribute handles along the track
+            // Distribute handles along the track based on their real Stop positions (creates a fluid, aligned layout representation)
             val handlesCount = if (isCustomMode) stopCount else previewColors.size
             for (idx in 0 until handlesCount) {
-                val fraction = idx.toFloat() / (handlesCount - 1).coerceAtLeast(1)
+                val fraction = if (isCustomMode) {
+                    gradOverlay.parameters["CustomStop_${idx}_Pos"]?.value ?: (idx.toFloat() / (handlesCount - 1).coerceAtLeast(1))
+                } else {
+                    idx.toFloat() / (handlesCount - 1).coerceAtLeast(1)
+                }
                 val stopCol = if (isCustomMode) {
                     customColorsList[idx]
                 } else {
@@ -6067,6 +6535,8 @@ fun GradientPickerPanel(
                 }
                 val isEditingThisStop = isCustomMode && idx == activeStopIndex
                 val offsetDp = (totalWidth - 28.dp) * fraction
+
+                val totalWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) { (totalWidth - 28.dp).toPx() }
 
                 Box(
                     modifier = Modifier
@@ -6080,23 +6550,26 @@ fun GradientPickerPanel(
                             RoundedCornerShape(6.dp)
                         )
                         .padding(2.dp)
-                        .clickable {
-                            if (!isCustomMode) {
-                                // Automatically clone preset colors to custom stops & switch mode!
-                                var nextOverlay = gradOverlay.updateParameter("Preset", 7f) as StudioEffect.PhotoshopEffect
-                                nextOverlay = nextOverlay.updateParameter("CustomStopCount", previewColors.size.toFloat()) as StudioEffect.PhotoshopEffect
-                                for (i in previewColors.indices) {
-                                    val col = previewColors[i]
-                                    nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_R", col.red) as StudioEffect.PhotoshopEffect
-                                    nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_G", col.green) as StudioEffect.PhotoshopEffect
-                                    nextOverlay = nextOverlay.updateParameter("CustomStop_${i}_B", col.blue) as StudioEffect.PhotoshopEffect
+                        .pointerInput(idx, totalWidthPx) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    updateParam("SelectedStopIndex", idx.toFloat())
+                                    activeStopIndex = idx
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    val currentPos = gradOverlay.parameters["CustomStop_${idx}_Pos"]?.value ?: (idx.toFloat() / (handlesCount - 1).coerceAtLeast(1))
+                                    val currentPosPx = currentPos * totalWidthPx
+                                    val nextPosPx = currentPosPx + dragAmount.x
+                                    val nextFraction = (nextPosPx / totalWidthPx).coerceIn(0f, 1f)
+                                    updateParam("CustomStop_${idx}_Pos", nextFraction)
                                 }
-                                var finalOverlay = nextOverlay.updateParameter("SelectedStopIndex", idx.toFloat()) as StudioEffect.PhotoshopEffect
-                                val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) finalOverlay else it }
-                                onUpdateLayer(selectedLayer.copy(effects = nextEffects))
-                            } else {
-                                updateParam("SelectedStopIndex", idx.toFloat())
-                            }
+                            )
+                        }
+                        .clickable {
+                            updateParam("SelectedStopIndex", idx.toFloat())
+                            activeStopIndex = idx
+                            onOpenColorPickerDialog?.invoke(idx)
                         }
                 ) {
                     Box(
@@ -6163,7 +6636,7 @@ fun GradientPickerPanel(
             val gKey = "CustomStop_${activeStopIndex}_G"
             val bKey = "CustomStop_${activeStopIndex}_B"
             
-            val activeColor = customColorsList[activeStopIndex]
+            val activeColor = gradientStops[activeStopIndex.coerceIn(0, gradientStops.size - 1)].color
 
             val activeHsv = remember(activeColor) {
                 val hsvArr = FloatArray(3)
@@ -6380,6 +6853,63 @@ fun GradientPickerPanel(
                             color = Color.White
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = "Stop Opacity / Alpha",
+                        style = Typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Medium),
+                        color = Color.LightGray
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val activeAlpha = gradOverlay.parameters["CustomStop_${activeStopIndex}_A"]?.value ?: 1.0f
+                        var alphaLocal by remember(activeAlpha) { mutableStateOf(activeAlpha) }
+                        Slider(
+                            value = alphaLocal,
+                            onValueChange = {
+                                alphaLocal = it
+                                val nextOverlay = gradOverlay.updateParameter("CustomStop_${activeStopIndex}_A", it) as StudioEffect.PhotoshopEffect
+                                val nextEffects = selectedLayer.effects.map { if (it.id == gradOverlay.id) nextOverlay else it }
+                                onUpdateLayer(selectedLayer.copy(effects = nextEffects))
+                            },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(
+                                activeTrackColor = IndustrialAmber,
+                                thumbColor = IndustrialAmber
+                            ),
+                            modifier = Modifier.weight(1f).height(16.dp)
+                        )
+                        Text(
+                            text = "${(alphaLocal * 100).toInt()}%",
+                            style = Typography.labelSmall.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                            modifier = Modifier.width(24.dp)
+                        )
+                        
+                        // Small premium Eyedropper button
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (isGradientEyedropperActive) IndustrialAmber.copy(alpha = 0.2f) else Color(0xFF161622))
+                                .border(1.dp, if (isGradientEyedropperActive) IndustrialAmber else Color(0x33FFFFFF), RoundedCornerShape(6.dp))
+                                .clickable {
+                                    onToggleGradientEyedropper?.invoke(!isGradientEyedropperActive)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Colorize,
+                                contentDescription = "Canvas Eyedropper",
+                                tint = if (isGradientEyedropperActive) IndustrialAmber else Color.White,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -6498,8 +7028,12 @@ fun HsvColorPickerPanel(
     onColorChanged: (Color) -> Unit,
     modifier: Modifier = Modifier,
     selectedLayer: StudioLayer? = null,
-    onUpdateLayer: ((StudioLayer) -> Unit)? = null
+    onUpdateLayer: ((StudioLayer) -> Unit)? = null,
+    onOpenColorPickerDialog: ((Int) -> Unit)? = null
 ) {
+    val isGradientEyedropperActive = GradientEyedropperState.isActive
+    val onToggleGradientEyedropper: ((Boolean) -> Unit) = { GradientEyedropperState.isActive = it }
+
     var fillMode by remember { mutableStateOf("Solid") } // "Transparent", "Solid", "Gradient", "Media"
 
     LaunchedEffect(selectedLayer) {
@@ -6697,7 +7231,8 @@ fun HsvColorPickerPanel(
                 GradientPickerPanel(
                     selectedLayer = selectedLayer,
                     onUpdateLayer = onUpdateLayer,
-                    modifier = Modifier.weight(1.5f).fillMaxHeight()
+                    modifier = Modifier.weight(1.5f).fillMaxHeight(),
+                    onOpenColorPickerDialog = onOpenColorPickerDialog
                 )
             } else {
                 // S/V pad on left and Hue ring on right
@@ -9164,6 +9699,7 @@ fun Modifier.clickableValueEdit(
 @Composable
 fun BottomEffectPanel(
     selectedLayer: StudioLayer?,
+    onOpenColorPickerDialog: ((Int) -> Unit)? = null,
     selectedEffectIndex: Int,
     onSelectEffectIndex: (Int) -> Unit,
     onAddEffect: (StudioEffect) -> Unit,
@@ -9491,7 +10027,7 @@ fun BottomEffectPanel(
                                         ) {
                                             Text("Color Designer", style = Typography.labelSmall, color = EnergeticYellow)
                                             HsvColorPickerPanel(
-                                                currentColor = selectedLayer.baseColor,
+                                                currentColor = selectedLayer.baseColor, onOpenColorPickerDialog = onOpenColorPickerDialog,
                                                 currentOpacity = selectedLayer.opacity,
                                                 onColorChanged = { newColor ->
                                                     onUpdateLayer(selectedLayer.copy(baseColor = newColor))
@@ -9676,6 +10212,7 @@ fun BottomEffectPanel(
 @Composable
 fun OldBottomEffectPanel(
     selectedLayer: StudioLayer?,
+    onOpenColorPickerDialog: ((Int) -> Unit)? = null,
     selectedEffectIndex: Int,
     onSelectEffectIndex: (Int) -> Unit,
     onAddEffect: (StudioEffect) -> Unit,
@@ -9929,7 +10466,7 @@ fun OldBottomEffectPanel(
                                 ) {
                                     Text("Color Designer", style = Typography.labelSmall, color = EnergeticYellow)
                                     HsvColorPickerPanel(
-                                        currentColor = selectedLayer.baseColor,
+                                        currentColor = selectedLayer.baseColor, onOpenColorPickerDialog = onOpenColorPickerDialog,
                                         currentOpacity = selectedLayer.opacity,
                                         onColorChanged = { newColor ->
                                             onUpdateLayer(selectedLayer.copy(baseColor = newColor))
@@ -10979,7 +11516,7 @@ fun OldBottomEffectPanel(
                             Text("Color Designer", style = Typography.labelSmall, color = EnergeticYellow)
 
                             HsvColorPickerPanel(
-                                currentColor = selectedLayer.baseColor,
+                                currentColor = selectedLayer.baseColor, onOpenColorPickerDialog = onOpenColorPickerDialog,
                                 currentOpacity = selectedLayer.opacity,
                                 onColorChanged = { newColor ->
                                     onUpdateLayer(selectedLayer.copy(baseColor = newColor))
@@ -15928,11 +16465,98 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     com.example.studio.model.LayerType.VECTOR_OVAL -> {
                         addOval(androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height))
                     }
+                    com.example.studio.model.LayerType.VECTOR_TRIANGLE -> {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 3
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    com.example.studio.model.LayerType.VECTOR_PENTAGON -> {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 5
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    com.example.studio.model.LayerType.VECTOR_HEXAGON -> {
+                        val edges = if (layer.polygonEdges in 3..25) layer.polygonEdges else 6
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rx = layer.width / 2f
+                        val ry = layer.height / 2f
+                        for (i in 0 until edges) {
+                            val angle = Math.toRadians((i * (360.0 / edges) - 90).toDouble())
+                            val x = (cx + rx * Math.cos(angle)).toFloat()
+                            val y = (cy + ry * Math.sin(angle)).toFloat()
+                            if (i == 0) moveTo(x, y) else lineTo(x, y)
+                        }
+                        close()
+                    }
+                    com.example.studio.model.LayerType.VECTOR_STAR -> {
+                        val cx = layer.width / 2f
+                        val cy = layer.height / 2f
+                        val rOuter = layer.width / 2f
+                        val rInner = rOuter * layer.starInnerRadiusRatio.coerceIn(0.01f, 0.99f)
+                        val pointsCount = if (layer.polygonEdges >= 3) layer.polygonEdges else 5
+                        var angle = Math.PI / 2.0 * 3.0
+                        val step = Math.PI / pointsCount
+
+                        moveTo(
+                            (cx + Math.cos(angle) * rOuter).toFloat(),
+                            (cy + Math.sin(angle) * rOuter).toFloat()
+                        )
+
+                        for (i in 0..(pointsCount * 2)) {
+                            val r = if (i % 2 == 0) rOuter else rInner
+                            lineTo(
+                                (cx + Math.cos(angle) * r).toFloat(),
+                                (cy + Math.sin(angle) * r).toFloat()
+                            )
+                            angle += step
+                        }
+                        close()
+                    }
+                    com.example.studio.model.LayerType.VECTOR_BEZIER -> {
+                        val anchors = layer.brushPoints.toAnchorPoints()
+                        if (anchors.isNotEmpty()) {
+                            val first = anchors[0]
+                            moveTo(first.position.x, first.position.y)
+                            for (index in 0 until anchors.size - 1) {
+                                val current = anchors[index]
+                                val next = anchors[index + 1]
+                                cubicTo(
+                                    current.handleOut.x, current.handleOut.y,
+                                    next.handleIn.x, next.handleIn.y,
+                                    next.position.x, next.position.y
+                                )
+                            }
+                        } else if (layer.brushPoints.isNotEmpty()) {
+                            val startPt = layer.brushPoints[0]
+                            moveTo(startPt.x, startPt.y)
+                            lineTo(startPt.x + 0.1f, startPt.y)
+                        }
+                    }
                     else -> {
-                        // fallback or default empty
+                        addRect(androidx.compose.ui.geometry.Rect(0f, 0f, layer.width, layer.height))
                     }
                 }
             }
+            pathCache.put(cacheKey, p)
         }
         p ?: androidx.compose.ui.graphics.Path()
     }
@@ -16080,10 +16704,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     }
 
     // Main solid layer drawing
-    if (bRadius > 0.1f) {
-        drawGeometryWithBlur(effectiveColor, 1.0f, androidx.compose.ui.graphics.drawscope.Fill, bRadius, android.graphics.BlurMaskFilter.Blur.NORMAL, isOverlay = false)
-    } else {
-        drawGeometry(effectiveColor, 1.0f, androidx.compose.ui.graphics.drawscope.Fill, isOverlay = false)
+    if (gradOverlay == null) {
+        if (bRadius > 0.1f) {
+            drawGeometryWithBlur(effectiveColor, 1.0f, androidx.compose.ui.graphics.drawscope.Fill, bRadius, android.graphics.BlurMaskFilter.Blur.NORMAL, isOverlay = false)
+        } else {
+            drawGeometry(effectiveColor, 1.0f, androidx.compose.ui.graphics.drawscope.Fill, isOverlay = false)
+        }
     }
 
     // 4. Gradient Overlay Pass
@@ -16115,7 +16741,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
 
         val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
         val stopPositions = if (goPresetIdx == 7) {
-            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 100)
             val list = mutableListOf<Float>()
             for (i in 0 until stopCount) {
                 val posVal = gradOverlay.parameters["CustomStop_${i}_Pos"]?.value ?: (i.toFloat() / (stopCount - 1).coerceAtLeast(1))
@@ -16127,12 +16753,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
         }
 
         val originalColors = if (goPresetIdx == 7) {
-            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
+            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 100)
             val list = mutableListOf<androidx.compose.ui.graphics.Color>()
             for (i in 0 until stopCount) {
                 val rKey = "CustomStop_${i}_R"
                 val gKey = "CustomStop_${i}_G"
                 val bKey = "CustomStop_${i}_B"
+                val aKey = "CustomStop_${i}_A"
                 
                 val r = gradOverlay.parameters[rKey]?.value ?: when(i) {
                     0 -> gradOverlay.parameters["CustomStart_R"]?.value ?: 1.0f
@@ -16158,7 +16785,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
                     4 -> 0.0f
                     else -> 1.0f
                 }
-                list.add(androidx.compose.ui.graphics.Color(r, g, b))
+                val a = gradOverlay.parameters[aKey]?.value ?: when(i) {
+                    0 -> gradOverlay.parameters["CustomStart_A"]?.value ?: 1.0f
+                    1 -> gradOverlay.parameters["CustomEnd_A"]?.value ?: 1.0f
+                    else -> 1.0f
+                }
+                list.add(androidx.compose.ui.graphics.Color(red = r, green = g, blue = b, alpha = a))
             }
             list
         } else {
@@ -16171,82 +16803,214 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             null
         }
 
-        when (gradientTypeOrdinal) {
-            0 -> { // Linear Gradient
-                val gradBrush = if (colorStops != null) {
-                    androidx.compose.ui.graphics.Brush.linearGradient(
-                        colorStops = colorStops,
-                        start = androidx.compose.ui.geometry.Offset(startX, startY),
-                        end = androidx.compose.ui.geometry.Offset(endX, endY)
-                    )
+        val finalColorStops = if (colorStops != null) {
+            colorStops
+        } else {
+            val sz = originalColors.size
+            if (sz > 1) {
+                originalColors.mapIndexed { idx, col ->
+                    Pair(idx.toFloat() / (sz - 1).coerceAtLeast(1), col)
+                }.toTypedArray()
+            } else if (sz == 1) {
+                arrayOf(Pair(0f, originalColors[0]), Pair(1f, originalColors[0]))
+            } else {
+                null
+            }
+        }
+
+        val getColorAtRatio = { ratio: Float ->
+            val stops = finalColorStops
+            if (stops != null && stops.isNotEmpty()) {
+                val sortedStops = stops.sortedBy { it.first }
+                if (ratio <= sortedStops.first().first) {
+                    sortedStops.first().second
+                } else if (ratio >= sortedStops.last().first) {
+                    sortedStops.last().second
                 } else {
-                    androidx.compose.ui.graphics.Brush.linearGradient(
-                        colors = originalColors,
-                        start = androidx.compose.ui.geometry.Offset(startX, startY),
-                        end = androidx.compose.ui.geometry.Offset(endX, endY)
-                    )
+                    var match: androidx.compose.ui.graphics.Color? = null
+                    for (i in 0 until sortedStops.size - 1) {
+                        val s1 = sortedStops[i]
+                        val s2 = sortedStops[i + 1]
+                        if (ratio >= s1.first && ratio <= s2.first) {
+                            val t = (ratio - s1.first) / (s2.first - s1.first).coerceAtLeast(0.001f)
+                            match = androidx.compose.ui.graphics.Color(
+                                red = s1.second.red + (s2.second.red - s1.second.red) * t,
+                                green = s1.second.green + (s2.second.green - s1.second.green) * t,
+                                blue = s1.second.blue + (s2.second.blue - s1.second.blue) * t,
+                                alpha = s1.second.alpha + (s2.second.alpha - s1.second.alpha) * t
+                            )
+                            break
+                        }
+                    }
+                    match ?: interpolateMultiColor(originalColors, ratio)
                 }
-                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+            } else {
+                interpolateMultiColor(originalColors, ratio)
             }
-            1 -> { // Radial Gradient
-                val maxRadius = (Math.min(layer.width, layer.height) / 2f) * goScale
-                val gradBrush = androidx.compose.ui.graphics.Brush.radialGradient(
-                    colors = originalColors,
-                    center = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f),
-                    radius = maxRadius.coerceAtLeast(1f)
-                )
-                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
-            }
-            2 -> { // Sweep / Angular Gradient
-                val gradBrush = androidx.compose.ui.graphics.Brush.sweepGradient(
-                    colors = originalColors,
-                    center = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f)
-                )
-                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
-            }
-            3 -> { // Reflected Gradient
-                val reflectedColors = originalColors.reversed() + originalColors.drop(1)
-                val gradBrush = androidx.compose.ui.graphics.Brush.linearGradient(
-                    colors = reflectedColors,
-                    start = androidx.compose.ui.geometry.Offset(startX, startY),
-                    end = androidx.compose.ui.geometry.Offset(endX, endY)
-                )
-                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
-            }
-            4 -> { // Shape-Conforming Concentric Gradient
-                val steps = 30
-                for (step in steps downTo 1) {
-                    val ratio = step.toFloat() / steps
-                    val color = interpolateMultiColor(originalColors, ratio)
+        }
+
+        val pathCachedObj = layerPath
+        clipPath(pathCachedObj) {
+            when (gradientTypeOrdinal) {
+                0 -> { // Linear Gradient
+                    val gradBrush = if (finalColorStops != null) {
+                        androidx.compose.ui.graphics.Brush.linearGradient(
+                            colorStops = finalColorStops,
+                            start = androidx.compose.ui.geometry.Offset(startX, startY),
+                            end = androidx.compose.ui.geometry.Offset(endX, endY)
+                        )
+                    } else {
+                        androidx.compose.ui.graphics.Brush.linearGradient(
+                            colors = originalColors,
+                            start = androidx.compose.ui.geometry.Offset(startX, startY),
+                            end = androidx.compose.ui.geometry.Offset(endX, endY)
+                        )
+                    }
+                    drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                }
+                1 -> { // Radial Gradient
+                    val dist = Math.hypot((endX - startX).toDouble(), (endY - startY).toDouble()).toFloat()
+                    val radius = if (dist > 1f) dist else ((Math.min(layer.width, layer.height) / 2f) * goScale)
+                    val gradBrush = if (finalColorStops != null) {
+                        androidx.compose.ui.graphics.Brush.radialGradient(
+                            colorStops = finalColorStops,
+                            center = androidx.compose.ui.geometry.Offset(startX, startY),
+                            radius = radius.coerceAtLeast(1f)
+                        )
+                    } else {
+                        androidx.compose.ui.graphics.Brush.radialGradient(
+                            colors = originalColors,
+                            center = androidx.compose.ui.geometry.Offset(startX, startY),
+                            radius = radius.coerceAtLeast(1f)
+                        )
+                    }
+                    drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                }
+                2 -> { // Sweep / Angular Gradient
+                    val dx = endX - startX
+                    val dy = endY - startY
+                    val lineAngle = if (Math.abs(dx) > 0.1f || Math.abs(dy) > 0.1f) {
+                        Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                    } else {
+                        goAngle
+                    }
+                    val gradBrush = if (finalColorStops != null) {
+                        androidx.compose.ui.graphics.Brush.sweepGradient(
+                            colorStops = finalColorStops,
+                            center = androidx.compose.ui.geometry.Offset(startX, startY)
+                        )
+                    } else {
+                        androidx.compose.ui.graphics.Brush.sweepGradient(
+                            colors = originalColors,
+                            center = androidx.compose.ui.geometry.Offset(startX, startY)
+                        )
+                    }
                     withTransform({
-                        scale(scaleX = ratio * goScale, scaleY = ratio * goScale, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
+                        rotate(degrees = lineAngle, pivot = androidx.compose.ui.geometry.Offset(startX, startY))
                     }) {
-                        drawGeometry(color, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                        drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
                     }
                 }
-            }
-            5 -> { // Diamond / Starburst Gradient
-                val steps = 30
-                for (step in steps downTo 1) {
-                    val ratio = step.toFloat() / steps
-                    val color = interpolateMultiColor(originalColors, ratio)
-                    withTransform({
-                        scale(scaleX = ratio * goScale, scaleY = ratio * goScale, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
-                        rotate(degrees = 45f, pivot = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f))
-                    }) {
-                        drawGeometry(color, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                3 -> { // Reflected Gradient
+                    val reflectedColorStops = if (finalColorStops != null) {
+                        val stopsList = mutableListOf<Pair<Float, androidx.compose.ui.graphics.Color>>()
+                        finalColorStops.forEach { (fraction, color) ->
+                            stopsList.add(Pair(0.5f - 0.5f * fraction, color))
+                            stopsList.add(Pair(0.5f + 0.5f * fraction, color))
+                        }
+                        stopsList.sortBy { it.first }
+                        stopsList.toTypedArray()
+                    } else {
+                        null
+                    }
+                    val brushStart = androidx.compose.ui.geometry.Offset(startX - (endX - startX), startY - (endY - startY))
+                    val brushEnd = androidx.compose.ui.geometry.Offset(endX, endY)
+                    val gradBrush = if (reflectedColorStops != null) {
+                        androidx.compose.ui.graphics.Brush.linearGradient(
+                            colorStops = reflectedColorStops,
+                            start = brushStart,
+                            end = brushEnd
+                        )
+                    } else {
+                        val reflectedColors = originalColors.reversed() + originalColors.drop(1)
+                        androidx.compose.ui.graphics.Brush.linearGradient(
+                            colors = reflectedColors,
+                            start = brushStart,
+                            end = brushEnd
+                        )
+                    }
+                    drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                }
+                4 -> { // Shape-Conforming Concentric Gradient
+                    val steps = 30
+                    val refDist = Math.hypot((layer.width / 2f).toDouble(), (layer.height / 2f).toDouble()).toFloat().coerceAtLeast(1f)
+                    val curDist = Math.hypot((endX - startX).toDouble(), (endY - startY).toDouble()).toFloat()
+                    val finalScale = if (hasCustomHandles) (curDist / refDist) else goScale
+
+                    for (step in steps downTo 1) {
+                        val ratio = step.toFloat() / steps
+                        val color = getColorAtRatio(ratio)
+                        withTransform({
+                            scale(scaleX = ratio * finalScale, scaleY = ratio * finalScale, pivot = androidx.compose.ui.geometry.Offset(startX, startY))
+                        }) {
+                            drawGeometry(color, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                        }
                     }
                 }
-            }
-            6 -> { // Reflected Radial Gradient
-                val reflectedColors = originalColors.reversed() + originalColors.drop(1)
-                val maxRadius = (Math.min(layer.width, layer.height) / 2f) * goScale
-                val gradBrush = androidx.compose.ui.graphics.Brush.radialGradient(
-                    colors = reflectedColors,
-                    center = androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height / 2f),
-                    radius = maxRadius.coerceAtLeast(1f)
-                )
-                drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                5 -> { // Diamond / Starburst Gradient
+                    val steps = 30
+                    val refDist = Math.hypot((layer.width / 2f).toDouble(), (layer.height / 2f).toDouble()).toFloat().coerceAtLeast(1f)
+                    val curDist = Math.hypot((endX - startX).toDouble(), (endY - startY).toDouble()).toFloat()
+                    val finalScale = if (hasCustomHandles) (curDist / refDist) else goScale
+                    val dx = endX - startX
+                    val dy = endY - startY
+                    val lineAngle = if (Math.abs(dx) > 0.1f || Math.abs(dy) > 0.1f) {
+                        Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                    } else {
+                        45f
+                    }
+
+                    for (step in steps downTo 1) {
+                        val ratio = step.toFloat() / steps
+                        val color = getColorAtRatio(ratio)
+                        withTransform({
+                            scale(scaleX = ratio * finalScale, scaleY = ratio * finalScale, pivot = androidx.compose.ui.geometry.Offset(startX, startY))
+                            rotate(degrees = lineAngle, pivot = androidx.compose.ui.geometry.Offset(startX, startY))
+                        }) {
+                            drawGeometry(color, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                        }
+                    }
+                }
+                6 -> { // Reflected Radial Gradient
+                    val reflectedColorStops = if (finalColorStops != null) {
+                        val stopsList = mutableListOf<Pair<Float, androidx.compose.ui.graphics.Color>>()
+                        finalColorStops.forEach { (fraction, color) ->
+                            stopsList.add(Pair(0.5f - 0.5f * fraction, color))
+                            stopsList.add(Pair(0.5f + 0.5f * fraction, color))
+                        }
+                        stopsList.sortBy { it.first }
+                        stopsList.toTypedArray()
+                    } else {
+                        null
+                    }
+                    val dist = Math.hypot((endX - startX).toDouble(), (endY - startY).toDouble()).toFloat()
+                    val radius = if (dist > 1f) dist else ((Math.min(layer.width, layer.height) / 2f) * goScale)
+                    val gradBrush = if (reflectedColorStops != null) {
+                        androidx.compose.ui.graphics.Brush.radialGradient(
+                            colorStops = reflectedColorStops,
+                            center = androidx.compose.ui.geometry.Offset(startX, startY),
+                            radius = radius.coerceAtLeast(1f)
+                        )
+                    } else {
+                        val reflectedColors = originalColors.reversed() + originalColors.drop(1)
+                        androidx.compose.ui.graphics.Brush.radialGradient(
+                            colors = reflectedColors,
+                            center = androidx.compose.ui.geometry.Offset(startX, startY),
+                            radius = radius.coerceAtLeast(1f)
+                        )
+                    }
+                    drawGeometryWithBrush(gradBrush, goOpacity, androidx.compose.ui.graphics.drawscope.Fill)
+                }
             }
         }
     }
@@ -16818,103 +17582,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
             center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
         )
 
-        // Draw On-Canvas Gradient Overlay Vector Handle Guide Line and Pins
-        val gradOverlay = layer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
-        val gradientTypeOrdinal = (gradOverlay?.parameters["GradientType"]?.value ?: 0f).toInt()
-        
-        if (gradOverlay != null && gradientTypeOrdinal == 0) { // Linear Gradient
-            val goScale = (gradOverlay.parameters["Scale"]?.value ?: 100f) / 100f
-            val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
-            
-            val hasCustomHandles = gradOverlay.parameters["StartX"] != null
-            val startX: Float
-            val startY: Float
-            val endX: Float
-            val endY: Float
-            if (hasCustomHandles) {
-                startX = (gradOverlay.parameters["StartX"]?.value ?: 0f) * layer.width
-                startY = (gradOverlay.parameters["StartY"]?.value ?: 0f) * layer.height
-                endX = (gradOverlay.parameters["EndX"]?.value ?: 1f) * layer.width
-                endY = (gradOverlay.parameters["EndY"]?.value ?: 1f) * layer.height
-            } else {
-                val rads = Math.toRadians(goAngle.toDouble())
-                val cos = Math.cos(rads).toFloat()
-                val sin = Math.sin(rads).toFloat()
-                startX = layer.width / 2f - (layer.width / 2f * cos * goScale)
-                startY = layer.height / 2f - (layer.height / 2f * sin * goScale)
-                endX = layer.width / 2f + (layer.width / 2f * cos * goScale)
-                endY = layer.height / 2f + (layer.height / 2f * sin * goScale)
-            }
-            
-            val startPt = androidx.compose.ui.geometry.Offset(startX, startY)
-            val endPt = androidx.compose.ui.geometry.Offset(endX, endY)
-            
-            // Draw guideline
-            drawLine(
-                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.5f),
-                start = startPt,
-                end = endPt,
-                strokeWidth = 2f / totalScale.coerceAtLeast(0.5f)
-            )
-            // Amber center line
-            drawLine(
-                color = IndustrialAmber,
-                start = startPt,
-                end = endPt,
-                strokeWidth = 1f / totalScale.coerceAtLeast(0.5f)
-            )
-            
-            // Draw start square handle
-            val handleHalf = 7f / totalScale.coerceAtLeast(0.5f)
-            drawRect(
-                color = IndustrialAmber,
-                topLeft = androidx.compose.ui.geometry.Offset(startX - handleHalf, startY - handleHalf),
-                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2)
-            )
-            drawRect(
-                color = androidx.compose.ui.graphics.Color.White,
-                topLeft = androidx.compose.ui.geometry.Offset(startX - handleHalf, startY - handleHalf),
-                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f / totalScale.coerceAtLeast(0.5f))
-            )
-            
-            // Draw end square handle
-            drawRect(
-                color = IndustrialAmber,
-                topLeft = androidx.compose.ui.geometry.Offset(endX - handleHalf, endY - handleHalf),
-                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2)
-            )
-            drawRect(
-                color = androidx.compose.ui.graphics.Color.White,
-                topLeft = androidx.compose.ui.geometry.Offset(endX - handleHalf, endY - handleHalf),
-                size = androidx.compose.ui.geometry.Size(handleHalf * 2, handleHalf * 2),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f / totalScale.coerceAtLeast(0.5f))
-            )
-            
-            // Let's draw interior stop tracking markers along the line
-            val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
-            val activeStopIndex = (gradOverlay.parameters["SelectedStopIndex"]?.value ?: 0f).toInt()
-            val stopCount = (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 6)
-            for (idx in 0 until stopCount) {
-                val fraction = gradOverlay.parameters["CustomStop_${idx}_Pos"]?.value ?: (idx.toFloat() / (stopCount - 1).coerceAtLeast(1))
-                val stopX = startX + (endX - startX) * fraction
-                val stopY = startY + (endY - startY) * fraction
-                
-                // Draw a circle tracking marker
-                val markerRadius = 5.5f / totalScale.coerceAtLeast(0.5f)
-                drawCircle(
-                    color = androidx.compose.ui.graphics.Color.White,
-                    radius = markerRadius,
-                    center = androidx.compose.ui.geometry.Offset(stopX, stopY)
-                )
-                // If it is the currently selected stop in the color designer, draw an inner orange dot
-                drawCircle(
-                    color = if (idx == activeStopIndex) EnergeticYellow else androidx.compose.ui.graphics.Color(0xFF161622),
-                    radius = markerRadius - 1.5f / totalScale.coerceAtLeast(0.5f),
-                    center = androidx.compose.ui.geometry.Offset(stopX, stopY)
-                )
-            }
-        }
+        // On-Canvas Gradient Overlay Guideline rendering moved to drawSingleConnectedLayer to float live and dynamically above cache layers
     }
     if (didSaveLayer) {
         drawContext.canvas.nativeCanvas.restore()
@@ -17155,6 +17823,159 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
                 radius = 5.5f / totalScale.coerceAtLeast(0.5f),
                 center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
             )
+
+            // Draw On-Canvas Gradient Overlay Vector Handle Guide Line and Pins dynamically
+            val gradOverlay = layer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+            if (gradOverlay != null) {
+                val goScale = (gradOverlay.parameters["Scale"]?.value ?: 100f) / 100f
+                val goAngle = gradOverlay.parameters["Angle"]?.value ?: 90f
+                
+                val hasCustomHandles = gradOverlay.parameters["StartX"] != null
+                val startX: Float
+                val startY: Float
+                val endX: Float
+                val endY: Float
+                if (hasCustomHandles) {
+                    startX = (gradOverlay.parameters["StartX"]?.value ?: 0f) * layer.width
+                    startY = (gradOverlay.parameters["StartY"]?.value ?: 0f) * layer.height
+                    endX = (gradOverlay.parameters["EndX"]?.value ?: 1f) * layer.width
+                    endY = (gradOverlay.parameters["EndY"]?.value ?: 1f) * layer.height
+                } else {
+                    val rads = Math.toRadians(goAngle.toDouble())
+                    val cos = Math.cos(rads).toFloat()
+                    val sin = Math.sin(rads).toFloat()
+                    startX = layer.width / 2f - (layer.width / 2f * cos * goScale)
+                    startY = layer.height / 2f - (layer.height / 2f * sin * goScale)
+                    endX = layer.width / 2f + (layer.width / 2f * cos * goScale)
+                    endY = layer.height / 2f + (layer.height / 2f * sin * goScale)
+                }
+                
+                val startPt = androidx.compose.ui.geometry.Offset(startX, startY)
+                val endPt = androidx.compose.ui.geometry.Offset(endX, endY)
+                
+                val lineThickness = 1.8f / totalScale.coerceAtLeast(0.5f)
+                val outlineThickness = 3.8f / totalScale.coerceAtLeast(0.5f)
+                
+                // 1. Draw Black guideline shadow/outline for extreme contrast against any background
+                drawLine(
+                    color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.65f),
+                    start = startPt,
+                    end = endPt,
+                    strokeWidth = outlineThickness
+                )
+                
+                // 2. Draw white/amber guideline
+                drawLine(
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.95f),
+                    start = startPt,
+                    end = endPt,
+                    strokeWidth = lineThickness
+                )
+                drawLine(
+                    color = IndustrialAmber.copy(0.75f),
+                    start = startPt,
+                    end = endPt,
+                    strokeWidth = lineThickness * 0.5f
+                )
+                
+                // Fetch colors for handles
+                val goPresetIdx = (gradOverlay.parameters["Preset"]?.value ?: 0f).toInt().coerceIn(0, 7)
+                val stopCount = if (goPresetIdx < 7) {
+                    val presetColorList = gradientPresets[goPresetIdx]
+                    presetColorList.size
+                } else {
+                    (gradOverlay.parameters["CustomStopCount"]?.value ?: 2f).toInt().coerceIn(2, 100)
+                }
+                
+                val customColorsList = mutableListOf<androidx.compose.ui.graphics.Color>()
+                if (goPresetIdx < 7) {
+                    val colors = gradientPresets[goPresetIdx]
+                    customColorsList.addAll(colors)
+                } else {
+                    for (idx in 0 until stopCount) {
+                        val rKey = "CustomStop_${idx}_R"
+                        val gKey = "CustomStop_${idx}_G"
+                        val bKey = "CustomStop_${idx}_B"
+                        val aKey = "CustomStop_${idx}_A"
+                        val rVal = gradOverlay.parameters[rKey]?.value ?: when(idx) {
+                            0 -> gradOverlay.parameters["CustomStart_R"]?.value ?: 1.0f
+                            1 -> gradOverlay.parameters["CustomEnd_R"]?.value ?: 0.0f
+                            else -> 0.5f
+                        }
+                        val gVal = gradOverlay.parameters[gKey]?.value ?: when(idx) {
+                            0 -> gradOverlay.parameters["CustomStart_G"]?.value ?: 0.0f
+                            1 -> gradOverlay.parameters["CustomEnd_G"]?.value ?: 0.0f
+                            else -> 0.5f
+                        }
+                        val bVal = gradOverlay.parameters[bKey]?.value ?: when(idx) {
+                            0 -> gradOverlay.parameters["CustomStart_B"]?.value ?: 0.0f
+                            1 -> gradOverlay.parameters["CustomEnd_B"]?.value ?: 1.0f
+                            else -> 0.5f
+                        }
+                        val aVal = gradOverlay.parameters[aKey]?.value ?: 1.0f
+                        customColorsList.add(androidx.compose.ui.graphics.Color(rVal, gVal, bVal, aVal))
+                    }
+                }
+                
+                val startColor = customColorsList.firstOrNull() ?: androidx.compose.ui.graphics.Color.White
+                val endColor = customColorsList.lastOrNull() ?: androidx.compose.ui.graphics.Color.Black
+                
+                // Draw start circular handle with custom color preview & thick white border
+                val handleRadius = 11.5f / totalScale.coerceAtLeast(0.5f)
+                val blackBorderRadius = handleRadius + 2f / totalScale.coerceAtLeast(0.5f)
+                
+                // Black base shadow for start handle
+                drawCircle(color = androidx.compose.ui.graphics.Color.Black.copy(0.5f), radius = blackBorderRadius, center = startPt)
+                drawCircle(color = androidx.compose.ui.graphics.Color.White, radius = handleRadius, center = startPt)
+                drawCircle(color = startColor, radius = handleRadius - 2.5f / totalScale.coerceAtLeast(0.5f), center = startPt)
+                
+                // Draw end circular handle
+                drawCircle(color = androidx.compose.ui.graphics.Color.Black.copy(0.5f), radius = blackBorderRadius, center = endPt)
+                drawCircle(color = androidx.compose.ui.graphics.Color.White, radius = handleRadius, center = endPt)
+                drawCircle(color = endColor, radius = handleRadius - 2.5f / totalScale.coerceAtLeast(0.5f), center = endPt)
+                
+                // Let's draw interior stop tracking markers along the line
+                val activeStopIndex = (gradOverlay.parameters["SelectedStopIndex"]?.value ?: 0f).toInt()
+                
+                for (idx in 0 until stopCount) {
+                    val fraction = if (goPresetIdx < 7) {
+                        idx.toFloat() / (stopCount - 1).coerceAtLeast(1)
+                    } else {
+                        gradOverlay.parameters["CustomStop_${idx}_Pos"]?.value ?: (idx.toFloat() / (stopCount - 1).coerceAtLeast(1))
+                    }
+                    val stopColor = customColorsList.getOrNull(idx) ?: androidx.compose.ui.graphics.Color.Gray
+                    
+                    val stopX = startX + (endX - startX) * fraction
+                    val stopY = startY + (endY - startY) * fraction
+                    
+                    val markerRadius = 8.5f / totalScale.coerceAtLeast(0.5f)
+                    val outerSquareSize = markerRadius * 2f
+                    val ptOffset = androidx.compose.ui.geometry.Offset(stopX - markerRadius, stopY - markerRadius)
+                    
+                    // Black backing shadow
+                    drawRect(
+                        color = androidx.compose.ui.graphics.Color.Black.copy(0.55f),
+                        topLeft = androidx.compose.ui.geometry.Offset(stopX - markerRadius - 2f / totalScale.coerceAtLeast(0.5f), stopY - markerRadius - 2f / totalScale.coerceAtLeast(0.5f)),
+                        size = androidx.compose.ui.geometry.Size(outerSquareSize + 4f / totalScale.coerceAtLeast(0.5f), outerSquareSize + 4f / totalScale.coerceAtLeast(0.5f))
+                    )
+                    
+                    // White/Yellow border
+                    drawRect(
+                        color = if (idx == activeStopIndex) EnergeticYellow else androidx.compose.ui.graphics.Color.White,
+                        topLeft = ptOffset,
+                        size = androidx.compose.ui.geometry.Size(outerSquareSize, outerSquareSize)
+                    )
+                    
+                    // Internals colored square representing stop color
+                    val innerSize = (markerRadius - 2.5f / totalScale.coerceAtLeast(0.5f)) * 2f
+                    val innerOffset = markerRadius - 2.5f / totalScale.coerceAtLeast(0.5f)
+                    drawRect(
+                        color = stopColor,
+                        topLeft = androidx.compose.ui.geometry.Offset(stopX - innerOffset, stopY - innerOffset),
+                        size = androidx.compose.ui.geometry.Size(innerSize, innerSize)
+                    )
+                }
+            }
         }
     }
     drawContext.canvas.restore()

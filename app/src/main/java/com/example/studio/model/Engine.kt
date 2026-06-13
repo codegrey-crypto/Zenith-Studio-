@@ -346,7 +346,7 @@ object PhotoshopEffectTemplates {
                 category = "Layer Styles (fx)",
                 effectType = effectType,
                 parameters = mapOf(
-                    "Preset" to EffectParameter("Preset", 0f, 0f, 7f),
+                    "Preset" to EffectParameter("Preset", 7f, 0f, 7f),
                     "Scale" to EffectParameter("Scale", 100f, 10f, 150f, "%"),
                     "Angle" to EffectParameter("Angle", 90f, -180f, 180f, "°"),
                     "Opacity" to EffectParameter("Opacity", 1.0f, 0f, 1f),
