@@ -31,7 +31,7 @@ jobs:
         gradle-version: 8.4
 
     - name: Compile and Build Debug APK
-      run: gradle assembleDebug --no-daemon
+      run: gradle assembleDebug --no-daemon --no-configuration-cache --no-build-cache
 
     - name: Upload Finished APK
       uses: actions/upload-artifact@v4
