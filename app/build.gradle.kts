@@ -87,14 +87,14 @@ dependencies {
     // Image Handling and Storage Architecture
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.coil.compose)
-    implementation(libs.jp.co.cyberagent.android.gpuimage)
+    implementation(libs.gpuimage)
 
     // Storage and Concurrency 
     implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.room.runtime)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.mashi.kotlin)
+    implementation(libs.moshi.kotlin)
 
     // Local Test Framework Deployments
     testImplementation(libs.androidx.compose.ui.test.junit4)
@@ -120,7 +120,7 @@ dependencies {
 
     // Annotation Processing Modules
     ksp(libs.androidx.room.compiler)
-    ksp(libs.mashi.kotlin.codegen)
+    ksp(libs.moshi.kotlin.codegen)
 }
 
 // FORCE BYPASS HOOK: Intercepts and disables any lingering AAR validation checks
