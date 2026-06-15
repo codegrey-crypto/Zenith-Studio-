@@ -416,10 +416,7 @@ object OpenGLBrushRenderer {
 
         canvas.drawCircle(half, half, radius, paint)
 
-        // Cache HardwareBuffer if supported (Oreo+) to ensure direct GPU speedups
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            cacheHardwareBuffer(cacheKey, bmp)
-        }
+        // bmp is ARGB_8888 (non-HARDWARE), so we do NOT call cacheHardwareBuffer to prevent native warnings or exceptions.
 
         strokeBitmapCache.put(cacheKey, bmp)
         return bmp
@@ -431,13 +428,16 @@ object OpenGLBrushRenderer {
     @RequiresApi(Build.VERSION_CODES.O)
     private fun cacheHardwareBuffer(key: String, bitmap: Bitmap) {
         try {
-            val hwBuffer = bitmap.hardwareBuffer
-            if (hwBuffer != null && hardwareBufferCache != null) {
-                @Suppress("UNCHECKED_CAST")
-                (hardwareBufferCache as LruCache<String, HardwareBuffer>).put(key, hwBuffer)
+            if (bitmap.config == Bitmap.Config.HARDWARE) {
+                val hwBuffer = bitmap.hardwareBuffer
+                if (hwBuffer != null && hardwareBufferCache != null) {
+                    @Suppress("UNCHECKED_CAST")
+                    (hardwareBufferCache as LruCache<String, HardwareBuffer>).put(key, hwBuffer)
+                }
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "HardwareBuffer cache failed", t)
+            // Quiet log for expected hardware access limits on certain older API levels or systems
+            Log.d(TAG, "HardwareBuffer is not supported or accessible for this bitmap config")
         }
     }
 

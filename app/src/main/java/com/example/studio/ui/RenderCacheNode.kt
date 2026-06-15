@@ -71,7 +71,9 @@ object ParametricLayerCache {
     }
 }
 
-// Viewport calculations for hardware clipping & Zoom Isolation
+// Infinite Viewport layout behavior: completely eliminate bounds clipping.
+// All layout elements are treated as part of an infinite coordinate grid,
+// drawing without hardware bounds constraints regardless of zoom/pan state.
 fun isLayerVisibleInViewport(
     layer: StudioLayer,
     viewportWidth: Float,
@@ -82,19 +84,8 @@ fun isLayerVisibleInViewport(
     canvasWidth: Float,
     canvasHeight: Float
 ): Boolean {
-    if (viewportWidth <= 0f || viewportHeight <= 0f) return true
-    val centerX = viewportWidth / 2f + panX
-    val centerY = viewportHeight / 2f + panY
-
-    val layerLeftScreen = centerX + (-canvasWidth / 2f + layer.positionX) * scale
-    val layerTopScreen = centerY + (-canvasHeight / 2f + layer.positionY) * scale
-    val layerRightScreen = layerLeftScreen + (layer.width * scale)
-    val layerBottomScreen = layerTopScreen + (layer.height * scale)
-
-    return !(layerLeftScreen > viewportWidth || 
-             layerRightScreen < 0f || 
-             layerTopScreen > viewportHeight || 
-             layerBottomScreen < 0f)
+    // Natively bypass bounds checks to prevent boundary-based element clipping in multi-artboard setups
+    return true
 }
 
 fun getLayerVisibleLocalRect(
@@ -107,30 +98,8 @@ fun getLayerVisibleLocalRect(
     canvasWidth: Float,
     canvasHeight: Float
 ): android.graphics.Rect {
-    if (viewportWidth <= 0f || viewportHeight <= 0f) {
-        return android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
-    }
-    val centerX = viewportWidth / 2f + panX
-    val centerY = viewportHeight / 2f + panY
-
-    val layerLeftScreen = centerX + (-canvasWidth / 2f + layer.positionX) * scale
-    val layerTopScreen = centerY + (-canvasHeight / 2f + layer.positionY) * scale
-
-    val overlapLeftScreen = maxOf(0f, layerLeftScreen)
-    val overlapRightScreen = minOf(viewportWidth, layerLeftScreen + layer.width * scale)
-    val overlapTopScreen = maxOf(0f, layerTopScreen)
-    val overlapBottomScreen = minOf(viewportHeight, layerTopScreen + layer.height * scale)
-
-    if (overlapLeftScreen >= overlapRightScreen || overlapTopScreen >= overlapBottomScreen) {
-        return android.graphics.Rect(0, 0, 0, 0)
-    }
-
-    val localLeft = ((overlapLeftScreen - layerLeftScreen) / scale).toInt().coerceIn(0, layer.width.toInt())
-    val localTop = ((overlapTopScreen - layerTopScreen) / scale).toInt().coerceIn(0, layer.height.toInt())
-    val localRight = ((overlapRightScreen - layerLeftScreen) / scale).toInt().coerceIn(0, layer.width.toInt())
-    val localBottom = ((overlapBottomScreen - layerTopScreen) / scale).toInt().coerceIn(0, layer.height.toInt())
-
-    return android.graphics.Rect(localLeft, localTop, localRight, localBottom)
+    // Return the full layer layout dimensions so that pixel processing is never artificially limited or clipped at viewport edges
+    return android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
 }
 
 // Graphite-inspired Unidirectional Asynchronous Message-Passing Event Loop

@@ -68,6 +68,16 @@ import com.example.studio.model.*
 import com.example.ui.theme.*
 import java.util.UUID
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.ui.viewinterop.AndroidView
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebResourceRequest
+import android.webkit.DownloadListener
+import android.graphics.pdf.PdfRenderer
+import android.graphics.pdf.PdfDocument
+import android.os.ParcelFileDescriptor
+import android.os.Environment
+import java.io.File
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.studio.viewmodel.WorkspaceViewModel
 import com.example.studio.database.ProjectEntity
@@ -149,6 +159,36 @@ val processedImageBitmapCache = object : java.util.concurrent.ConcurrentHashMap<
     }
 }
 val pixelStretchBitmapsCache = java.util.concurrent.ConcurrentHashMap<String, android.graphics.Bitmap>()
+
+fun decodeSampledBitmapFromFile(path: String, maxDim: Int = 1024): android.graphics.Bitmap? {
+    try {
+        val options = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeFile(path, options)
+        val width = options.outWidth
+        val height = options.outHeight
+        if (width <= 0 || height <= 0) return null
+
+        var inSampleSize = 1
+        if (width > maxDim || height > maxDim) {
+            val halfHeight = height / 2
+            val halfWidth = width / 2
+            while ((halfHeight / inSampleSize) >= maxDim && (halfWidth / inSampleSize) >= maxDim) {
+                inSampleSize *= 2
+            }
+        }
+
+        val decodeOptions = android.graphics.BitmapFactory.Options().apply {
+            this.inSampleSize = inSampleSize
+            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        }
+        return android.graphics.BitmapFactory.decodeFile(path, decodeOptions)
+    } catch (t: Throwable) {
+        t.printStackTrace()
+        return null
+    }
+}
 
 fun extractPixelStretchBitmap(
     source: android.graphics.Bitmap,
@@ -927,6 +967,219 @@ private fun snapPointToRulers(
     return bestPoints
 }
 
+data class ArtboardData(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String,
+    val width: Float,
+    val height: Float,
+    val layers: List<com.example.studio.model.StudioLayer> = emptyList()
+)
+
+fun importPdfToArtboards(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    scope: kotlinx.coroutines.CoroutineScope,
+    onComplete: (List<ArtboardData>) -> Unit
+) {
+    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        val result = mutableListOf<ArtboardData>()
+        try {
+            val contentResolver = context.contentResolver
+            val tempFile = File(context.cacheDir, "imported_${System.currentTimeMillis()}.pdf")
+            contentResolver.openInputStream(uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            
+            val parcelFileDescriptor = android.os.ParcelFileDescriptor.open(tempFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+            val pdfRenderer = android.graphics.pdf.PdfRenderer(parcelFileDescriptor)
+            val pageCount = pdfRenderer.pageCount
+            
+            val importedDir = File(context.filesDir, "pdf_imports")
+            if (!importedDir.exists()) importedDir.mkdirs()
+            
+            for (i in 0 until pageCount) {
+                val page = pdfRenderer.openPage(i)
+                val width = page.width.toFloat()
+                val height = page.height.toFloat()
+                
+                val bitmapWidth = (page.width * 2).coerceAtMost(2048)
+                val bitmapHeight = (page.height * 2).coerceAtMost(2048)
+                
+                val bitmap = android.graphics.Bitmap.createBitmap(bitmapWidth, bitmapHeight, android.graphics.Bitmap.Config.ARGB_8888)
+                page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                
+                val pageFile = File(importedDir, "page_${System.currentTimeMillis()}_$i.png")
+                pageFile.outputStream().use { out ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                }
+                
+                page.close()
+                
+                val layerId = java.util.UUID.randomUUID().toString()
+                val pdfImageLayer = com.example.studio.model.StudioLayer(
+                    id = layerId,
+                    name = "PDF Page ${i + 1}",
+                    type = com.example.studio.model.LayerType.IMAGE_CARD,
+                    positionX = 0f,
+                    positionY = 0f,
+                    width = page.width.toFloat(),
+                    height = page.height.toFloat(),
+                    imageUri = pageFile.absolutePath
+                )
+                
+                val artboardId = java.util.UUID.randomUUID().toString()
+                result.add(
+                    ArtboardData(
+                        id = artboardId,
+                        name = "PDF Page ${i + 1}",
+                        width = page.width.toFloat(),
+                        height = page.height.toFloat(),
+                        layers = listOf(pdfImageLayer)
+                    )
+                )
+            }
+            pdfRenderer.close()
+            parcelFileDescriptor.close()
+            tempFile.delete()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                android.widget.Toast.makeText(context, "Failed to parse PDF: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            onComplete(result)
+        }
+    }
+}
+
+fun isDownloadableAsset(url: String): Boolean {
+    val lower = url.lowercase()
+    return lower.endsWith(".ttf") || lower.endsWith(".otf") || 
+           lower.endsWith(".png") || lower.endsWith(".jpg") || 
+           lower.endsWith(".jpeg") || lower.endsWith(".webp") || 
+           lower.endsWith(".zip")
+}
+
+fun triggerAssetDownload(
+    context: android.content.Context,
+    urlStr: String,
+    targetType: String,
+    workspaceViewModel: com.example.studio.viewmodel.WorkspaceViewModel,
+    scope: kotlinx.coroutines.CoroutineScope,
+    onAssetSaved: (String) -> Unit
+) {
+    android.widget.Toast.makeText(context, "Direct download started...", android.widget.Toast.LENGTH_SHORT).show()
+    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        try {
+            val connection = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connect()
+            
+            if (connection.responseCode == 200) {
+                val contentDisposition = connection.getHeaderField("Content-Disposition")
+                var filename = ""
+                if (!contentDisposition.isNullOrEmpty()) {
+                    val index = contentDisposition.indexOf("filename=")
+                    if (index > 0) {
+                        filename = contentDisposition.substring(index + 9).replace("\"", "").trim()
+                    }
+                }
+                if (filename.isEmpty()) {
+                    filename = urlStr.substring(urlStr.lastIndexOf('/') + 1)
+                    if (filename.indexOf('?') > 0) {
+                        filename = filename.substring(0, filename.indexOf('?'))
+                    }
+                }
+                if (filename.isEmpty()) {
+                    filename = "asset_" + System.currentTimeMillis() + if (targetType == "Font") ".ttf" else ".png"
+                }
+                
+                if (filename.endsWith(".zip", ignoreCase = true)) {
+                    val zipInputStream = java.util.zip.ZipInputStream(connection.inputStream)
+                    var entry = zipInputStream.nextEntry
+                    val fontsDir = File(context.filesDir, "fonts")
+                    if (!fontsDir.exists()) fontsDir.mkdirs()
+                    
+                    var count = 0
+                    while (entry != null) {
+                        if (!entry.isDirectory) {
+                            val entryName = entry.name
+                            val ext = entryName.substring(entryName.lastIndexOf('.') + 1).lowercase()
+                            if (ext == "ttf" || ext == "otf") {
+                                val outFontFile = File(fontsDir, File(entryName).name)
+                                outFontFile.outputStream().use { fos ->
+                                    zipInputStream.copyTo(fos)
+                                }
+                                val fontName = outFontFile.nameWithoutExtension.replace("_", " ").replace("-", " ")
+                                workspaceViewModel.addCustomFont(fontName, outFontFile.absolutePath, "Display")
+                                count++
+                            } else if (ext in listOf("png", "jpg", "jpeg", "webp")) {
+                                val imagesDir = File(context.filesDir, "downloaded_images")
+                                if (!imagesDir.exists()) imagesDir.mkdirs()
+                                val outImgFile = File(imagesDir, File(entryName).name)
+                                outImgFile.outputStream().use { fos ->
+                                    zipInputStream.copyTo(fos)
+                                }
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    onAssetSaved(outImgFile.absolutePath)
+                                }
+                                count++
+                            }
+                        }
+                        zipInputStream.closeEntry()
+                        entry = zipInputStream.nextEntry
+                    }
+                    zipInputStream.close()
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        android.widget.Toast.makeText(context, "ZIP Extracted successfully! $count items imported.", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    val extension = if (filename.contains(".")) filename.substring(filename.lastIndexOf('.')) else ""
+                    if (targetType == "Font" || extension.lowercase() in listOf(".ttf", ".otf")) {
+                        val fontsDir = File(context.filesDir, "fonts")
+                        if (!fontsDir.exists()) fontsDir.mkdirs()
+                        val fontFile = File(fontsDir, filename)
+                        connection.inputStream.use { pin ->
+                            fontFile.outputStream().use { pout ->
+                                pin.copyTo(pout)
+                            }
+                        }
+                        val fontName = fontFile.nameWithoutExtension.replace("_", " ").replace("-", " ")
+                        workspaceViewModel.addCustomFont(fontName, fontFile.absolutePath, "Display")
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            android.widget.Toast.makeText(context, "Font '$fontName' added directly/selectable!", android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        val imagesDir = File(context.filesDir, "downloaded_images")
+                        if (!imagesDir.exists()) imagesDir.mkdirs()
+                        val imageFile = File(imagesDir, filename)
+                        connection.inputStream.use { pin ->
+                            imageFile.outputStream().use { pout ->
+                                pin.copyTo(pout)
+                            }
+                        }
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            onAssetSaved(imageFile.absolutePath)
+                        }
+                    }
+                }
+            } else {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.widget.Toast.makeText(context, "Network download returned: ${connection.responseCode}", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                android.widget.Toast.makeText(context, "Error downloading: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+}
+
 data class WorkspaceRulerSettings(
     val rulers: List<StudioRuler> = emptyList(),
     val onRulersChange: (List<StudioRuler>) -> Unit = {},
@@ -987,12 +1240,175 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
         )
     }
 
+    // Multi-artboard engine states
+    var artboards by remember {
+        mutableStateOf(
+            listOf(
+                ArtboardData(
+                    id = "default",
+                    name = "Artboard 1",
+                    width = 1080f,
+                    height = 1350f,
+                    layers = emptyList()
+                )
+            )
+        )
+    }
+    var selectedArtboardId by remember { mutableStateOf("default") }
+
+    // Artboard creation & renaming dialog states
+    var showCreateArtboardDialog by remember { mutableStateOf(false) }
+    var showRenameArtboardDialog by remember { mutableStateOf(false) }
+    var artboardToRenameId by remember { mutableStateOf("") }
+    var renameArtboardNameInput by remember { mutableStateOf("") }
+    var showArtboardListPopup by remember { mutableStateOf(false) }
+
+    var newArtboardNameInput by remember { mutableStateOf("") }
+    var newArtboardWidthInput by remember { mutableStateOf("") }
+    var newArtboardHeightInput by remember { mutableStateOf("") }
+    
+    // Web Micro-browser and Font/Image import popup states
+    var showImportOptionMenu by remember { mutableStateOf(false) }
+    var showImportImageSelectionDialog by remember { mutableStateOf(false) }
+    var showImportFontSelectionDialog by remember { mutableStateOf(false) }
+    var showWebBrowserOverlay by remember { mutableStateOf(false) }
+    var webBrowserTargetType by remember { mutableStateOf("Image") } // "Image" or "Font"
+    var webBrowserUrl by remember { mutableStateOf("https://unsplash.com") }
+
     // Initial State Setup - Empty to allow user manually adding anything they want, Canvas-style!
     var layers by remember {
         mutableStateOf(emptyList<StudioLayer>())
     }
 
+    LaunchedEffect(layers) {
+        artboards = artboards.map {
+            if (it.id == selectedArtboardId) {
+                it.copy(layers = layers)
+            } else {
+                it
+            }
+        }
+    }
+
+    fun com.example.studio.model.StudioLayer.deepCloneForClipboard(): com.example.studio.model.StudioLayer {
+        val clonedEffects = this.effects.map { effect ->
+            when (effect) {
+                is com.example.studio.model.StudioEffect.GaussianBlur -> effect.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    parameters = effect.parameters.mapValues { (_, value) -> value.copy() }
+                )
+                is com.example.studio.model.StudioEffect.InnerGlow -> effect.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    parameters = effect.parameters.mapValues { (_, value) -> value.copy() }
+                )
+                is com.example.studio.model.StudioEffect.ColorBalance -> effect.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    parameters = effect.parameters.mapValues { (_, value) -> value.copy() }
+                )
+                is com.example.studio.model.StudioEffect.Invert -> effect.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    parameters = effect.parameters.mapValues { (_, value) -> value.copy() }
+                )
+                is com.example.studio.model.StudioEffect.Threshold -> effect.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    parameters = effect.parameters.mapValues { (_, value) -> value.copy() }
+                )
+                is com.example.studio.model.StudioEffect.Posterize -> effect.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    parameters = effect.parameters.mapValues { (_, value) -> value.copy() }
+                )
+                is com.example.studio.model.StudioEffect.PhotoshopEffect -> effect.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    parameters = effect.parameters.mapValues { (_, value) -> value.copy() }
+                )
+            }
+        }
+        val clonedPoints = ArrayList(this.brushPoints)
+        return this.copy(
+            id = java.util.UUID.randomUUID().toString(),
+            effects = clonedEffects,
+            brushPoints = clonedPoints
+        )
+    }
+
     var selectedLayerId by remember { mutableStateOf("") }
+    var activeClipboard by remember { mutableStateOf<com.example.studio.model.StudioLayer?>(null) }
+
+    LaunchedEffect(selectedArtboardId) {
+        val activeArtboard = artboards.find { it.id == selectedArtboardId }
+        if (activeArtboard != null) {
+            layers = activeArtboard.layers
+        }
+    }
+
+    val selectArtboard: (String) -> Unit = { targetId ->
+        artboards = artboards.map {
+            if (it.id == selectedArtboardId) {
+                it.copy(layers = layers)
+            } else {
+                it
+            }
+        }
+        selectedArtboardId = targetId
+        val targetArtboard = artboards.find { it.id == targetId }
+        if (targetArtboard != null) {
+            layers = targetArtboard.layers
+        }
+        selectedLayerId = ""
+    }
+
+    val addArtboard: (String, Float, Float) -> Unit = { name, w, h ->
+        val newId = java.util.UUID.randomUUID().toString()
+        val newArtboard = ArtboardData(
+            id = newId,
+            name = name.ifBlank { "Artboard ${artboards.size + 1}" },
+            width = w.coerceIn(100f, 8000f),
+            height = h.coerceIn(100f, 8000f),
+            layers = emptyList()
+        )
+        artboards = artboards.map {
+            if (it.id == selectedArtboardId) {
+                it.copy(layers = layers)
+            } else {
+                it
+            }
+        } + newArtboard
+        
+        selectedArtboardId = newId
+        layers = emptyList()
+        selectedLayerId = ""
+    }
+
+    val duplicateArtboard: (ArtboardData) -> Unit = { source ->
+        val newId = java.util.UUID.randomUUID().toString()
+        val newArtboard = ArtboardData(
+            id = newId,
+            name = "${source.name} Copy",
+            width = source.width,
+            height = source.height,
+            layers = if (source.id == selectedArtboardId) layers else source.layers
+        )
+        artboards = artboards + newArtboard
+        selectedArtboardId = newId
+        layers = newArtboard.layers
+        selectedLayerId = ""
+    }
+
+    val pdfLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        uri?.let {
+            importPdfToArtboards(context, it, scope) { importedArtboards ->
+                if (importedArtboards.isNotEmpty()) {
+                    artboards = artboards + importedArtboards
+                    selectedArtboardId = importedArtboards.first().id
+                    layers = importedArtboards.first().layers
+                    selectedLayerId = ""
+                    android.widget.Toast.makeText(context, "Successfully converted ${importedArtboards.size} PDF pages to active workspaces!", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
     var snapVerticalLine by remember { mutableStateOf<Float?>(null) }
     var snapHorizontalLine by remember { mutableStateOf<Float?>(null) }
     var snapIndicatorMsg by remember { mutableStateOf<String?>(null) }
@@ -1005,6 +1421,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var brushSize by remember { mutableStateOf(16f) }
     var eraserSize by remember { mutableStateOf(24f) }
     var eraserHardness by remember { mutableStateOf(0.5f) }
+    var brushHardness by remember { mutableStateOf(0.5f) }
     var brushOpacity by remember { mutableStateOf(1.0f) }
     var brushColor by remember { mutableStateOf(Color(0xFFFFB300)) }
     var brushSmoothing by remember { mutableStateOf(true) }
@@ -1065,56 +1482,66 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
 
     var favoriteFontsList by remember { mutableStateOf(getFavoriteFonts(context)) }
     val imagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
-    ) { uri: android.net.Uri? ->
-        uri?.let {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    it,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-            }
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<android.net.Uri> ->
+        if (uris.isNotEmpty()) {
             undoStack.add(layers)
             redoStack.clear()
-            var initialW = 400f
-            var initialH = 400f
-            try {
-                val options = android.graphics.BitmapFactory.Options().apply {
-                    inJustDecodeBounds = true
+            val newLayers = mutableListOf<com.example.studio.model.StudioLayer>()
+            var offsetX = 0f
+            var offsetY = 0f
+            for (uri in uris) {
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (e: Exception) {
                 }
-                context.contentResolver.openInputStream(it)?.use { stream ->
-                    android.graphics.BitmapFactory.decodeStream(stream, null, options)
-                }
-                val imageW = options.outWidth
-                val imageH = options.outHeight
-                if (imageW > 0 && imageH > 0) {
-                    val aspectRatio = imageW.toFloat() / imageH.toFloat()
-                    if (aspectRatio > 1.0f) {
-                        initialW = 400f
-                        initialH = 400f / aspectRatio
-                    } else {
-                        initialH = 400f
-                        initialW = 400f * aspectRatio
+                var initialW = 400f
+                var initialH = 400f
+                try {
+                    val options = android.graphics.BitmapFactory.Options().apply {
+                        inJustDecodeBounds = true
                     }
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        android.graphics.BitmapFactory.decodeStream(stream, null, options)
+                    }
+                    val imageW = options.outWidth
+                    val imageH = options.outHeight
+                    if (imageW > 0 && imageH > 0) {
+                        val aspectRatio = imageW.toFloat() / imageH.toFloat()
+                        if (aspectRatio > 1.0f) {
+                            initialW = 400f
+                            initialH = 400f / aspectRatio
+                        } else {
+                            initialH = 400f
+                            initialW = 400f * aspectRatio
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
 
-            val newL = com.example.studio.model.StudioLayer(
-                name = "Imported Image",
-                type = com.example.studio.model.LayerType.IMAGE_CARD,
-                positionX = 150f,
-                positionY = 200f,
-                width = initialW,
-                height = initialH,
-                baseColor = Color.White,
-                imageUri = it.toString(),
-                isAspectLocked = true
-            )
-            layers = listOf(newL) + layers
-            selectedLayerId = newL.id
+                val newL = com.example.studio.model.StudioLayer(
+                    name = "Imported Image ${newLayers.size + 1}",
+                    type = com.example.studio.model.LayerType.IMAGE_CARD,
+                    positionX = 150f + offsetX,
+                    positionY = 200f + offsetY,
+                    width = initialW,
+                    height = initialH,
+                    baseColor = Color.Transparent,
+                    imageUri = uri.toString(),
+                    isAspectLocked = true
+                )
+                newLayers.add(newL)
+                offsetX += 40f
+                offsetY += 40f
+            }
+            layers = newLayers + layers
+            if (newLayers.isNotEmpty()) {
+                selectedLayerId = newLayers.first().id
+            }
             showAddShapeDialog = false
         }
     }
@@ -1287,10 +1714,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     loadingUris.value = loadingUris.value + uriStr
                     val loaded = withContext(Dispatchers.IO) {
                         try {
-                            val imageLoader = coil.ImageLoader(context)
+                            val imageLoader = coil.Coil.imageLoader(context)
                             val request = coil.request.ImageRequest.Builder(context)
                                 .data(uriStr)
-                                .size(1024, 1024)
+                                .size(768, 768)
                                 .scale(coil.size.Scale.FIT)
                                 .allowHardware(false)
                                 .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
@@ -1399,6 +1826,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var showExportSettingsDialog by remember { mutableStateOf(false) }
     var exportMultiplier by remember { mutableFloatStateOf(1.0f) }
     var exportIsCmyk by remember { mutableStateOf(false) }
+    var isBackgroundTransparent by remember { mutableStateOf(false) }
     
     var canvasWidth by remember { mutableStateOf(1080f) }
     var canvasHeight by remember { mutableStateOf(1080f * deviceAspect) }
@@ -1443,6 +1871,16 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
         projectName = "PSD Import ${designWidth.toInt()}x${designHeight.toInt()}"
         layers = scaledLayers
         selectedLayerId = if (scaledLayers.isNotEmpty()) scaledLayers[0].id else ""
+        artboards = listOf(
+            ArtboardData(
+                id = "default",
+                name = "Artboard 1",
+                width = designWidth,
+                height = designHeight,
+                layers = scaledLayers
+            )
+        )
+        selectedArtboardId = "default"
         isProjectInitialized = true
 
         workspaceViewModel.saveProject(nid, projectName, designWidth, designHeight, scaledLayers, dpi = psd.projectDpi)
@@ -1593,8 +2031,25 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val currentCanvasRotationState = rememberUpdatedState(canvasRotation)
     val currentViewportWidthState = rememberUpdatedState(viewportWidth)
     val currentViewportHeightState = rememberUpdatedState(viewportHeight)
-    val currentCanvasWidthState = rememberUpdatedState(canvasWidth)
-    val currentCanvasHeightState = rememberUpdatedState(canvasHeight)
+    val artboardPositions = remember(artboards) {
+        val list = mutableListOf<Offset>()
+        var currentX = 0f
+        artboards.forEach { artboard ->
+            list.add(Offset(currentX, 0f))
+            currentX += artboard.width + 400f
+        }
+        list
+    }
+    val totalWorkspaceWidth = remember(artboards) {
+        val lastPos = artboardPositions.lastOrNull()
+        if (lastPos != null) lastPos.x + artboards.last().width else canvasWidth
+    }
+    val totalWorkspaceHeight = remember(artboards) {
+        artboards.maxOfOrNull { it.height } ?: canvasHeight
+    }
+
+    val currentCanvasWidthState = rememberUpdatedState(totalWorkspaceWidth)
+    val currentCanvasHeightState = rememberUpdatedState(totalWorkspaceHeight)
 
     val currentGridEnabledState = rememberUpdatedState(gridEnabled)
     val currentGridColumnsState = rememberUpdatedState(gridColumns)
@@ -1606,6 +2061,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val currentSnapToRulerState = rememberUpdatedState(snapToRuler)
     val currentRulersState = rememberUpdatedState(rulers)
     val currentSelectedRulerIdState = rememberUpdatedState(selectedRulerId)
+
+    val labelPaint = remember {
+        android.graphics.Paint().apply {
+            isAntiAlias = true
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+        }
+    }
 
     val executeArtworkExport: (Float, Boolean) -> Unit = { mult, cmyk ->
         android.widget.Toast.makeText(context, "Exporting high-resolution artwork to Gallery...", android.widget.Toast.LENGTH_SHORT).show()
@@ -1623,7 +2085,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                         imageBitmapCache = imageBitmapCache,
                         targetWidth = targetW,
                         targetHeight = targetH,
-                        isCmyk = cmyk
+                        isCmyk = cmyk,
+                        isBackgroundTransparent = isBackgroundTransparent
                     )
                 }
                 
@@ -1691,6 +2154,62 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    val executePdfExport: () -> Unit = {
+        android.widget.Toast.makeText(context, "Exporting artwork as PDF...", android.widget.Toast.LENGTH_SHORT).show()
+        scope.launch {
+            try {
+                val targetW = canvasWidth
+                val targetH = canvasHeight
+                
+                val exportedBitmap = withContext(Dispatchers.Default) {
+                    exportCanvasToBitmap(
+                        context = context,
+                        canvasWidth = canvasWidth,
+                        canvasHeight = canvasHeight,
+                        layers = layers,
+                        imageBitmapCache = imageBitmapCache,
+                        targetWidth = targetW,
+                        targetHeight = targetH,
+                        isCmyk = false,
+                        isBackgroundTransparent = isBackgroundTransparent
+                    )
+                }
+                
+                val pdfDocument = android.graphics.pdf.PdfDocument()
+                val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(targetW.toInt(), targetH.toInt(), 1).create()
+                val page = pdfDocument.startPage(pageInfo)
+                val canvas = page.canvas
+                val paint = android.graphics.Paint()
+                canvas.drawBitmap(exportedBitmap, 0f, 0f, paint)
+                pdfDocument.finishPage(page)
+                
+                val filename = (if (projectName.isBlank()) "Masterpiece" else projectName) + "_" + System.currentTimeMillis() + ".pdf"
+                val resolver = context.contentResolver
+                val contentValues = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOCUMENTS + "/PhotoshopExports")
+                    }
+                }
+                
+                val uri = resolver.insert(android.provider.MediaStore.Files.getContentUri("external"), contentValues)
+                if (uri != null) {
+                    resolver.openOutputStream(uri)?.use { os ->
+                        pdfDocument.writeTo(os)
+                    }
+                    pdfDocument.close()
+                    android.widget.Toast.makeText(context, "Successfully exported PDF to Documents/PhotoshopExports!", android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    pdfDocument.close()
+                    android.widget.Toast.makeText(context, "Failed to create PDF file entry.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                android.widget.Toast.makeText(context, "PDF Export error: ${e.localizedMessage ?: e.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     val onExportArtwork: () -> Unit = {
         showExportSettingsDialog = true
     }
@@ -1700,9 +2219,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             canvasWidthInput = canvasWidthInput,
             canvasHeightInput = canvasHeightInput,
             selectedPresetIndex = selectedPresetIndex,
-            onWidthChange = { canvasWidthInput = it },
-            onHeightChange = { canvasHeightInput = it },
-            onPresetSelect = { index ->
+            onWidthChange = { value: String -> canvasWidthInput = value },
+            onHeightChange = { value: String -> canvasHeightInput = value },
+            onPresetSelect = { index: Int ->
                 selectedPresetIndex = index
                 val displayMetrics = context.resources.displayMetrics
                 val screenW = displayMetrics.widthPixels
@@ -1718,7 +2237,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     6 -> { /* Custom size - let user adjust manually */ }
                 }
             },
-            onInitialize = { dpiChosen ->
+            onInitialize = { dpiChosen: Int ->
                 projectDpi = dpiChosen
                 val w = canvasWidthInput.toFloatOrNull() ?: 1080f
                 val h = canvasHeightInput.toFloatOrNull() ?: 1350f
@@ -1730,11 +2249,21 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 projectId = nid
                 projectName = "Design ${finalW.toInt()}x${finalH.toInt()}"
                 layers = emptyList()
+                artboards = listOf(
+                    ArtboardData(
+                        id = "default",
+                        name = "Artboard 1",
+                        width = finalW,
+                        height = finalH,
+                        layers = emptyList()
+                    )
+                )
+                selectedArtboardId = "default"
                 isProjectInitialized = true
                 workspaceViewModel.saveProject(nid, projectName, finalW, finalH, emptyList(), dpi = dpiChosen)
             },
             previousProjects = previousProjects,
-            onLoadProject = { proj ->
+            onLoadProject = { proj: com.example.studio.database.ProjectEntity ->
                 projectId = proj.id
                 projectName = proj.name
                 canvasWidth = proj.width
@@ -1748,13 +2277,23 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     }
                     layers = decoded
                     selectedLayerId = if (decoded.isNotEmpty()) decoded[0].id else ""
+                    artboards = listOf(
+                        ArtboardData(
+                            id = "default",
+                            name = "Artboard 1",
+                            width = proj.width,
+                            height = proj.height,
+                            layers = decoded
+                        )
+                    )
+                    selectedArtboardId = "default"
                     isProjectInitialized = true
                 }
             },
-            onDeleteProject = { id ->
+            onDeleteProject = { id: String ->
                 workspaceViewModel.deleteProject(id)
             },
-            onRenameProject = { proj, newName ->
+            onRenameProject = { proj: com.example.studio.database.ProjectEntity, newName: String ->
                 workspaceViewModel.renameProject(proj, newName)
             },
             onImportPsdRequest = {
@@ -1762,6 +2301,12 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             },
             onImportAlightRequest = {
                 alightXmlPickerLauncher.launch("*/*")
+            },
+            onImportPdfRequest = {
+                pdfLauncher.launch("application/pdf")
+            },
+            onImportWebRequest = {
+                showWebBrowserOverlay = true
             }
         )
 
@@ -1981,6 +2526,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             }
             CompositionLocalProvider(LocalRulerSettings provides rulerSettings) {
                 BottomEffectPanel(
+                workspaceViewModel = workspaceViewModel,
                 selectedLayer = selectedLayer,
                 onOpenColorPickerDialog = { idx ->
                     activeGradientStopIndex = idx
@@ -2053,6 +2599,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 onBrushSmoothingChange = { brushSmoothing = it },
                 brushPresetIndex = brushPresetIndex,
                 onBrushPresetIndexChange = { brushPresetIndex = it },
+                brushHardness = brushHardness,
+                onBrushHardnessChange = { brushHardness = it },
                 eraserSize = eraserSize,
                 onEraserSizeChange = { eraserSize = it },
                 eraserHardness = eraserHardness,
@@ -2329,10 +2877,13 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                         activeTool = activeTool,
                         onSelectTool = {
                             activeTool = it
+                            if (it == "Brush" || it == "Pen" || it == "Eraser") {
+                                isBottomPanelVisible = true
+                            }
                             if (it == "Shapes") {
                                 showAddShapeDialog = true
                             } else if (it == "Import") {
-                                imagePickerLauncher.launch("image/*")
+                                showImportOptionMenu = true
                                 activeTool = "Move"
                             } else if (it == "Text") {
                                 val newL = StudioLayer(
@@ -2353,9 +2904,11 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             } else if (it == "Grid") {
                                 gridEnabled = true
                                 isBottomPanelVisible = true
+                                activeFullScreenSheet = "Grid"
                             } else if (it == "Ruler") {
                                 rulers = rulers.map { r -> if (r.id == selectedRulerId) r.copy(enabled = true) else r }
                                 isBottomPanelVisible = true
+                                activeFullScreenSheet = "Ruler"
                             }
                         }
                     )
@@ -2460,7 +3013,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                              var newPanX = canvasPanX
                                              var newPanY = canvasPanY
                                              if (zoom != 1f) {
-                                                 newScale = (scaleFactor * zoom).coerceIn(0.3f, 5.0f)
+                                                 newScale = (scaleFactor * zoom).coerceIn(0.1f, 100.0f)
                                              }
                                              if (rotation != 0f) {
                                                  newRotation = (canvasRotation + rotation) % 360f
@@ -3518,7 +4071,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                             size = brushSize,
                                                             opacity = brushOpacity,
                                                             smoothing = brushSmoothing,
-                                                            hardness = 0.5f,
+                                                            hardness = brushHardness,
                                                             color = brushColor
                                                         )
                                                     }
@@ -3538,7 +4091,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                 presetIndex = brushPresetIndex,
                                                                 size = brushSize,
                                                                 opacity = brushOpacity,
-                                                                smoothing = brushSmoothing
+                                                                smoothing = brushSmoothing,
+                                                                hardness = brushHardness
                                                              ) + strokePointsList
                                                             val updatedPoints = if (layer.brushPoints.isNotEmpty()) {
                                                                 layer.brushPoints + androidx.compose.ui.geometry.Offset.Unspecified + strokeToCommitWrapped
@@ -3647,14 +4201,45 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 rotate(degrees = currentCanvasRotationState.value, pivot = Offset.Zero)
                                 scale(scaleX = ts, scaleY = ts, pivot = Offset.Zero)
                                 translate(left = -currentCanvasWidthState.value / 2f, top = -currentCanvasHeightState.value / 2f)
-                                clipRect(left = 0f, top = 0f, right = currentCanvasWidthState.value, bottom = currentCanvasHeightState.value)
                             }) {
-                                // 1. Solid backdrop fill for canvas limits
-                                drawRect(
-                                    color = Color.White,
-                                    topLeft = Offset.Zero,
-                                    size = Size(canvasWidth, canvasHeight)
-                                )
+                                // Loop through all artboards side-by-side
+                                artboards.forEachIndexed { artboardIndex, artboard ->
+                                    val artboardOffset = artboardPositions[artboardIndex]
+                                    val isSelected = artboard.id == selectedArtboardId
+                                    val artboardLayers = if (isSelected) layers else artboard.layers
+                                    val canvasWidth = artboard.width
+                                    val canvasHeight = artboard.height
+                                    val layers = artboardLayers
+
+                                    // Draw Artboard Label/Title above the boundaries
+                                    withTransform({
+                                        translate(left = artboardOffset.x, top = artboardOffset.y)
+                                    }) {
+                                        val paintText = labelPaint.apply {
+                                            color = if (isSelected) android.graphics.Color.WHITE else android.graphics.Color.parseColor("#7E7E9A")
+                                            textSize = 14f / ts.coerceAtLeast(0.3f)
+                                            isAntiAlias = true
+                                            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                                        }
+                                        val labelText = "${artboard.name} (${artboard.width.toInt()}x${artboard.height.toInt()} px)"
+                                        drawContext.canvas.nativeCanvas.drawText(
+                                            labelText,
+                                            0f,
+                                            -16f / ts.coerceAtLeast(0.3f),
+                                            paintText
+                                        )
+                                    }
+
+                                    withTransform({
+                                        translate(left = artboardOffset.x, top = artboardOffset.y)
+                                        clipRect(left = 0f, top = 0f, right = artboard.width, bottom = artboard.height)
+                                    }) {
+                                        // 1. Solid backdrop fill for canvas limits
+                                        drawRect(
+                                            color = Color.White,
+                                            topLeft = Offset.Zero,
+                                            size = Size(canvasWidth, canvasHeight)
+                                        )
 
                                 // 2. Gorgeous, zero-lag, ultra-modern blueprint grid compiled into a single GPU call
                                 val gridCacheKey = -9999 xor (canvasWidth.toInt() shl 16) xor canvasHeight.toInt()
@@ -4281,10 +4866,16 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 val uriStr = layer.imageUri
                                                 val loadedBitmap = if (!uriStr.isNullOrEmpty()) imageBitmapCache[uriStr] else null
                                                 if (loadedBitmap != null) {
+                                                    val tintFilter = if (layer.baseColor != Color.Transparent && layer.baseColor != Color(0x00000000)) {
+                                                        androidx.compose.ui.graphics.ColorFilter.tint(layer.baseColor, androidx.compose.ui.graphics.BlendMode.SrcIn)
+                                                    } else {
+                                                        null
+                                                    }
                                                     drawImage(
                                                         image = loadedBitmap,
                                                         dstSize = androidx.compose.ui.unit.IntSize(layer.width.toInt(), layer.height.toInt()),
                                                         alpha = layerOpacity,
+                                                        colorFilter = tintFilter,
                                                         blendMode = composeBlendMode
                                                     )
                                                 } else {
@@ -4729,8 +5320,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                          val textY = safeBadgeY + paddingY - textPaint.fontMetrics.ascent
                                          drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaint)
                                     }
-                                }
-                            }
+                                    } // End of snapHorizontalLine?.let call
+                                    } // End of inner artboard withTransform
+                                } // End of artboards.forEachIndexed loop
+                            } // End of viewport withTransform
                         } catch (e: Exception) {
                             // Fail-safe compilation error handler
                         }
@@ -4755,7 +5348,6 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 rotate(degrees = currentCanvasRotationState.value, pivot = Offset.Zero)
                                 scale(scaleX = ts, scaleY = ts, pivot = Offset.Zero)
                                 translate(left = -currentCanvasWidthState.value / 2f, top = -currentCanvasHeightState.value / 2f)
-                                clipRect(left = 0f, top = 0f, right = currentCanvasWidthState.value, bottom = currentCanvasHeightState.value)
                             }) {
                                 currentRulersVal.forEach { ruler ->
                                     if (!ruler.enabled) return@forEach
@@ -4822,56 +5414,390 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                         }
                     }
 
+                    // --- HIGH-FIDELITY ARTBOARD MANAGER PANEL ---
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp)
+                    ) {
+                        Column {
+                            // Main Toggle Button bar
+                            Row(
+                                modifier = Modifier
+                                    .background(DarkOnyx.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
+                                    .border(0.5.dp, HighslateOutline, RoundedCornerShape(6.dp))
+                                    .clickable { showArtboardListPopup = !showArtboardListPopup }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Layers,
+                                    contentDescription = "Artboards",
+                                    tint = EnergeticYellow,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                val activeArtName = artboards.find { it.id == selectedArtboardId }?.name ?: "Canvas Workspace"
+                                Text(
+                                    text = activeArtName.uppercase(),
+                                    style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = TextPrimary
+                                )
+                                Icon(
+                                    imageVector = if (showArtboardListPopup) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Expand Artboards List",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+
+                            if (showArtboardListPopup) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Card(
+                                    modifier = Modifier
+                                        .width(320.dp),
+                                    colors = CardDefaults.cardColors(containerColor = SlatePanel),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                                    border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.8f)),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "PROJECT ARTBOARDS",
+                                                style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold, color = TextSecondary)
+                                            )
+                                            IconButton(
+                                                onClick = { showArtboardListPopup = false },
+                                                modifier = Modifier.size(20.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Close",
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Divider(color = HighslateOutline.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+                                        Column(
+                                            modifier = Modifier
+                                                .heightIn(max = 240.dp)
+                                                .verticalScroll(rememberScrollState()),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            artboards.forEach { art ->
+                                                val isSelected = art.id == selectedArtboardId
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .background(
+                                                            if (isSelected) MidSlate.copy(alpha = 0.4f) else Color.Transparent,
+                                                            RoundedCornerShape(6.dp)
+                                                        )
+                                                        .clickable {
+                                                            selectArtboard(art.id)
+                                                        }
+                                                        .padding(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(8.dp)
+                                                                .background(
+                                                                    if (isSelected) EnergeticYellow else Color.Transparent,
+                                                                    CircleShape
+                                                                )
+                                                                .border(1.dp, if (isSelected) EnergeticYellow else TextSecondary, CircleShape)
+                                                        )
+                                                        Column {
+                                                            Text(
+                                                                text = art.name,
+                                                                style = Typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                                                color = if (isSelected) EnergeticYellow else TextPrimary
+                                                            )
+                                                            Text(
+                                                                text = "${art.width.toInt()} x ${art.height.toInt()} px",
+                                                                style = Typography.labelSmall,
+                                                                color = TextSecondary
+                                                            )
+                                                        }
+                                                    }
+
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                                    ) {
+                                                        IconButton(
+                                                            onClick = {
+                                                                duplicateArtboard(art)
+                                                            },
+                                                            modifier = Modifier.size(24.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.ContentCopy,
+                                                                contentDescription = "Duplicate Artboard",
+                                                                tint = TextSecondary,
+                                                                modifier = Modifier.size(12.dp)
+                                                            )
+                                                        }
+                                                        IconButton(
+                                                            onClick = {
+                                                                artboardToRenameId = art.id
+                                                                renameArtboardNameInput = art.name
+                                                                showRenameArtboardDialog = true
+                                                            },
+                                                            modifier = Modifier.size(24.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Edit,
+                                                                contentDescription = "Rename Artboard",
+                                                                tint = TextSecondary,
+                                                                modifier = Modifier.size(12.dp)
+                                                            )
+                                                        }
+                                                        IconButton(
+                                                            onClick = {
+                                                                if (artboards.size > 1) {
+                                                                    val nextSelect = artboards.firstOrNull { it.id != art.id }?.id ?: "default"
+                                                                    selectArtboard(nextSelect)
+                                                                    artboards = artboards.filter { it.id != art.id }
+                                                                } else {
+                                                                    android.widget.Toast.makeText(context, "At least one active canvas is required!", android.widget.Toast.LENGTH_SHORT).show()
+                                                                }
+                                                            },
+                                                            modifier = Modifier.size(24.dp),
+                                                            enabled = artboards.size > 1
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Delete,
+                                                                contentDescription = "Delete Artboard",
+                                                                tint = if (artboards.size > 1) Color(0xFFFF5252) else TextSecondary.copy(alpha = 0.3f),
+                                                                modifier = Modifier.size(12.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Divider(color = HighslateOutline.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+                                        Button(
+                                            onClick = {
+                                                newArtboardNameInput = "Artboard ${artboards.size + 1}"
+                                                val activeArt = artboards.find { it.id == selectedArtboardId }
+                                                newArtboardWidthInput = (activeArt?.width?.toInt() ?: 1080).toString()
+                                                newArtboardHeightInput = (activeArt?.height?.toInt() ?: 1350).toString()
+                                                showCreateArtboardDialog = true
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = Modifier.fillMaxWidth(),
+                                            contentPadding = PaddingValues(vertical = 4.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Add,
+                                                    contentDescription = "Add Artboard",
+                                                    tint = DarkOnyx,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = "CREATE NEW ARTBOARD",
+                                                    color = DarkOnyx,
+                                                    fontWeight = FontWeight.Bold,
+                                                    style = Typography.labelSmall
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showCreateArtboardDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showCreateArtboardDialog = false },
+                            title = {
+                                Text("Create New Side-by-Side Canvas", color = TextPrimary, style = Typography.titleMedium, fontWeight = FontWeight.Bold)
+                            },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    OutlinedTextField(
+                                        value = newArtboardNameInput,
+                                        onValueChange = { newArtboardNameInput = it },
+                                        label = { Text("Canvas Name", color = TextSecondary) },
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = EnergeticYellow,
+                                            unfocusedBorderColor = HighslateOutline,
+                                            focusedTextColor = TextPrimary,
+                                            unfocusedTextColor = TextPrimary
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = newArtboardWidthInput,
+                                            onValueChange = { newArtboardWidthInput = it },
+                                            label = { Text("Width (px)", color = TextSecondary) },
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = EnergeticYellow,
+                                                unfocusedBorderColor = HighslateOutline,
+                                                focusedTextColor = TextPrimary,
+                                                unfocusedTextColor = TextPrimary
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        OutlinedTextField(
+                                            value = newArtboardHeightInput,
+                                            onValueChange = { newArtboardHeightInput = it },
+                                            label = { Text("Height (px)", color = TextSecondary) },
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = EnergeticYellow,
+                                                unfocusedBorderColor = HighslateOutline,
+                                                focusedTextColor = TextPrimary,
+                                                unfocusedTextColor = TextPrimary
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        val w = newArtboardWidthInput.toFloatOrNull() ?: 1080f
+                                        val h = newArtboardHeightInput.toFloatOrNull() ?: 1350f
+                                        addArtboard(newArtboardNameInput, w, h)
+                                        showCreateArtboardDialog = false
+                                        showArtboardListPopup = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow)
+                                ) {
+                                    Text("Add Canvas", color = DarkOnyx)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showCreateArtboardDialog = false }) {
+                                    Text("Cancel", color = TextSecondary)
+                                }
+                            },
+                            containerColor = SlatePanel
+                        )
+                    }
+
+                    if (showRenameArtboardDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showRenameArtboardDialog = false },
+                            title = {
+                                Text("Rename Canvas Artboard", color = TextPrimary, style = Typography.titleMedium, fontWeight = FontWeight.Bold)
+                            },
+                            text = {
+                                OutlinedTextField(
+                                    value = renameArtboardNameInput,
+                                    onValueChange = { renameArtboardNameInput = it },
+                                    label = { Text("New Name", color = TextSecondary) },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = EnergeticYellow,
+                                        unfocusedBorderColor = HighslateOutline,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        if (renameArtboardNameInput.isNotBlank()) {
+                                            artboards = artboards.map {
+                                                if (it.id == artboardToRenameId) {
+                                                    it.copy(name = renameArtboardNameInput)
+                                                } else {
+                                                    it
+                                                }
+                                            }
+                                        }
+                                        showRenameArtboardDialog = false
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow)
+                                ) {
+                                    Text("Rename", color = DarkOnyx)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showRenameArtboardDialog = false }) {
+                                    Text("Cancel", color = TextSecondary)
+                                }
+                            },
+                            containerColor = SlatePanel
+                        )
+                    }
+
                     // On-screen Canvas controls info sticker & Export group layout
                     Column(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(8.dp),
+                            .padding(top = 8.dp, end = 8.dp),
                         horizontalAlignment = Alignment.End,
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
+                        Box(
                             modifier = Modifier
-                                .background(DarkOnyx.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
-                                .border(0.5.dp, HighslateOutline, RoundedCornerShape(6.dp))
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                .size(36.dp)
+                                .background(DarkOnyx.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
+                                .border(1.dp, HighslateOutline, RoundedCornerShape(8.dp))
+                                .clickable {
+                                    val artboardIndex = artboards.indexOfFirst { it.id == selectedArtboardId }
+                                    if (artboardIndex != -1) {
+                                        val artboard = artboards[artboardIndex]
+                                        val artboardOffset = artboardPositions.getOrNull(artboardIndex) ?: androidx.compose.ui.geometry.Offset.Zero
+                                        
+                                        val centerX = artboardOffset.x + artboard.width / 2f
+                                        val centerY = artboardOffset.y + artboard.height / 2f
+                                        
+                                        scaleFactor = 1.0f
+                                        canvasRotation = 0f
+                                        canvasPanX = totalWorkspaceWidth / 2f - centerX
+                                        canvasPanY = totalWorkspaceHeight / 2f - centerY
+                                    } else {
+                                        scaleFactor = 1.0f
+                                        canvasPanX = 0f
+                                        canvasPanY = 0f
+                                        canvasRotation = 0f
+                                    }
+                                }
+                                .testTag("recenter_viewport_button"),
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AspectRatio,
-                                contentDescription = "Canvas Info",
-                                tint = IndustrialAmber,
-                                modifier = Modifier.size(14.dp)
+                                imageVector = androidx.compose.material.icons.Icons.Default.FilterCenterFocus,
+                                contentDescription = "Recenter Viewport On Active Artboard",
+                                tint = androidx.compose.ui.graphics.Color(0xFF00E5FF),
+                                modifier = Modifier.size(18.dp)
                             )
-                            Text(
-                                text = "Canvas: ${canvasWidth.toInt()}x${canvasHeight.toInt()} px | Zoom: ${(scaleFactor * 100).toInt()}%" + 
-                                    if (canvasRotation != 0f) " | Rot: ${canvasRotation.toInt()}°" else "",
-                                style = Typography.labelSmall,
-                                color = TextSecondary
-                            )
-                            if (canvasRotation != 0f || canvasPanX != 0f || canvasPanY != 0f || scaleFactor != 1.0f) {
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .background(IndustrialAmber, RoundedCornerShape(4.dp))
-                                        .clickable {
-                                            scaleFactor = 1.0f
-                                            canvasPanX = 0f
-                                            canvasPanY = 0f
-                                            canvasRotation = 0f
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Refresh,
-                                        contentDescription = "Reset Viewport",
-                                        tint = DarkOnyx,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                }
-                            }
                         }
                     }
 
@@ -4895,7 +5821,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     IconButton(
-                                        onClick = { scaleFactor += 0.1f },
+                                        onClick = { scaleFactor = (scaleFactor + 0.1f).coerceAtMost(100.0f) },
                                         modifier = Modifier
                                             .size(36.dp)
                                             .background(MidSlate, RoundedCornerShape(4.dp)),
@@ -4903,7 +5829,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                         Icon(Icons.Default.Add, "Zoom In", tint = TextPrimary, modifier = Modifier.size(16.dp))
                                     }
                                     IconButton(
-                                        onClick = { if (scaleFactor > 0.3f) scaleFactor -= 0.1f },
+                                        onClick = { scaleFactor = (scaleFactor - 0.1f).coerceAtLeast(0.1f) },
                                         modifier = Modifier
                                             .size(36.dp)
                                             .background(MidSlate, RoundedCornerShape(4.dp)),
@@ -5189,6 +6115,31 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     collapsedGroupIds + id
                                 }
                             },
+                            activeClipboard = activeClipboard,
+                            onCopyLayer = { layerToCopy ->
+                                activeClipboard = layerToCopy.deepCloneForClipboard()
+                            },
+                            onPasteLayer = {
+                                activeClipboard?.let { copied ->
+                                    undoStack.add(layers)
+                                    redoStack.clear()
+                                    val targetArtboard = artboards.find { it.id == selectedArtboardId }
+                                    val targetW = targetArtboard?.width ?: 1080f
+                                    val targetH = targetArtboard?.height ?: 1350f
+                                    
+                                    val newPosRefX = (targetW - copied.width * copied.scaleX) / 2f
+                                    val newPosRefY = (targetH - copied.height * copied.scaleY) / 2f
+                                    
+                                    val pastedLayer = copied.deepCloneForClipboard().copy(
+                                        id = UUID.randomUUID().toString(),
+                                        name = "${copied.name} (Pasted)",
+                                        positionX = newPosRefX,
+                                        positionY = newPosRefY
+                                    )
+                                    layers = listOf(pastedLayer) + layers
+                                    selectedLayerId = pastedLayer.id
+                                }
+                            },
                             modifier = Modifier
                         )
                     }
@@ -5416,13 +6367,14 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                         (selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect)?.parameters?.get("Opacity")?.value ?: brushOpacity
                                     } else {
                                         brushOpacity
-                                    }
-                                    val updateBrushParamsLocal = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color? ->
+                                     }
+                                     val updateBrushParamsLocal = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color?, newHardness: Float? ->
                                         if (newSize != null) brushSize = newSize
                                         if (newOpacity != null) brushOpacity = newOpacity
                                         if (newSmooth != null) brushSmoothing = newSmooth
                                         if (newPreset != null) brushPresetIndex = newPreset
                                         if (newColor != null) brushColor = newColor
+                                        if (newHardness != null) brushHardness = newHardness
 
                                         if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
                                             val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
@@ -5432,6 +6384,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 if (newOpacity != null) updatedConfig = updatedConfig.updateParameter("Opacity", newOpacity) as com.example.studio.model.StudioEffect.PhotoshopEffect
                                                 if (newSmooth != null) updatedConfig = updatedConfig.updateParameter("Smoothing", if (newSmooth) 1.0f else 0.0f) as com.example.studio.model.StudioEffect.PhotoshopEffect
                                                 if (newPreset != null) updatedConfig = updatedConfig.updateParameter("Preset", newPreset.toFloat()) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                                                if (newHardness != null) updatedConfig = updatedConfig.updateParameter("Hardness", newHardness) as com.example.studio.model.StudioEffect.PhotoshopEffect
 
                                                 val updatedEffects = selectedLayer.effects.map { if (it.id == config.id) updatedConfig else it }
                                                 layers = layers.map {
@@ -5473,6 +6426,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                         onEraserSizeChange = { eraserSize = it },
                                         eraserHardness = eraserHardness,
                                         onEraserHardnessChange = { eraserHardness = it },
+                                        brushHardness = brushHardness,
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 }
@@ -5733,8 +6687,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     Spacer(Modifier.height(4.dp))
                                     Text("Screen & Digital", style = Typography.labelSmall, color = TextSecondary, fontSize = 9.sp)
                                 }
-                                
-                                // CMYK option
+                                                               // CMYK option
                                 Column(
                                     modifier = Modifier
                                         .weight(1f)
@@ -5749,6 +6702,36 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                     Spacer(Modifier.height(4.dp))
                                     Text("Offset Ink Printing", style = Typography.labelSmall, color = TextSecondary, fontSize = 9.sp)
                                 }
+                            }
+                        }
+
+                        // Section 3: Background Transparency Options
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Background Transparency", style = Typography.labelSmall, color = EnergeticYellow)
+                            
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF131317))
+                                    .border(BorderStroke(1.dp, HighslateOutline), RoundedCornerShape(8.dp))
+                                    .clickable { isBackgroundTransparent = !isBackgroundTransparent }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("Transparent Background", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                    Text("Export PNG with alpha transparency", style = Typography.labelSmall, color = TextSecondary)
+                                }
+                                androidx.compose.material3.Switch(
+                                    checked = isBackgroundTransparent,
+                                    onCheckedChange = { isBackgroundTransparent = it },
+                                    colors = androidx.compose.material3.SwitchDefaults.colors(
+                                        checkedThumbColor = Color(0xFF00FF66),
+                                        checkedTrackColor = Color(0xFF1B3B2B)
+                                    )
+                                )
                             }
                         }
                     }
@@ -5781,6 +6764,18 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             modifier = Modifier.fillMaxWidth().testTag("alight_export_button")
                         ) {
                             Text("Export Alight Motion XML Layout", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                showExportSettingsDialog = false
+                                executePdfExport()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5722)),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("pdf_export_button")
+                        ) {
+                            Text("Export Print-Ready PDF Document", style = Typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
@@ -6100,6 +7095,169 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             }
         }
 
+        // --- CENTRAL IMPORT OPTIONS MENU ---
+        if (showImportOptionMenu) {
+            AlertDialog(
+                onDismissRequest = { showImportOptionMenu = false },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.CloudDownload, contentDescription = null, tint = EnergeticYellow)
+                        Text("Dynamic Asset Import Hub", style = Typography.titleMedium, color = TextPrimary)
+                    }
+                },
+                text = {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "Select an import protocol to enrich your canvas workspace:",
+                            style = Typography.bodyMedium,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                        
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1E1E24))
+                                .clickable {
+                                    showImportOptionMenu = false
+                                    imagePickerLauncher.launch("image/*")
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null, tint = Color(0xFF29B6F6), modifier = Modifier.size(24.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Device Image Gallery", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("Import PNG, JPEG, or WEBP layers from device storage.", style = Typography.labelSmall, color = TextSecondary)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1E1E24))
+                                .clickable {
+                                    showImportOptionMenu = false
+                                    showWebBrowserOverlay = true
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.Language, contentDescription = null, tint = EnergeticYellow, modifier = Modifier.size(24.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Import from Web / Stock Assets", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("Search & Download Stock Photos, Google Fonts, or type asset URLs.", style = Typography.labelSmall, color = TextSecondary)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1E1E24))
+                                .clickable {
+                                    showImportOptionMenu = false
+                                    psdPickerLauncher.launch("*/*")
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = Color(0xFF8C9EFF), modifier = Modifier.size(24.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Layered Adobe Photoshop PSD", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("Unpack RLE/RAW layers directly to your editable canvas.", style = Typography.labelSmall, color = TextSecondary)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1E1E24))
+                                .clickable {
+                                    showImportOptionMenu = false
+                                    pdfLauncher.launch("application/pdf")
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = Color(0xFFFF5722), modifier = Modifier.size(24.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("📄 High-Fidelity PDF Artboards", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("Convert PDF pages into active individual project artboards.", style = Typography.labelSmall, color = TextSecondary)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1E1E24))
+                                .clickable {
+                                    showImportOptionMenu = false
+                                    alightXmlPickerLauncher.launch("*/*")
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.Code, contentDescription = null, tint = Color(0xFF00FF66), modifier = Modifier.size(24.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Alight Motion XML Layout", style = Typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("Import and rebuild dynamic vectors and compositions.", style = Typography.labelSmall, color = TextSecondary)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showImportOptionMenu = false }) {
+                        Text("Close", style = Typography.labelSmall, color = EnergeticYellow)
+                    }
+                },
+                containerColor = SlatePanel,
+                shape = RoundedCornerShape(16.dp)
+            )
+        }
+
+        // --- WEB BROWSER SOURCE HUB DOWNLOADER ---
+        WebAssetImporterDialog(
+            showDialog = showWebBrowserOverlay,
+            onDismiss = { showWebBrowserOverlay = false },
+            coroutineScope = scope,
+            workspaceViewModel = workspaceViewModel,
+            layers = layers,
+            onLayersChanged = { layers = it },
+            selectedLayerId = selectedLayerId,
+            onSelectedLayerIdChanged = { selectedLayerId = it },
+            undoStack = undoStack,
+            redoStack = redoStack,
+            onImportPdfAsArtboards = { result ->
+                artboards = artboards + result
+                selectedArtboardId = result.first().id
+                layers = result.first().layers
+                selectedLayerId = ""
+            },
+            onShowAdvancedImport = {
+                showWebBrowserOverlay = false
+                showImportOptionMenu = true
+            },
+            onLaunchLocalPhotoPicker = {
+                imagePickerLauncher.launch("image/*")
+            }
+        )
+
         // Vector Shape addition overlay
         if (showAddShapeDialog) {
             val onSpawnShape = { name: String, type: LayerType, defaultColor: Color, w: Float, h: Float, isBezier: Boolean ->
@@ -6197,352 +7355,43 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             )
         }
 
-        if (showFontScannerDialog) {
-            // Automatically scan / request permission when dialog is active
-            LaunchedEffect(showFontScannerDialog) {
-                requestOrPromptStoragePermission()
-            }
-
-            AlertDialog(
-                onDismissRequest = { showFontScannerDialog = false },
-                title = {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.TextFields,
-                            contentDescription = null,
-                            tint = IndustrialAmber,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Text(
-                            text = "Auto Font Scan & Batch Import",
-                            style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 16.sp),
-                            color = TextPrimary
-                        )
-                    }
-                },
-                text = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 420.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = "Zenith Studio will dynamically scan device storage volumes (Download, Documents, and folders) for custom TrueType (.ttf) and OpenType (.otf) design fonts.",
-                            style = Typography.bodySmall,
-                            color = TextSecondary
-                        )
-
-                        // Folder Selection Checkboxes
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "Choose specific Folders to scan:",
-                                style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = IndustrialAmber
-                            )
-                            
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                listOf("Download", "Fonts", "Documents").forEach { folder ->
-                                    val isSelected = selectedFoldersToScan[folder] ?: false
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .background(MidSlate.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
-                                            .clickable { selectedFoldersToScan[folder] = !isSelected }
-                                            .padding(end = 4.dp)
-                                    ) {
-                                        Checkbox(
-                                            checked = isSelected,
-                                            onCheckedChange = { selectedFoldersToScan[folder] = it },
-                                            colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber),
-                                            modifier = Modifier.scale(0.75f)
-                                        )
-                                        Text(
-                                            text = folder,
-                                            style = Typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = if (isSelected) TextPrimary else TextSecondary,
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                            }
-                            
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                listOf("MediaStore", "Root").forEach { folder ->
-                                    val isSelected = selectedFoldersToScan[folder] ?: false
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .background(MidSlate.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
-                                            .clickable { selectedFoldersToScan[folder] = !isSelected }
-                                            .padding(end = 4.dp)
-                                    ) {
-                                        Checkbox(
-                                            checked = isSelected,
-                                            onCheckedChange = { selectedFoldersToScan[folder] = it },
-                                            colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber),
-                                            modifier = Modifier.scale(0.75f)
-                                        )
-                                        Text(
-                                            text = when (folder) {
-                                                "MediaStore" -> "Media Vault"
-                                                "Root" -> "Full Phone"
-                                                else -> folder
-                                            },
-                                            style = Typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = if (isSelected) TextPrimary else TextSecondary,
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                                Box(modifier = Modifier.weight(1f)) // empty placeholder for alignment
-                            }
-                        }
-
-                        // Progress/Status Container
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(MidSlate.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                                .border(1.dp, HighslateOutline.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                                .padding(12.dp)
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = if (isFontScanning) "Scanning Device Storage..." else if (isBatchImportingFonts) "Batch Importing Typography..." else "Scan Engine Status",
-                                        style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = IndustrialAmber
-                                    )
-                                    if (isFontScanning || isBatchImportingFonts) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(14.dp),
-                                            color = IndustrialAmber,
-                                            strokeWidth = 2.dp
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = fontScanStatusMessage,
-                                    style = Typography.labelSmall,
-                                    color = TextPrimary
-                                )
-                            }
-                        }
-
-                        // Toolbar choices
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Button(
-                                onClick = {
-                                    requestOrPromptStoragePermission()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
-                                shape = RoundedCornerShape(6.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(28.dp),
-                                enabled = !isFontScanning && !isBatchImportingFonts
-                            ) {
-                                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(12.dp), tint = TextPrimary)
-                                Spacer(Modifier.width(4.dp))
-                                Text("Rescan", style = Typography.labelSmall, color = TextPrimary, fontSize = 10.sp)
-                            }
-
-                            Button(
-                                onClick = {
-                                    fontPickerLauncher.launch("*/*")
-                                    showFontScannerDialog = false
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
-                                shape = RoundedCornerShape(6.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(28.dp),
-                                enabled = !isFontScanning && !isBatchImportingFonts
-                            ) {
-                                Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(12.dp), tint = TextPrimary)
-                                Spacer(Modifier.width(4.dp))
-                                Text("Manual Pick", style = Typography.labelSmall, color = TextPrimary, fontSize = 10.sp)
-                            }
-
-                            if (discoveredFonts.isNotEmpty()) {
-                                Spacer(modifier = Modifier.weight(1f))
-                                val allSelected = selectedFontCount == discoveredFonts.size
-                                TextButton(
-                                    onClick = {
-                                        val nextSelected = !allSelected
-                                        if (nextSelected) {
-                                            discoveredFonts.indices.forEach { selectedFontIndexes[it] = true }
-                                            selectedFontCount = discoveredFonts.size
-                                        } else {
-                                            selectedFontIndexes.clear()
-                                            selectedFontCount = 0
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(0.dp),
-                                    modifier = Modifier.height(24.dp)
-                                ) {
-                                    Text(
-                                        text = if (allSelected) "Deselect All" else "Select All",
-                                        style = Typography.labelSmall,
-                                        color = EnergeticYellow,
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        // Scrollable List of Discovered Fonts
-                        if (discoveredFonts.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                                    .border(0.5.dp, HighslateOutline.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-                                    .padding(24.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = if (isFontScanning) "Searching directories recursively..." else "No ttf/otf files detected. Copy some .ttf/.otf fonts to Download folder and hit Rescan!",
-                                    style = Typography.bodySmall,
-                                    color = TextSecondary,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                                    .border(0.5.dp, HighslateOutline.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
-                                    .background(SlatePanel.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                    .padding(4.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                items(discoveredFonts.size) { index ->
-                                    val fontItem = discoveredFonts[index]
-                                    val isChecked = selectedFontIndexes[index] ?: false
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                val nextChecked = !isChecked
-                                                selectedFontIndexes[index] = nextChecked
-                                                if (nextChecked) {
-                                                    if (!isChecked) selectedFontCount++
-                                                } else {
-                                                    if (isChecked) selectedFontCount--
-                                                }
-                                            }
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Checkbox(
-                                            checked = isChecked,
-                                            onCheckedChange = { nextChecked ->
-                                                selectedFontIndexes[index] = nextChecked
-                                                if (nextChecked) {
-                                                    if (!isChecked) selectedFontCount++
-                                                } else {
-                                                    if (isChecked) selectedFontCount--
-                                                }
-                                            },
-                                            colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber)
-                                        )
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = fontItem.name,
-                                                style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                                color = TextPrimary
-                                            )
-                                            Text(
-                                                text = fontItem.file.parent ?: "/storage/emulated/0",
-                                                style = Typography.labelSmall,
-                                                color = TextSecondary,
-                                                maxLines = 1,
-                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                                fontSize = 9.sp
-                                            )
-                                        }
-                                        Text(
-                                            text = "." + fontItem.file.extension.uppercase(),
-                                            style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                            color = IndustrialAmber,
-                                            fontSize = 9.sp
-                                        )
-                                    }
-                                    if (index < discoveredFonts.lastIndex) {
-                                        Divider(color = HighslateOutline.copy(alpha = 0.15f), thickness = 0.5.dp)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    val selectedCount = selectedFontCount
-                    Button(
-                        onClick = {
-                            val selectedToImport = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] == true }
-                            if (selectedToImport.isNotEmpty()) {
-                                isBatchImportingFonts = true
-                                workspaceViewModel.batchImportFonts(
-                                    context = context,
-                                    fontsToImport = selectedToImport,
-                                    onProgress = { current, total ->
-                                        fontScanStatusMessage = "Copying font $current of $total to secure local workspace..."
-                                    },
-                                    onComplete = { count ->
-                                        isBatchImportingFonts = false
-                                        showFontScannerDialog = false
-                                        android.widget.Toast.makeText(context, "Successfully batch imported $count design fonts!", android.widget.Toast.LENGTH_LONG).show()
-                                    }
-                                )
-                            }
+        OnlineFontEngineDialog(
+            showDialog = showFontScannerDialog,
+            onDismiss = { showFontScannerDialog = false },
+            coroutineScope = scope,
+            workspaceViewModel = workspaceViewModel,
+            layers = layers,
+            onLayersChanged = { layers = it },
+            selectedLayerId = selectedLayerId,
+            discoveredFonts = discoveredFonts,
+            isFontScanning = isFontScanning,
+            fontScanStatusMessage = fontScanStatusMessage,
+            isBatchImportingFonts = isBatchImportingFonts,
+            selectedFontIndexes = selectedFontIndexes,
+            selectedFoldersToScan = selectedFoldersToScan,
+            requestOrPromptStoragePermission = { requestOrPromptStoragePermission() },
+            onFontPickerLaunch = {
+                fontPickerLauncher.launch("*/*")
+                showFontScannerDialog = false
+            },
+            onStartBatchImport = { selectedToImport ->
+                if (selectedToImport.isNotEmpty()) {
+                    isBatchImportingFonts = true
+                    workspaceViewModel.batchImportFonts(
+                        context = context,
+                        fontsToImport = selectedToImport,
+                        onProgress = { current, total ->
+                            fontScanStatusMessage = "Copying font $current of $total to secure local workspace..."
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
-                        shape = RoundedCornerShape(8.dp),
-                        enabled = selectedCount > 0 && !isFontScanning && !isBatchImportingFonts
-                    ) {
-                        Text(
-                            text = "Batch Import Selected ($selectedCount)",
-                            color = DarkOnyx,
-                            style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = { showFontScannerDialog = false },
-                        enabled = !isBatchImportingFonts
-                    ) {
-                        Text("Close", color = TextSecondary)
-                    }
-                },
-                containerColor = SlatePanel
-            )
-        }
+                        onComplete = { count ->
+                            isBatchImportingFonts = false
+                            showFontScannerDialog = false
+                            android.widget.Toast.makeText(context, "Successfully batch imported $count design fonts!", android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    )
+                }
+            }
+        )
 
 
     }
@@ -8260,7 +9109,8 @@ fun exportCanvasToBitmap(
     imageBitmapCache: Map<String, androidx.compose.ui.graphics.ImageBitmap>,
     targetWidth: Float = canvasWidth,
     targetHeight: Float = canvasHeight,
-    isCmyk: Boolean = false
+    isCmyk: Boolean = false,
+    isBackgroundTransparent: Boolean = false
 ): android.graphics.Bitmap {
     val safeWidth = targetWidth.toInt().coerceIn(1, 8192)
     val safeHeight = targetHeight.toInt().coerceIn(1, 8192)
@@ -8281,11 +9131,13 @@ fun exportCanvasToBitmap(
     val finalBitmap = bitmap ?: throw OutOfMemoryError("Canvas resolution too high for the device memory.")
     val canvas = android.graphics.Canvas(finalBitmap)
     
-    val paintBg = android.graphics.Paint().apply {
-         color = android.graphics.Color.WHITE
-         style = android.graphics.Paint.Style.FILL
+    if (!isBackgroundTransparent) {
+        val paintBg = android.graphics.Paint().apply {
+             color = android.graphics.Color.WHITE
+             style = android.graphics.Paint.Style.FILL
+        }
+        canvas.drawRect(0f, 0f, safeWidth * scale, safeHeight * scale, paintBg)
     }
-    canvas.drawRect(0f, 0f, safeWidth * scale, safeHeight * scale, paintBg)
     
     val baseScaleX = targetWidth / canvasWidth
     val baseScaleY = targetHeight / canvasHeight
@@ -8598,6 +9450,9 @@ fun exportCanvasToBitmap(
                     val imagePaint = android.graphics.Paint().apply {
                         isAntiAlias = true
                         alpha = (originalLayer.opacity * 255).toInt().coerceIn(0, 255)
+                        if (originalLayer.baseColor != androidx.compose.ui.graphics.Color.Transparent && originalLayer.baseColor != androidx.compose.ui.graphics.Color(0x00000000)) {
+                            colorFilter = android.graphics.PorterDuffColorFilter(originalLayer.baseColor.toArgb(), android.graphics.PorterDuff.Mode.SRC_IN)
+                        }
                     }
                     canvas.drawBitmap(filteredBmp, null, destRect, imagePaint)
                 }
@@ -8912,6 +9767,26 @@ fun TopControlShelf(
                 )
             }
 
+            // Compact, beautifully padded Center Informational Text Box sitting clear of other buttons
+            Box(
+                modifier = Modifier
+                    .widthIn(min = 60.dp, max = 125.dp)
+                    .height(30.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF131317))
+                    .border(1.dp, HighslateOutline, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = activeTool.uppercase(),
+                    style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 9.sp),
+                    color = EnergeticYellow,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
+
             // Parameters Toggle Button with icon only
             IconButton(
                 onClick = onToggleBottomPanel,
@@ -9029,7 +9904,7 @@ fun LeftsideToolDock(
 }
 
 @Composable
-fun RightsideLayerDrawer(
+fun RightsideLayerDrawer_Deprecated(
     layers: List<StudioLayer>,
     selectedLayerId: String,
     onSelectLayer: (String) -> Unit,
@@ -9551,7 +10426,7 @@ private fun drawLayerToNativeCanvas(
                     try {
                         val file = java.io.File(uriStr)
                         if (file.exists()) {
-                            android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                            decodeSampledBitmapFromFile(file.absolutePath, 1024)
                         } else null
                     } catch (t: Throwable) {
                         null
@@ -9628,11 +10503,9 @@ private fun drawLayerToNativeCanvas(
                     e.printStackTrace()
                 }
                 
-                if (layer.type != com.example.studio.model.LayerType.IMAGE_CARD) {
-                    try {
-                        baseBmp.recycle()
-                    } catch (e: Exception) {}
-                }
+                try {
+                    baseBmp.recycle()
+                } catch (e: Exception) {}
                 
                 pixelStretchBitmapsCache[finalStretchKey] = resultBmp
                 if (pixelStretchBitmapsCache.size > 16) {
@@ -9821,10 +10694,18 @@ private fun drawLayerToNativeCanvas(
                 try {
                     val file = java.io.File(uriStr)
                     if (file.exists()) {
-                        val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                        val bitmap = decodeSampledBitmapFromFile(file.absolutePath, 768)
                         if (bitmap != null) {
                             val destRect = android.graphics.Rect(0, 0, layer.width.toInt(), layer.height.toInt())
+                            if (layer.baseColor != androidx.compose.ui.graphics.Color.Transparent && layer.baseColor != androidx.compose.ui.graphics.Color(0x00000000)) {
+                                paint.colorFilter = android.graphics.PorterDuffColorFilter(layer.baseColor.toArgb(), android.graphics.PorterDuff.Mode.SRC_IN)
+                            } else {
+                                paint.colorFilter = null
+                            }
                             canvas.drawBitmap(bitmap, null, destRect, paint)
+                            try {
+                                bitmap.recycle()
+                            } catch (e: Exception) {}
                         }
                     }
                 } catch (t: Throwable) {
@@ -10059,6 +10940,7 @@ fun Modifier.clickableValueEdit(
 // BRAND NEW REFACTORED WORKSPACE BOTTOM EFFECT PANEL BY GOOGLE AI STUDIO BUILD
 @Composable
 fun BottomEffectPanel(
+    workspaceViewModel: WorkspaceViewModel = viewModel(),
     selectedLayer: StudioLayer?,
     onOpenColorPickerDialog: ((Int) -> Unit)? = null,
     selectedEffectIndex: Int,
@@ -10082,6 +10964,8 @@ fun BottomEffectPanel(
     onBrushSmoothingChange: (Boolean) -> Unit,
     brushPresetIndex: Int,
     onBrushPresetIndexChange: (Int) -> Unit,
+    brushHardness: Float = 0.5f,
+    onBrushHardnessChange: (Float) -> Unit = {},
     eraserSize: Float = 24f,
     onEraserSizeChange: (Float) -> Unit = {},
     eraserHardness: Float = 0.5f,
@@ -10117,7 +11001,7 @@ fun BottomEffectPanel(
     var activeTabOfPanel by remember { mutableStateOf(0) } 
     var isDetailViewActive by remember { mutableStateOf(false) }
 
-    val isBrushStudioActive = (activeTool == "Brush" || activeTool == "Eraser") || (selectedLayer?.type == LayerType.FREEHAND_DRAWING)
+    val isBrushStudioActive = (activeTool == "Brush" || activeTool == "Eraser" || activeTool == "Pen") || (selectedLayer?.type == LayerType.FREEHAND_DRAWING)
 
     LaunchedEffect(selectedLayer, activeTool, isBrushStudioActive) {
         if (selectedLayer == null || activeTool == "Grid" || activeTool == "Ruler" || isBrushStudioActive) {
@@ -10157,18 +11041,26 @@ fun BottomEffectPanel(
         brushPresetIndex
     }
 
+    val currentHardness = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
+        val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+        config?.parameters?.get("Hardness")?.value ?: brushHardness
+    } else {
+        brushHardness
+    }
+
     val currentColor = if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
         selectedLayer.baseColor
     } else {
         brushColor
     }
 
-    val updateBrushParams = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color? ->
+    val updateBrushParams = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color?, newHardness: Float? ->
         if (newSize != null) onBrushSizeChange(newSize)
         if (newOpacity != null) onBrushOpacityChange(newOpacity)
         if (newSmooth != null) onBrushSmoothingChange(newSmooth)
         if (newPreset != null) onBrushPresetIndexChange(newPreset)
         if (newColor != null) onBrushColorChange(newColor)
+        if (newHardness != null) onBrushHardnessChange(newHardness)
 
         if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
             val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
@@ -10178,6 +11070,7 @@ fun BottomEffectPanel(
                 if (newOpacity != null) updatedConfig = updatedConfig.updateParameter("Opacity", newOpacity) as com.example.studio.model.StudioEffect.PhotoshopEffect
                 if (newSmooth != null) updatedConfig = updatedConfig.updateParameter("Smoothing", if (newSmooth) 1.0f else 0.0f) as com.example.studio.model.StudioEffect.PhotoshopEffect
                 if (newPreset != null) updatedConfig = updatedConfig.updateParameter("Preset", newPreset.toFloat()) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newHardness != null) updatedConfig = updatedConfig.updateParameter("Hardness", newHardness) as com.example.studio.model.StudioEffect.PhotoshopEffect
 
                 val updatedEffects = selectedLayer.effects.map { if (it.id == config.id) updatedConfig else it }
                 onUpdateLayer(
@@ -10368,6 +11261,7 @@ fun CompactToolButton(
 
 @Composable
 fun OldBottomEffectPanel(
+    workspaceViewModel: WorkspaceViewModel = viewModel(),
     selectedLayer: StudioLayer?,
     onOpenColorPickerDialog: ((Int) -> Unit)? = null,
     selectedEffectIndex: Int,
@@ -10391,6 +11285,8 @@ fun OldBottomEffectPanel(
     onBrushSmoothingChange: (Boolean) -> Unit,
     brushPresetIndex: Int,
     onBrushPresetIndexChange: (Int) -> Unit,
+    brushHardness: Float = 0.5f,
+    onBrushHardnessChange: (Float) -> Unit = {},
     eraserSize: Float = 24f,
     onEraserSizeChange: (Float) -> Unit = {},
     eraserHardness: Float = 0.5f,
@@ -10471,12 +11367,13 @@ fun OldBottomEffectPanel(
         brushColor
     }
 
-    val updateBrushParams = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color? ->
+    val updateBrushParams = { newSize: Float?, newOpacity: Float?, newSmooth: Boolean?, newPreset: Int?, newColor: Color?, newHardness: Float? ->
         if (newSize != null) onBrushSizeChange(newSize)
         if (newOpacity != null) onBrushOpacityChange(newOpacity)
         if (newSmooth != null) onBrushSmoothingChange(newSmooth)
         if (newPreset != null) onBrushPresetIndexChange(newPreset)
         if (newColor != null) onBrushColorChange(newColor)
+        if (newHardness != null) onBrushHardnessChange(newHardness)
 
         if (selectedLayer?.type == LayerType.FREEHAND_DRAWING) {
             val config = selectedLayer.effects.find { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "BrushConfig" } as? com.example.studio.model.StudioEffect.PhotoshopEffect
@@ -10486,6 +11383,7 @@ fun OldBottomEffectPanel(
                 if (newOpacity != null) updatedConfig = updatedConfig.updateParameter("Opacity", newOpacity) as com.example.studio.model.StudioEffect.PhotoshopEffect
                 if (newSmooth != null) updatedConfig = updatedConfig.updateParameter("Smoothing", if (newSmooth) 1.0f else 0.0f) as com.example.studio.model.StudioEffect.PhotoshopEffect
                 if (newPreset != null) updatedConfig = updatedConfig.updateParameter("Preset", newPreset.toFloat()) as com.example.studio.model.StudioEffect.PhotoshopEffect
+                if (newHardness != null) updatedConfig = updatedConfig.updateParameter("Hardness", newHardness) as com.example.studio.model.StudioEffect.PhotoshopEffect
 
                 val updatedEffects = selectedLayer.effects.map { if (it.id == config.id) updatedConfig else it }
                 onUpdateLayer(
@@ -10754,6 +11652,7 @@ fun OldBottomEffectPanel(
                 onEraserSizeChange = onEraserSizeChange,
                 eraserHardness = eraserHardness,
                 onEraserHardnessChange = onEraserHardnessChange,
+                brushHardness = brushHardness,
                 modifier = Modifier.weight(1f).fillMaxHeight()
             )
         } else if (selectedLayer != null) {
@@ -11283,7 +12182,7 @@ fun OldBottomEffectPanel(
                                 }
                                 
                                 // Dynamic query to list directory
-                                val workspaceVm: WorkspaceViewModel = viewModel()
+                                val workspaceVm: WorkspaceViewModel = workspaceViewModel
                                 val customFontEntities by workspaceVm.displayedCustomFonts.collectAsStateWithLifecycle()
                                 val favoriteCustomFontEntities by workspaceVm.favoriteCustomFonts.collectAsStateWithLifecycle()
 
@@ -12324,7 +13223,9 @@ fun CanvasSetupScreen(
     onDeleteProject: (String) -> Unit,
     onRenameProject: (ProjectEntity, String) -> Unit,
     onImportPsdRequest: () -> Unit,
-    onImportAlightRequest: () -> Unit
+    onImportAlightRequest: () -> Unit,
+    onImportPdfRequest: () -> Unit,
+    onImportWebRequest: () -> Unit
 ) {
     var activeMenuTab by remember { mutableStateOf(0) } // 0 for Create Canvas, 1 for Previous Projects
     var activeUnit by remember { mutableStateOf("Pixels") }
@@ -13648,6 +14549,152 @@ fun CanvasSetupScreen(
                                     )
                                     Text(
                                         "BROWSE AND IMPORT ALIGHT XML",
+                                        color = DarkOnyx,
+                                        fontWeight = FontWeight.Bold,
+                                        style = Typography.labelLarge
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Card 3: High-Fidelity PDF Artboard Engine
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                        border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Canvas(modifier = Modifier.size(80.dp)) {
+                                val redColor = Color(0xFFFF5722)
+                                val stroke = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f))
+                                drawRoundRect(
+                                    color = redColor.copy(0.3f),
+                                    topLeft = Offset(8.dp.toPx(), 8.dp.toPx()),
+                                    size = Size(64.dp.toPx(), 64.dp.toPx()),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                                    style = stroke
+                                )
+                                drawRect(
+                                    color = redColor.copy(0.15f),
+                                    topLeft = Offset(20.dp.toPx(), 20.dp.toPx()),
+                                    size = Size(40.dp.toPx(), 40.dp.toPx())
+                                )
+                            }
+
+                            Text(
+                                text = "HIGH-FIDELITY PDF ARTBOARD ENGINE",
+                                style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+
+                            Text(
+                                text = "Import multi-page PDF files and instantly convert each individual page into active and high-resolution artboards inside your layered creative canvas workspace.",
+                                style = Typography.bodyMedium,
+                                color = TextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Button(
+                                onClick = { onImportPdfRequest() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5722)),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("pdf_launcher_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FileOpen,
+                                        contentDescription = "Select PDF Document",
+                                        tint = Color.White
+                                    )
+                                    Text(
+                                        "BROWSE AND IMPORT PDF PAGES",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        style = Typography.labelLarge
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Card 4: Global Web Asset Import Hub
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SlatePanel.copy(alpha = 0.85f)),
+                        border = BorderStroke(1.dp, HighslateOutline.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Canvas(modifier = Modifier.size(80.dp)) {
+                                val gold = EnergeticYellow
+                                val stroke = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 8f), 0f))
+                                drawRoundRect(
+                                    color = gold.copy(0.3f),
+                                    topLeft = Offset(8.dp.toPx(), 8.dp.toPx()),
+                                    size = Size(64.dp.toPx(), 64.dp.toPx()),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                                    style = stroke
+                                )
+                                drawCircle(
+                                    color = gold.copy(0.15f),
+                                    radius = 20.dp.toPx(),
+                                    center = Offset(40.dp.toPx(), 40.dp.toPx())
+                                )
+                            }
+
+                            Text(
+                                text = "GLOBAL WEB ASSET IMPORT HUB",
+                                style = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+
+                            Text(
+                                text = "No local asset files? Search, download, and dynamic register stock photography images and classic Google Fonts with a few taps using our live browser search engine.",
+                                style = Typography.bodyMedium,
+                                color = TextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Button(
+                                onClick = { onImportWebRequest() },
+                                colors = ButtonDefaults.buttonColors(containerColor = EnergeticYellow),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("web_import_launcher_button")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Language,
+                                        contentDescription = "Open Web Importer",
+                                        tint = DarkOnyx
+                                    )
+                                    Text(
+                                        "LAUNCH GLOBAL WEB IMPORT HUB",
                                         color = DarkOnyx,
                                         fontWeight = FontWeight.Bold,
                                         style = Typography.labelLarge
@@ -17787,8 +18834,22 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
 }
 
 private object CanvasMatrixHolder {
-    val transformMatrix = android.graphics.Matrix()
-    val matrixValues = FloatArray(9)
+    private val matrixLocal = object : ThreadLocal<android.graphics.Matrix>() {
+        override fun initialValue() = android.graphics.Matrix()
+    }
+    private val valuesLocal = object : ThreadLocal<FloatArray>() {
+        override fun initialValue() = FloatArray(9)
+    }
+
+    val transformMatrix: android.graphics.Matrix
+        get() {
+            val m = matrixLocal.get() ?: android.graphics.Matrix()
+            m.reset()
+            return m
+        }
+
+    val matrixValues: FloatArray
+        get() = valuesLocal.get() ?: FloatArray(9)
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnectedLayer(
@@ -19594,6 +20655,25 @@ fun BrushesLibraryOverlay(
     }
 }
 
+
+enum class PropertySheetContext {
+    DIMENSIONAL,
+    SHAPE_TYPOGRAPHY,
+    COLOR_DESIGNER,
+    FILTERS_FX,
+    STROKE_SHADOWS,
+    BRUSH_SETTINGS,
+    GRID,
+    RULER
+}
+
+enum class BrushPresetType(val displayName: String, val index: Int) {
+    INK_PEN("Ink Pen", 0),
+    CALLIGRAPHY("Calligraphy", 1),
+    AIRBRUSH("Airbrush", 3),
+    TEXTURED("Textured", 13)
+}
+
 data class ParsedFreehandStroke(
     val isEraser: Boolean,
     val presetIndex: Int,
@@ -20404,7 +21484,7 @@ private fun BrushStudioControlPane(
     currentOpacity: Float,
     currentColor: Color,
     currentSmoothing: Boolean,
-    updateBrushParams: (Float?, Float?, Boolean?, Int?, Color?) -> Unit,
+    updateBrushParams: (Float?, Float?, Boolean?, Int?, Color?, Float?) -> Unit,
     onOpenBrushesLibrary: () -> Unit,
     gridEnabled: Boolean,
     onGridEnabledChange: (Boolean) -> Unit,
@@ -20419,6 +21499,7 @@ private fun BrushStudioControlPane(
     onEraserSizeChange: (Float) -> Unit = {},
     eraserHardness: Float = 0.5f,
     onEraserHardnessChange: (Float) -> Unit = {},
+    brushHardness: Float = 0.5f,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -20508,15 +21589,7 @@ private fun BrushStudioControlPane(
                 }
             }
 
-            val presets = listOf(
-                Triple(0, "Solid Ink", "✎"),
-                Triple(1, "Calligraphy", ""),
-                Triple(2, "Neon Glow", ""),
-                Triple(3, "Airbrush", ""),
-                Triple(4, "Felt Marker", "▮"),
-                Triple(5, "Dotted Line", "⁏"),
-                Triple(6, "Splatter Spray", "❖")
-            )
+            val presets = BrushPresetType.values()
 
             androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
                 columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
@@ -20526,13 +21599,13 @@ private fun BrushStudioControlPane(
             ) {
                 items(presets.size) { index ->
                     val p = presets[index]
-                    val isSel = currentPreset == p.first
+                    val isSel = currentPreset == p.index
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(30.dp)
                             .background(if (isSel) IndustrialAmber else SlatePanel, RoundedCornerShape(4.dp))
-                            .clickable { updateBrushParams(null, null, null, p.first, null) }
+                            .clickable { updateBrushParams(null, null, null, p.index, null, null) }
                             .padding(horizontal = 4.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -20541,8 +21614,17 @@ private fun BrushStudioControlPane(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(p.third, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 11.sp)
-                            Text(p.second, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f))
+                            Text(
+                                text = when (p) {
+                                    BrushPresetType.INK_PEN -> "✎"
+                                    BrushPresetType.CALLIGRAPHY -> "✒"
+                                    BrushPresetType.AIRBRUSH -> "░"
+                                    BrushPresetType.TEXTURED -> "▒"
+                                },
+                                color = if (isSel) DarkOnyx else TextPrimary,
+                                fontSize = 11.sp
+                            )
+                            Text(p.displayName, color = if (isSel) DarkOnyx else TextPrimary, fontSize = 9.sp, maxLines = 1, modifier = Modifier.weight(1f))
                         }
                     }
                 }
@@ -20613,12 +21695,12 @@ private fun BrushStudioControlPane(
                 } else {
                     Slider(
                         value = currentSize,
-                        onValueChange = { updateBrushParams(it, null, null, null, null) },
+                        onValueChange = { updateBrushParams(it, null, null, null, null, null) },
                         valueRange = 1f..1000f,
                         colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                         modifier = Modifier.weight(1f).height(28.dp)
                     )
-                    Text("${currentSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Size", currentSize, 1f..1000f, isInt = true) { updateBrushParams(it, null, null, null, null) }, textAlign = TextAlign.End)
+                    Text("${currentSize.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Size", currentSize, 1f..1000f, isInt = true) { updateBrushParams(it, null, null, null, null, null) }, textAlign = TextAlign.End)
                 }
             }
 
@@ -20638,12 +21720,27 @@ private fun BrushStudioControlPane(
                     Text("Flow", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
                     Slider(
                         value = currentOpacity,
-                        onValueChange = { updateBrushParams(null, it, null, null, null) },
+                        onValueChange = { updateBrushParams(null, it, null, null, null, null) },
                         valueRange = 0.05f..1.0f,
                         colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                         modifier = Modifier.weight(1f).height(28.dp)
                     )
-                    Text("${(currentOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Flow", currentOpacity, 0.05f..1.0f, isPercent = true) { updateBrushParams(null, it, null, null, null) }, textAlign = TextAlign.End)
+                    Text("${(currentOpacity * 100).toInt()}%", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Flow", currentOpacity, 0.05f..1.0f, isPercent = true) { updateBrushParams(null, it, null, null, null, null) }, textAlign = TextAlign.End)
+                }
+            }
+
+            // New Brush Hardness Slider (non-Eraser)
+            if (activeTool != "Eraser") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Hardness", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
+                    Slider(
+                        value = brushHardness,
+                        onValueChange = { updateBrushParams(null, null, null, null, null, it) },
+                        valueRange = 0.05f..1.0f,
+                        colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
+                        modifier = Modifier.weight(1f).height(28.dp)
+                    )
+                    Text("${(brushHardness * 100).toInt()}%", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickableValueEdit("Brush Hardness", brushHardness, 0.05f..1.0f, isPercent = true) { updateBrushParams(null, null, null, null, null, it) }, textAlign = TextAlign.End)
                 }
             }
 
@@ -20655,7 +21752,7 @@ private fun BrushStudioControlPane(
             ) {
                 Text("Bezier Curves", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary)
                 Button(
-                    onClick = { updateBrushParams(null, null, !currentSmoothing, null, null) },
+                    onClick = { updateBrushParams(null, null, !currentSmoothing, null, null, null) },
                     colors = ButtonDefaults.buttonColors(containerColor = if (currentSmoothing) IndustrialAmber else MidSlate),
                     contentPadding = PaddingValues(horizontal = 8.dp),
                     shape = RoundedCornerShape(4.dp),
@@ -20735,7 +21832,7 @@ private fun BrushStudioControlPane(
             currentColor = currentColor,
             currentOpacity = currentOpacity,
             onColorChanged = { newColor ->
-                updateBrushParams(null, null, null, null, newColor)
+                updateBrushParams(null, null, null, null, newColor, null)
             },
             modifier = Modifier.width(360.dp)
         )

@@ -53,15 +53,15 @@ fun TransformDetailView(
                 Text("Pos-X", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
                 val valX = selectedLayer.positionX
                 Slider(
-                    value = valX,
+                    value = valX.coerceIn(-1000000f, 1000000f),
                     onValueChange = { onUpdateLayer(selectedLayer.copy(positionX = it)) },
-                    valueRange = -500f..1500f,
+                    valueRange = -1000000f..1000000f,
                     colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                     modifier = Modifier.weight(1f).height(28.dp).testTag("transform_pos_x_slider")
                 )
                 val trigger = LocalSliderValueEditTrigger.current
                 Text("${valX.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Position X", valX, -500f..1500f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionX = it)) })
+                    trigger?.invoke(SliderValueEditConfig("Position X", valX, -1000000f..1000000f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionX = it)) })
                 }, textAlign = TextAlign.End)
             }
 
@@ -70,15 +70,15 @@ fun TransformDetailView(
                 Text("Pos-Y", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
                 val valY = selectedLayer.positionY
                 Slider(
-                    value = valY,
+                    value = valY.coerceIn(-1000000f, 1000000f),
                     onValueChange = { onUpdateLayer(selectedLayer.copy(positionY = it)) },
-                    valueRange = -500f..1500f,
+                    valueRange = -1000000f..1000000f,
                     colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                     modifier = Modifier.weight(1f).height(28.dp).testTag("transform_pos_y_slider")
                 )
                 val trigger = LocalSliderValueEditTrigger.current
                 Text("${valY.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Position Y", valY, -500f..1500f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionY = it)) })
+                    trigger?.invoke(SliderValueEditConfig("Position Y", valY, -1000000f..1000000f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionY = it)) })
                 }, textAlign = TextAlign.End)
             }
 
@@ -104,15 +104,15 @@ fun TransformDetailView(
                 Text("Width", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
                 val valW = selectedLayer.width
                 Slider(
-                    value = valW,
+                    value = valW.coerceIn(1f, 100000f),
                     onValueChange = { onUpdateLayer(selectedLayer.copy(width = it)) },
-                    valueRange = 10f..1500f,
+                    valueRange = 1f..100000f,
                     colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                     modifier = Modifier.weight(1f).height(28.dp).testTag("transform_width_slider")
                 )
                 val trigger = LocalSliderValueEditTrigger.current
                 Text("${valW.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Width", valW, 10f..1500f, isInt = true) { onUpdateLayer(selectedLayer.copy(width = it)) })
+                    trigger?.invoke(SliderValueEditConfig("Width", valW, 1f..100000f, isInt = true) { onUpdateLayer(selectedLayer.copy(width = it)) })
                 }, textAlign = TextAlign.End)
             }
 
@@ -121,15 +121,15 @@ fun TransformDetailView(
                 Text("Height", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
                 val valH = selectedLayer.height
                 Slider(
-                    value = valH,
+                    value = valH.coerceIn(1f, 100000f),
                     onValueChange = { onUpdateLayer(selectedLayer.copy(height = it)) },
-                    valueRange = 10f..1500f,
+                    valueRange = 1f..100000f,
                     colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                     modifier = Modifier.weight(1f).height(28.dp).testTag("transform_height_slider")
                 )
                 val trigger = LocalSliderValueEditTrigger.current
                 Text("${valH.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Height", valH, 10f..1500f, isInt = true) { onUpdateLayer(selectedLayer.copy(height = it)) })
+                    trigger?.invoke(SliderValueEditConfig("Height", valH, 1f..100000f, isInt = true) { onUpdateLayer(selectedLayer.copy(height = it)) })
                 }, textAlign = TextAlign.End)
             }
         }
@@ -677,9 +677,9 @@ fun TypographyOrShapeDetailView(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Width", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
                         Slider(
-                            value = selectedLayer.width,
+                            value = selectedLayer.width.coerceIn(1f, 100000f),
                             onValueChange = {
-                                val newW = it.coerceIn(10f, 1500f)
+                                val newW = it.coerceIn(1f, 100000f)
                                 val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
                                 val newX = oldCenterX - newW / 2f
                                 if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
@@ -690,14 +690,14 @@ fun TypographyOrShapeDetailView(
                                     onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
                                 }
                             },
-                            valueRange = 10f..1200f,
+                            valueRange = 1f..100000f,
                             colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                             modifier = Modifier.weight(1f).height(38.dp).testTag("shape_width_slider")
                         )
                         val trigger = LocalSliderValueEditTrigger.current
                         Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                            trigger?.invoke(SliderValueEditConfig("Shape Width", selectedLayer.width, 10f..1200f, isInt = true) { w ->
-                                val newW = w.coerceIn(10f, 1500f)
+                            trigger?.invoke(SliderValueEditConfig("Shape Width", selectedLayer.width, 1f..100000f, isInt = true) { w ->
+                                val newW = w.coerceIn(1f, 100000f)
                                 val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
                                 val newX = oldCenterX - newW / 2f
                                 if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
@@ -714,9 +714,9 @@ fun TypographyOrShapeDetailView(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Height", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
                         Slider(
-                            value = selectedLayer.height,
+                            value = selectedLayer.height.coerceIn(1f, 100000f),
                             onValueChange = {
-                                val newH = it.coerceIn(10f, 1500f)
+                                val newH = it.coerceIn(1f, 100000f)
                                 val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
                                 val newY = oldCenterY - newH / 2f
                                 if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
@@ -727,14 +727,14 @@ fun TypographyOrShapeDetailView(
                                     onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
                                 }
                             },
-                            valueRange = 10f..1200f,
+                            valueRange = 1f..100000f,
                             colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
                             modifier = Modifier.weight(1f).height(38.dp).testTag("shape_height_slider")
                         )
                         val trigger = LocalSliderValueEditTrigger.current
                         Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                            trigger?.invoke(SliderValueEditConfig("Shape Height", selectedLayer.height, 10f..1200f, isInt = true) { h ->
-                                val newH = h.coerceIn(10f, 1500f)
+                            trigger?.invoke(SliderValueEditConfig("Shape Height", selectedLayer.height, 1f..100000f, isInt = true) { h ->
+                                val newH = h.coerceIn(1f, 100000f)
                                 val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
                                 val newY = oldCenterY - newH / 2f
                                 if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
