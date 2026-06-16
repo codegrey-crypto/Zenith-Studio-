@@ -1,8 +1,12 @@
 package com.example.studio.ui
 
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -10,10 +14,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -23,6 +34,181 @@ import com.example.studio.model.StudioEffect
 import com.example.ui.theme.Typography
 import com.example.ui.theme.*
 import java.io.File
+
+@Composable
+fun PrecisionJogWheel(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedRange<Float>,
+    label: String,
+    isInt: Boolean = false,
+    valueFormatter: ((Float) -> String)? = null,
+    testTag: String = "",
+    modifier: Modifier = Modifier
+) {
+    var isEditing by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val tickSpacingPx = with(density) { 10.dp.toPx() }
+    val visualOffset = remember { mutableStateOf(0f) }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(40.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Parameter Label
+        Text(
+            text = label,
+            style = Typography.labelSmall,
+            fontSize = 10.sp,
+            modifier = Modifier.width(55.dp),
+            color = TextSecondary
+        )
+
+        // Endless Drag Jog-Wheel Visual panel
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .background(Color(0xFF0C0C0F), RoundedCornerShape(6.dp))
+                .border(BorderStroke(0.5.dp, HighslateOutline.copy(alpha = 0.5f)), RoundedCornerShape(6.dp))
+                .pointerInput(value, valueRange) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        visualOffset.value += dragAmount.x
+
+                        // Calculate sensitivity multiplier & velocity-scrubbing modifiers
+                        val speedMultiplier = if (kotlin.math.abs(dragAmount.x) > 10f) {
+                            3.5f * (1.0f + kotlin.math.abs(dragAmount.x) * 0.05f)
+                        } else {
+                            0.2f
+                        }
+
+                        val rangeSpan = valueRange.endInclusive - valueRange.start
+                        val sensitivity = when {
+                            rangeSpan > 1000000 -> 12f
+                            rangeSpan > 10000 -> 3f
+                            rangeSpan > 180 -> 0.15f
+                            rangeSpan > 50 -> 0.05f
+                            rangeSpan > 2 -> 0.003f
+                            else -> 0.00001f
+                        }
+
+                        val delta = dragAmount.x * speedMultiplier * sensitivity
+                        val nVal = (value + delta).coerceIn(valueRange)
+                        onValueChange(nVal)
+                    }
+                }
+                .testTag(testTag)
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val center = size.width / 2f
+                val tickCount = (size.width / tickSpacingPx).toInt() + 4
+                val offsetMod = visualOffset.value % tickSpacingPx
+
+                for (i in -tickCount / 2..tickCount / 2) {
+                    val x = center + offsetMod + i * tickSpacingPx
+                    if (x in 0f..size.width) {
+                        val tickIndex = ((visualOffset.value / tickSpacingPx).toInt() - i)
+                        val isMajor = tickIndex % 5 == 0
+                        val heightScale = if (isMajor) 0.6f else 0.3f
+                        val color = if (isMajor) EnergeticYellow.copy(alpha = 0.7f) else TextSecondary.copy(alpha = 0.3f)
+                        val strokeW = if (isMajor) 1.5f else 1f
+
+                        drawLine(
+                            color = color,
+                            start = Offset(x, size.height * (1f - heightScale) / 2f),
+                            end = Offset(x, size.height * (1f + heightScale) / 2f),
+                            strokeWidth = strokeW
+                        )
+                    }
+                }
+
+                // Reference Cursor Tick pointer (Yellow bright center element)
+                drawLine(
+                    color = EnergeticYellow,
+                    start = Offset(center, 0f),
+                    end = Offset(center, size.height),
+                    strokeWidth = 2.5f
+                )
+            }
+        }
+
+        // Numerical Override Field
+        Box(
+            modifier = Modifier.width(75.dp),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            if (isEditing) {
+                var editBuf by remember {
+                    mutableStateOf(if (isInt) value.toInt().toString() else "%.2f".format(value))
+                }
+                val focusRequester = remember { FocusRequester() }
+
+                BasicTextField(
+                    value = editBuf,
+                    onValueChange = { editBuf = it },
+                    textStyle = Typography.labelSmall.copy(
+                        color = EnergeticYellow,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.End
+                    ),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            editBuf.toFloatOrNull()?.let {
+                                onValueChange(it.coerceIn(valueRange))
+                            }
+                            isEditing = false
+                        }
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF09090C), RoundedCornerShape(4.dp))
+                        .border(BorderStroke(1.dp, EnergeticYellow), RoundedCornerShape(4.dp))
+                        .padding(vertical = 4.dp, horizontal = 6.dp)
+                        .focusRequester(focusRequester)
+                        .testTag(testTag + "_input")
+                )
+
+                LaunchedEffect(Unit) {
+                    focusRequester.requestFocus()
+                }
+            } else {
+                val displayVal = if (valueFormatter != null) {
+                    valueFormatter(value)
+                } else if (isInt) {
+                    "${value.toInt()}"
+                } else {
+                    "%.2f".format(value)
+                }
+                
+                val displaySuffix = if (valueFormatter != null) "" else {
+                    if (label == "Rotation") "°" else if (label.contains("Ratio") || label.contains("Skew") || label.contains("Persp") || label.contains("Pivot") || label.contains("Size") || label.contains("Radius")) "" else " px"
+                }
+
+                Text(
+                    text = displayVal + displaySuffix,
+                    color = TextPrimary,
+                    style = Typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { isEditing = true }
+                        .padding(vertical = 4.dp, horizontal = 4.dp)
+                        .testTag(testTag + "_readout")
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun TransformDetailView(
@@ -48,90 +234,50 @@ fun TransformDetailView(
         ) {
             Text("Geometric Coordinates & Size", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
             
-            // Pos-X
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Pos-X", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                val valX = selectedLayer.positionX
-                Slider(
-                    value = valX.coerceIn(-1000000f, 1000000f),
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(positionX = it)) },
-                    valueRange = -1000000f..1000000f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_pos_x_slider")
-                )
-                val trigger = LocalSliderValueEditTrigger.current
-                Text("${valX.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Position X", valX, -1000000f..1000000f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionX = it)) })
-                }, textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.positionX,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(positionX = it)) },
+                valueRange = -1000000f..1000000f,
+                label = "Pos-X",
+                isInt = true,
+                testTag = "transform_pos_x_slider"
+            )
 
-            // Pos-Y
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Pos-Y", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                val valY = selectedLayer.positionY
-                Slider(
-                    value = valY.coerceIn(-1000000f, 1000000f),
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(positionY = it)) },
-                    valueRange = -1000000f..1000000f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_pos_y_slider")
-                )
-                val trigger = LocalSliderValueEditTrigger.current
-                Text("${valY.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Position Y", valY, -1000000f..1000000f, isInt = true) { onUpdateLayer(selectedLayer.copy(positionY = it)) })
-                }, textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.positionY,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(positionY = it)) },
+                valueRange = -1000000f..1000000f,
+                label = "Pos-Y",
+                isInt = true,
+                testTag = "transform_pos_y_slider"
+            )
 
-            // Rotation
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Rotation", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                val valRot = selectedLayer.rotation
-                Slider(
-                    value = valRot,
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(rotation = it)) },
-                    valueRange = -180f..180f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_rotation_slider")
-                )
-                val trigger = LocalSliderValueEditTrigger.current
-                Text("${valRot.toInt()}°", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Rotation", valRot, -180f..180f, isInt = true) { onUpdateLayer(selectedLayer.copy(rotation = it)) })
-                }, textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.rotation,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(rotation = it)) },
+                valueRange = -180f..180f,
+                label = "Rotation",
+                isInt = true,
+                testTag = "transform_rotation_slider"
+            )
 
-            // Width
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Width", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                val valW = selectedLayer.width
-                Slider(
-                    value = valW.coerceIn(1f, 100000f),
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(width = it)) },
-                    valueRange = 1f..100000f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_width_slider")
-                )
-                val trigger = LocalSliderValueEditTrigger.current
-                Text("${valW.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Width", valW, 1f..100000f, isInt = true) { onUpdateLayer(selectedLayer.copy(width = it)) })
-                }, textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.width,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(width = it)) },
+                valueRange = 1f..100000f,
+                label = "Width",
+                isInt = true,
+                testTag = "transform_width_slider"
+            )
 
-            // Height
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Height", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                val valH = selectedLayer.height
-                Slider(
-                    value = valH.coerceIn(1f, 100000f),
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(height = it)) },
-                    valueRange = 1f..100000f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_height_slider")
-                )
-                val trigger = LocalSliderValueEditTrigger.current
-                Text("${valH.toInt()} px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(60.dp).clickable {
-                    trigger?.invoke(SliderValueEditConfig("Height", valH, 1f..100000f, isInt = true) { onUpdateLayer(selectedLayer.copy(height = it)) })
-                }, textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.height,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(height = it)) },
+                valueRange = 1f..100000f,
+                label = "Height",
+                isInt = true,
+                testTag = "transform_height_slider"
+            )
         }
 
         // Section 2: Pivot
@@ -151,31 +297,23 @@ fun TransformDetailView(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1.3f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    // Pivot X
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Pivot X", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
-                        Slider(
-                            value = selectedLayer.pivotX,
-                            onValueChange = { onUpdateLayer(selectedLayer.copy(pivotX = it)) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.weight(1f).height(26.dp).testTag("transform_pivot_x_slider")
-                        )
-                        Text(String.format("%.2f", selectedLayer.pivotX), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Pivot Y
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Pivot Y", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(44.dp), color = TextSecondary)
-                        Slider(
-                            value = selectedLayer.pivotY,
-                            onValueChange = { onUpdateLayer(selectedLayer.copy(pivotY = it)) },
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.weight(1f).height(26.dp).testTag("transform_pivot_y_slider")
-                        )
-                        Text(String.format("%.2f", selectedLayer.pivotY), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
-                    }
+                    PrecisionJogWheel(
+                        value = selectedLayer.pivotX,
+                        onValueChange = { onUpdateLayer(selectedLayer.copy(pivotX = it)) },
+                        valueRange = 0f..1f,
+                        label = "Pivot X",
+                        isInt = false,
+                        testTag = "transform_pivot_x_slider"
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    PrecisionJogWheel(
+                        value = selectedLayer.pivotY,
+                        onValueChange = { onUpdateLayer(selectedLayer.copy(pivotY = it)) },
+                        valueRange = 0f..1f,
+                        label = "Pivot Y",
+                        isInt = false,
+                        testTag = "transform_pivot_y_slider"
+                    )
                 }
 
                 Spacer(Modifier.width(4.dp))
@@ -235,57 +373,41 @@ fun TransformDetailView(
         ) {
             Text("Perspective & Skew 3D Effects", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
             
-            // Skew X
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Skew-X", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                Slider(
-                    value = selectedLayer.skewX,
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(skewX = it)) },
-                    valueRange = -1.5f..1.5f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_skew_x_slider")
-                )
-                Text(String.format("%.2f", selectedLayer.skewX), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.skewX,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(skewX = it)) },
+                valueRange = -1.5f..1.5f,
+                label = "Skew-X",
+                isInt = false,
+                testTag = "transform_skew_x_slider"
+            )
 
-            // Skew Y
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Skew-Y", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                Slider(
-                    value = selectedLayer.skewY,
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(skewY = it)) },
-                    valueRange = -1.5f..1.5f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_skew_y_slider")
-                )
-                Text(String.format("%.2f", selectedLayer.skewY), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.skewY,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(skewY = it)) },
+                valueRange = -1.5f..1.5f,
+                label = "Skew-Y",
+                isInt = false,
+                testTag = "transform_skew_y_slider"
+            )
 
-            // Persp X
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("PerspX", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                Slider(
-                    value = selectedLayer.perspX,
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(perspX = it)) },
-                    valueRange = -0.005f..0.005f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_persp_x_slider")
-                )
-                Text(String.format("%.4f", selectedLayer.perspX), style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.perspX,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(perspX = it)) },
+                valueRange = -0.005f..0.005f,
+                label = "PerspX",
+                isInt = false,
+                testTag = "transform_persp_x_slider"
+            )
 
-            // Persp Y
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("PerspY", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                Slider(
-                    value = selectedLayer.perspY,
-                    onValueChange = { onUpdateLayer(selectedLayer.copy(perspY = it)) },
-                    valueRange = -0.005f..0.005f,
-                    colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                    modifier = Modifier.weight(1f).height(28.dp).testTag("transform_persp_y_slider")
-                )
-                Text(String.format("%.4f", selectedLayer.perspY), style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary, modifier = Modifier.width(46.dp), textAlign = TextAlign.End)
-            }
+            PrecisionJogWheel(
+                value = selectedLayer.perspY,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(perspY = it)) },
+                valueRange = -0.005f..0.005f,
+                label = "PerspY",
+                isInt = false,
+                testTag = "transform_persp_y_slider"
+            )
 
             Spacer(Modifier.height(4.dp))
 
@@ -335,7 +457,8 @@ fun TypographyOrShapeDetailView(
     onFontSearchQueryChange: (String) -> Unit,
     selectedCategoryFilter: String,
     onSelectedCategoryFilterChange: (String) -> Unit,
-    onImportFontClick: () -> Unit
+    onImportFontClick: () -> Unit,
+    customFonts: List<com.example.studio.database.CustomFontEntity> = emptyList()
 ) {
     val detailScrollState = rememberScrollState()
     val context = LocalContext.current
@@ -381,17 +504,6 @@ fun TypographyOrShapeDetailView(
                 Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
 
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Font Size", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
-                        val trigger = LocalSliderValueEditTrigger.current
-                        Text("${selectedLayer.fontSize.toInt()}sp", style = Typography.labelSmall, fontSize = 9.sp, color = TextPrimary, modifier = Modifier.clickable {
-                            trigger?.invoke(SliderValueEditConfig("Font Size", selectedLayer.fontSize, 8f..150f, isInt = true) { onUpdateLayer(selectedLayer.copy(fontSize = it)) })
-                        })
-                    }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         IconButton(
                             onClick = { onUpdateLayer(selectedLayer.copy(fontSize = maxOf(8f, selectedLayer.fontSize - 2f))) },
@@ -399,13 +511,17 @@ fun TypographyOrShapeDetailView(
                         ) {
                             Icon(Icons.Default.Remove, "Decrease", modifier = Modifier.size(16.dp), tint = TextSecondary)
                         }
-                        Slider(
+
+                        PrecisionJogWheel(
                             value = selectedLayer.fontSize,
                             onValueChange = { onUpdateLayer(selectedLayer.copy(fontSize = it)) },
                             valueRange = 8f..150f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.weight(1f).height(32.dp).testTag("font_size_slider")
+                            label = "Font Size",
+                            isInt = true,
+                            testTag = "font_size_slider",
+                            modifier = Modifier.weight(1f)
                         )
+
                         IconButton(
                             onClick = { onUpdateLayer(selectedLayer.copy(fontSize = minOf(150f, selectedLayer.fontSize + 2f))) },
                             modifier = Modifier.size(24.dp).testTag("font_size_increase")
@@ -523,7 +639,7 @@ fun TypographyOrShapeDetailView(
                     }
                 }
 
-                val importedFontsList = remember(FontFavoritesState.favoriteFontsList) {
+                val importedFontsList = remember(FontFavoritesState.favoriteFontsList, customFonts) {
                     try {
                         val fontsDir = File(context.filesDir, "fonts")
                         if (!fontsDir.exists()) fontsDir.mkdirs()
@@ -674,79 +790,45 @@ fun TypographyOrShapeDetailView(
 
                     Text("Dimensions & Scale", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
                     
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Width", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                        Slider(
-                            value = selectedLayer.width.coerceIn(1f, 100000f),
-                            onValueChange = {
-                                val newW = it.coerceIn(1f, 100000f)
-                                val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
-                                val newX = oldCenterX - newW / 2f
-                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
-                                    val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
-                                    val newY = oldCenterY - newW / 2f
-                                    onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = newY))
-                                } else {
-                                    onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
-                                }
-                            },
-                            valueRange = 1f..100000f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.weight(1f).height(38.dp).testTag("shape_width_slider")
-                        )
-                        val trigger = LocalSliderValueEditTrigger.current
-                        Text("${selectedLayer.width.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                            trigger?.invoke(SliderValueEditConfig("Shape Width", selectedLayer.width, 1f..100000f, isInt = true) { w ->
-                                val newW = w.coerceIn(1f, 100000f)
-                                val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
-                                val newX = oldCenterX - newW / 2f
-                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
-                                    val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
-                                    val newY = oldCenterY - newW / 2f
-                                    onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = newY))
-                                } else {
-                                    onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
-                                }
-                            })
-                        }, textAlign = TextAlign.End)
-                    }
+                    PrecisionJogWheel(
+                        value = selectedLayer.width,
+                        onValueChange = {
+                            val newW = it.coerceIn(1f, 100000f)
+                            val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                            val newX = oldCenterX - newW / 2f
+                            if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                val newY = oldCenterY - newW / 2f
+                                onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = newY))
+                            } else {
+                                onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                            }
+                        },
+                        valueRange = 1f..100000f,
+                        label = "Width",
+                        isInt = true,
+                        testTag = "shape_width_slider"
+                    )
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Height", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                        Slider(
-                            value = selectedLayer.height.coerceIn(1f, 100000f),
-                            onValueChange = {
-                                val newH = it.coerceIn(1f, 100000f)
-                                val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
-                                val newY = oldCenterY - newH / 2f
-                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
-                                    val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
-                                    val newX = oldCenterX - newH / 2f
-                                    onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = newX, positionY = newY))
-                                } else {
-                                    onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
-                                }
-                            },
-                            valueRange = 1f..100000f,
-                            colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                            modifier = Modifier.weight(1f).height(38.dp).testTag("shape_height_slider")
-                        )
-                        val trigger = LocalSliderValueEditTrigger.current
-                        Text("${selectedLayer.height.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                            trigger?.invoke(SliderValueEditConfig("Shape Height", selectedLayer.height, 1f..100000f, isInt = true) { h ->
-                                val newH = h.coerceIn(1f, 100000f)
-                                val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
-                                val newY = oldCenterY - newH / 2f
-                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
-                                    val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
-                                    val newX = oldCenterX - newH / 2f
-                                    onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = newX, positionY = newY))
-                                } else {
-                                    onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
-                                }
-                            })
-                        }, textAlign = TextAlign.End)
-                    }
+                    PrecisionJogWheel(
+                        value = selectedLayer.height,
+                        onValueChange = {
+                            val newH = it.coerceIn(1f, 100000f)
+                            val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                            val newY = oldCenterY - newH / 2f
+                            if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                val newX = oldCenterX - newH / 2f
+                                onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = newX, positionY = newY))
+                            } else {
+                                onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                            }
+                        },
+                        valueRange = 1f..100000f,
+                        label = "Height",
+                        isInt = true,
+                        testTag = "shape_height_slider"
+                    )
 
                     Spacer(Modifier.height(4.dp))
                     Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
@@ -757,61 +839,40 @@ fun TypographyOrShapeDetailView(
                     )
                     if (canHaveCornerRadius) {
                         Text("Corners Aesthetics", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Radius", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                            Slider(
-                                value = selectedLayer.cornerRadius,
-                                onValueChange = { onUpdateLayer(selectedLayer.copy(cornerRadius = it)) },
-                                valueRange = 0f..250f,
-                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                                modifier = Modifier.weight(1f).height(38.dp).testTag("shape_radius_slider")
-                            )
-                            val trigger = LocalSliderValueEditTrigger.current
-                            Text("${selectedLayer.cornerRadius.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                                trigger?.invoke(SliderValueEditConfig("Shape Corner Radius", selectedLayer.cornerRadius, 0f..250f, isInt = true) { onUpdateLayer(selectedLayer.copy(cornerRadius = it)) })
-                            }, textAlign = TextAlign.End)
-                        }
+                        PrecisionJogWheel(
+                            value = selectedLayer.cornerRadius,
+                            onValueChange = { onUpdateLayer(selectedLayer.copy(cornerRadius = it)) },
+                            valueRange = 0f..250f,
+                            label = "Radius",
+                            isInt = true,
+                            testTag = "shape_radius_slider"
+                        )
                     }
 
                     val hasEdges = selectedLayer.type in listOf(LayerType.VECTOR_TRIANGLE, LayerType.VECTOR_PENTAGON, LayerType.VECTOR_HEXAGON, LayerType.VECTOR_STAR)
                     if (hasEdges) {
                         Text("Structural Edges & Points", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val labelText = if (selectedLayer.type == LayerType.VECTOR_STAR) "Points" else "Sides"
-                            Text(labelText, style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                            val minEdges = 3
-                            val maxEdges = 20
-                            val activeEdges = if (selectedLayer.type == LayerType.VECTOR_TRIANGLE && selectedLayer.polygonEdges == 5) 3 else selectedLayer.polygonEdges
-                            Slider(
-                                value = activeEdges.toFloat(),
-                                onValueChange = { onUpdateLayer(selectedLayer.copy(polygonEdges = it.toInt())) },
-                                valueRange = minEdges.toFloat()..maxEdges.toFloat(),
-                                steps = maxEdges - minEdges - 1,
-                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                                modifier = Modifier.weight(1f).height(38.dp).testTag("shape_sides_slider")
-                            )
-                            val trigger = LocalSliderValueEditTrigger.current
-                            Text("${activeEdges}", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                                trigger?.invoke(SliderValueEditConfig("Edges / Points", activeEdges.toFloat(), 3f..20f, isInt = true) { onUpdateLayer(selectedLayer.copy(polygonEdges = it.toInt())) })
-                            }, textAlign = TextAlign.End)
-                        }
+                        val labelText = if (selectedLayer.type == LayerType.VECTOR_STAR) "Points" else "Sides"
+                        val activeEdges = if (selectedLayer.type == LayerType.VECTOR_TRIANGLE && selectedLayer.polygonEdges == 5) 3 else selectedLayer.polygonEdges
+                        PrecisionJogWheel(
+                            value = activeEdges.toFloat(),
+                            onValueChange = { onUpdateLayer(selectedLayer.copy(polygonEdges = it.toInt())) },
+                            valueRange = 3f..20f,
+                            label = labelText,
+                            isInt = true,
+                            testTag = "shape_sides_slider"
+                        )
                     }
 
                     if (selectedLayer.type == LayerType.VECTOR_STAR) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Inner Ratio", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                            Slider(
-                                value = selectedLayer.starInnerRadiusRatio,
-                                onValueChange = { onUpdateLayer(selectedLayer.copy(starInnerRadiusRatio = it)) },
-                                valueRange = 0.05f..0.95f,
-                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                                modifier = Modifier.weight(1f).height(38.dp).testTag("shape_star_ratio_slider")
-                            )
-                            val trigger = LocalSliderValueEditTrigger.current
-                            Text(String.format("%.2f", selectedLayer.starInnerRadiusRatio), style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                                trigger?.invoke(SliderValueEditConfig("Star Inner Ratio", selectedLayer.starInnerRadiusRatio, 0.05f..0.95f) { onUpdateLayer(selectedLayer.copy(starInnerRadiusRatio = it)) })
-                            }, textAlign = TextAlign.End)
-                        }
+                        PrecisionJogWheel(
+                            value = selectedLayer.starInnerRadiusRatio,
+                            onValueChange = { onUpdateLayer(selectedLayer.copy(starInnerRadiusRatio = it)) },
+                            valueRange = 0.05f..0.95f,
+                            label = "Inner Ratio",
+                            isInt = false,
+                            testTag = "shape_star_ratio_slider"
+                        )
                     }
 
                     Spacer(Modifier.height(4.dp))
@@ -848,20 +909,14 @@ fun TypographyOrShapeDetailView(
                     }
 
                     if (selectedLayer.strokeThickness > 0f) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Thickness", style = Typography.labelSmall, fontSize = 10.sp, modifier = Modifier.width(55.dp), color = TextSecondary)
-                            Slider(
-                                value = selectedLayer.strokeThickness,
-                                onValueChange = { onUpdateLayer(selectedLayer.copy(strokeThickness = it)) },
-                                valueRange = 1f..60f,
-                                colors = SliderDefaults.colors(activeTrackColor = IndustrialAmber, thumbColor = IndustrialAmber),
-                                modifier = Modifier.weight(1f).height(38.dp).testTag("shape_stroke_slider")
-                            )
-                            val trigger = LocalSliderValueEditTrigger.current
-                            Text("${selectedLayer.strokeThickness.toInt()}px", style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary, modifier = Modifier.width(46.dp).clickable {
-                                trigger?.invoke(SliderValueEditConfig("Stroke Thickness", selectedLayer.strokeThickness, 1f..60f, isInt = true) { onUpdateLayer(selectedLayer.copy(strokeThickness = it)) })
-                            }, textAlign = TextAlign.End)
-                        }
+                        PrecisionJogWheel(
+                            value = selectedLayer.strokeThickness,
+                            onValueChange = { onUpdateLayer(selectedLayer.copy(strokeThickness = it)) },
+                            valueRange = 1f..60f,
+                            label = "Thickness",
+                            isInt = true,
+                            testTag = "shape_stroke_slider"
+                        )
                     }
                 }
             } else {
@@ -1058,62 +1113,39 @@ fun FiltersAndFxDetailView(
                         keys.forEach { pName ->
                             val param = actEff.parameters[pName]
                             if (param != null) {
-                                Column(modifier = Modifier.fillMaxWidth()) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Text(param.name, style = Typography.labelSmall, fontSize = 10.sp, color = TextPrimary)
-                                            if (param.value != 0f) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Refresh,
-                                                    contentDescription = "Reset ${param.name}",
-                                                    tint = IndustrialAmber.copy(alpha = 0.6f),
-                                                    modifier = Modifier
-                                                        .size(12.dp)
-                                                        .clickable { onUpdateEffectParam(actEff.id, pName, 0f) }
-                                                )
-                                            }
-                                        }
-                                        val displayVal = if (actEff is StudioEffect.PhotoshopEffect && actEff.effectType == "ColorGrading" && pName == "Preset") {
-                                            val LUTs = listOf("Cinema Golden", "Teal & Orange", "Mono B&W", "Cold Frost", "Dreamy Pastel", "Vintage Sepia", "Acid Neon")
-                                            LUTs.getOrNull(param.value.toInt()) ?: "Preset ${param.value.toInt()}"
-                                        } else {
-                                            "${"%.2f".format(param.value)} ${param.unit}".trim()
-                                        }
-                                        val trigger = LocalSliderValueEditTrigger.current
-                                        Text(
-                                            text = displayVal,
-                                            style = Typography.labelSmall,
-                                            fontSize = 11.sp,
-                                            color = IndustrialAmber,
-                                            modifier = Modifier.clickable {
-                                                trigger?.invoke(
-                                                    SliderValueEditConfig(
-                                                        title = param.name,
-                                                        currentValue = param.value,
-                                                        valueRange = param.rangeMin..param.rangeMax,
-                                                        isInt = param.unit.contains("px") || param.unit.contains("%") || (actEff is StudioEffect.PhotoshopEffect && actEff.effectType == "ColorGrading" && pName == "Preset"),
-                                                        onConfirm = { onUpdateEffectParam(actEff.id, pName, it) }
-                                                    )
-                                                )
-                                            }
-                                        )
-                                    }
-                                    Slider(
+                                val isPreset = actEff is StudioEffect.PhotoshopEffect && actEff.effectType == "ColorGrading" && pName == "Preset"
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    PrecisionJogWheel(
                                         value = param.value,
                                         onValueChange = { onUpdateEffectParam(actEff.id, pName, it) },
                                         valueRange = param.rangeMin..param.rangeMax,
-                                        colors = SliderDefaults.colors(
-                                            activeTrackColor = IndustrialAmber,
-                                            thumbColor = IndustrialAmber
-                                        ),
-                                        modifier = Modifier.height(28.dp).testTag("effect_param_slider_${param.name}")
+                                        label = param.name,
+                                        isInt = param.unit.contains("px") || param.unit.contains("%") || isPreset,
+                                        valueFormatter = if (isPreset) {
+                                            { v ->
+                                                val LUTs = listOf("Cinema Golden", "Teal & Orange", "Mono B&W", "Cold Frost", "Dreamy Pastel", "Vintage Sepia", "Acid Neon")
+                                                LUTs.getOrNull(v.toInt()) ?: "Preset ${v.toInt()}"
+                                            }
+                                        } else {
+                                            { v -> "${"%.2f".format(v)} ${param.unit}".trim() }
+                                        },
+                                        testTag = "effect_param_slider_${param.name}",
+                                        modifier = Modifier.weight(1f)
                                     )
+                                    if (param.value != 0f) {
+                                        Spacer(Modifier.width(4.dp))
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Reset ${param.name}",
+                                            tint = IndustrialAmber.copy(alpha = 0.6f),
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .clickable { onUpdateEffectParam(actEff.id, pName, 0f) }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1127,5 +1159,3 @@ fun FiltersAndFxDetailView(
         }
     }
 }
-
-

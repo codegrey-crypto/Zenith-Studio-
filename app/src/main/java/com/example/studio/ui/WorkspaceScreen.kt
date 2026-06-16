@@ -24,6 +24,7 @@ import androidx.window.core.layout.WindowHeightSizeClass
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.drawBehind
@@ -80,6 +81,7 @@ import android.os.Environment
 import java.io.File
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.studio.viewmodel.WorkspaceViewModel
+import com.example.studio.viewmodel.CanvasSessionState
 import com.example.studio.database.ProjectEntity
 import com.example.studio.model.LayerSerializer
 import android.util.SparseArray
@@ -926,6 +928,23 @@ data class StudioRuler(
     val locked: Boolean = false
 )
 
+@androidx.compose.runtime.Composable
+fun <T> rememberBoundState(
+    key: Any?,
+    get: () -> T,
+    set: (T) -> Unit
+): androidx.compose.runtime.MutableState<T> {
+    return remember(key) {
+        object : androidx.compose.runtime.MutableState<T> {
+            override var value: T
+                get() = get()
+                set(value) { set(value) }
+            override fun component1(): T = value
+            override fun component2(): (T) -> Unit = { value = it }
+        }
+    }
+}
+
 private fun snapPointToRulers(
     px: Float,
     py: Float,
@@ -972,7 +991,8 @@ data class ArtboardData(
     val name: String,
     val width: Float,
     val height: Float,
-    val layers: List<com.example.studio.model.StudioLayer> = emptyList()
+    val layers: List<com.example.studio.model.StudioLayer> = emptyList(),
+    val renderedPdfBitmap: android.graphics.Bitmap? = null
 )
 
 fun importPdfToArtboards(
@@ -1024,8 +1044,8 @@ fun importPdfToArtboards(
                     type = com.example.studio.model.LayerType.IMAGE_CARD,
                     positionX = 0f,
                     positionY = 0f,
-                    width = page.width.toFloat(),
-                    height = page.height.toFloat(),
+                    width = width,
+                    height = height,
                     imageUri = pageFile.absolutePath
                 )
                 
@@ -1034,9 +1054,10 @@ fun importPdfToArtboards(
                     ArtboardData(
                         id = artboardId,
                         name = "PDF Page ${i + 1}",
-                        width = page.width.toFloat(),
-                        height = page.height.toFloat(),
-                        layers = listOf(pdfImageLayer)
+                        width = width,
+                        height = height,
+                        layers = listOf(pdfImageLayer),
+                        renderedPdfBitmap = bitmap
                     )
                 )
             }
@@ -1200,6 +1221,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     globalAppContext = context.applicationContext
     val workspaceViewModel: WorkspaceViewModel = viewModel()
     val previousProjects by workspaceViewModel.previousProjects.collectAsStateWithLifecycle()
+    val customFonts by workspaceViewModel.customFonts.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     val adaptiveInfo = currentWindowAdaptiveInfo()
@@ -1274,6 +1296,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var showWebBrowserOverlay by remember { mutableStateOf(false) }
     var webBrowserTargetType by remember { mutableStateOf("Image") } // "Image" or "Font"
     var webBrowserUrl by remember { mutableStateOf("https://unsplash.com") }
+    var showVisualsOverlayHub by remember { mutableStateOf(false) }
 
     // Initial State Setup - Empty to allow user manually adding anything they want, Canvas-style!
     var layers by remember {
@@ -1446,22 +1469,19 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var showAddShapeDialog by remember { mutableStateOf(false) }
     var showBrushesLibrary by remember { mutableStateOf(false) }
 
-    var rulers by remember {
-        mutableStateOf(
-            listOf(
-                StudioRuler(
-                    id = "default_ruler",
-                    name = "Primary Ruler",
-                    enabled = false,
-                    orientation = "Horizontal",
-                    position = 300f,
-                    angle = 0f,
-                    locked = false
-                )
-            )
-        )
-    }
-    var selectedRulerId by remember { mutableStateOf("default_ruler") }
+    val currentSessionOpt by workspaceViewModel.sessionState.collectAsStateWithLifecycle()
+    val currentSession = currentSessionOpt ?: CanvasSessionState(projectId = projectId)
+
+    var rulers by rememberBoundState(
+        key = currentSession,
+        get = { currentSession.rulers },
+        set = { newValue -> workspaceViewModel.updateSession { it.copy(rulers = newValue) } }
+    )
+    var selectedRulerId by rememberBoundState(
+        key = currentSession,
+        get = { currentSession.selectedRulerId },
+        set = { newValue -> workspaceViewModel.updateSession { it.copy(selectedRulerId = newValue) } }
+    )
     val activeRuler = rulers.find { it.id == selectedRulerId } ?: rulers.firstOrNull() ?: StudioRuler()
     val rulerEnabled = activeRuler.enabled
     val rulerOrientation = activeRuler.orientation
@@ -1469,12 +1489,32 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val rulerAngle = activeRuler.angle
     val rulerLocked = activeRuler.locked
 
-    var gridEnabled by remember { mutableStateOf(false) }
+    var gridEnabled by rememberBoundState(
+        key = currentSession,
+        get = { currentSession.gridEnabled },
+        set = { newValue -> workspaceViewModel.updateSession { it.copy(gridEnabled = newValue) } }
+    )
     var showExportResolutionDialog by remember { mutableStateOf(false) }
-    var snapToRuler by remember { mutableStateOf(true) }
-    var allRulersLocked by remember { mutableStateOf(false) }
-    var gridColumns by remember { mutableStateOf(8) }
-    var gridRows by remember { mutableStateOf(8) }
+    var snapToRuler by rememberBoundState(
+        key = currentSession,
+        get = { currentSession.snapToRuler },
+        set = { newValue -> workspaceViewModel.updateSession { it.copy(snapToRuler = newValue) } }
+    )
+    var allRulersLocked by rememberBoundState(
+        key = currentSession,
+        get = { currentSession.allRulersLocked },
+        set = { newValue -> workspaceViewModel.updateSession { it.copy(allRulersLocked = newValue) } }
+    )
+    var gridColumns by rememberBoundState(
+        key = currentSession,
+        get = { currentSession.gridColumns },
+        set = { newValue -> workspaceViewModel.updateSession { it.copy(gridColumns = newValue) } }
+    )
+    var gridRows by rememberBoundState(
+        key = currentSession,
+        get = { currentSession.gridRows },
+        set = { newValue -> workspaceViewModel.updateSession { it.copy(gridRows = newValue) } }
+    )
     var isLeftToolbarExpanded by remember { mutableStateOf(true) }
 
     var fontSearchQuery by remember { mutableStateOf("") }
@@ -1697,47 +1737,74 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val imageBitmapCache = remember { mutableStateMapOf<String, androidx.compose.ui.graphics.ImageBitmap>() }
     // Global processedImageBitmapCache is used
     val loadingUris = remember { mutableStateOf(emptySet<String>()) }
-    LaunchedEffect(layers) {
-        val currentImageUris = layers.filter { it.type == LayerType.IMAGE_CARD && !it.imageUri.isNullOrEmpty() }
-            .mapNotNull { it.imageUri }
-            .toSet()
+    LaunchedEffect(artboards, layers) {
+        val allImages = (artboards.flatMap { it.layers } + layers)
+            .filter { it.type == LayerType.IMAGE_CARD && !it.imageUri.isNullOrEmpty() }
+        val currentImageUris = allImages.mapNotNull { it.imageUri }.toSet()
+        
         val cacheKeys = imageBitmapCache.keys.toList()
         cacheKeys.forEach { key ->
             if (key !in currentImageUris) {
                 imageBitmapCache.remove(key)
             }
         }
-        layers.forEach { layer ->
-            if (layer.type == LayerType.IMAGE_CARD && !layer.imageUri.isNullOrEmpty()) {
-                val uriStr = layer.imageUri
-                if (!imageBitmapCache.containsKey(uriStr) && !loadingUris.value.contains(uriStr)) {
-                    loadingUris.value = loadingUris.value + uriStr
-                    val loaded = withContext(Dispatchers.IO) {
+        
+        // Proactively register any pre-rendered PDF bitmaps into the cache
+        artboards.forEach { artboard ->
+            if (artboard.renderedPdfBitmap != null) {
+                artboard.layers.forEach { layer ->
+                    if (layer.type == LayerType.IMAGE_CARD && !layer.imageUri.isNullOrEmpty()) {
                         try {
-                            val imageLoader = coil.Coil.imageLoader(context)
-                            val request = coil.request.ImageRequest.Builder(context)
-                                .data(uriStr)
-                                .size(768, 768)
-                                .scale(coil.size.Scale.FIT)
-                                .allowHardware(false)
-                                .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
-                                .diskCachePolicy(coil.request.CachePolicy.ENABLED)
-                                .build()
-                            val result = imageLoader.execute(request)
-                            if (result is coil.request.SuccessResult) {
-                                val bitmap = (result.drawable as android.graphics.drawable.BitmapDrawable).bitmap
-                                bitmap.asImageBitmap()
-                            } else {
-                                null
-                            }
+                            imageBitmapCache[layer.imageUri] = artboard.renderedPdfBitmap.asImageBitmap()
                         } catch (t: Throwable) {
-                            null
+                            t.printStackTrace()
                         }
                     }
-                    if (loaded != null) {
-                        imageBitmapCache[uriStr] = loaded
+                }
+            }
+        }
+
+        allImages.forEach { layer ->
+            val uriStr = layer.imageUri
+            if (!uriStr.isNullOrEmpty()) {
+                if (!imageBitmapCache.containsKey(uriStr) && !loadingUris.value.contains(uriStr)) {
+                    // Check if we can find a pre-rendered PDF bitmap first
+                    val preRendered = artboards.find { art -> art.renderedPdfBitmap != null && art.layers.any { l -> l.imageUri == uriStr } }?.renderedPdfBitmap
+                    if (preRendered != null) {
+                        try {
+                            imageBitmapCache[uriStr] = preRendered.asImageBitmap()
+                        } catch (t: Throwable) {
+                            t.printStackTrace()
+                        }
+                    } else {
+                        loadingUris.value = loadingUris.value + uriStr
+                        val loaded = withContext(Dispatchers.IO) {
+                            try {
+                                val imageLoader = coil.Coil.imageLoader(context)
+                                val request = coil.request.ImageRequest.Builder(context)
+                                    .data(uriStr)
+                                    .size(768, 768)
+                                    .scale(coil.size.Scale.FIT)
+                                    .allowHardware(false)
+                                    .memoryCachePolicy(coil.request.CachePolicy.ENABLED)
+                                    .diskCachePolicy(coil.request.CachePolicy.ENABLED)
+                                    .build()
+                                val result = imageLoader.execute(request)
+                                if (result is coil.request.SuccessResult) {
+                                    val bitmap = (result.drawable as android.graphics.drawable.BitmapDrawable).bitmap
+                                    bitmap.asImageBitmap()
+                                } else {
+                                    null
+                                }
+                            } catch (t: Throwable) {
+                                null
+                            }
+                        }
+                        if (loaded != null) {
+                            imageBitmapCache[uriStr] = loaded
+                        }
+                        loadingUris.value = loadingUris.value - uriStr
                     }
-                    loadingUris.value = loadingUris.value - uriStr
                 }
             }
         }
@@ -1791,8 +1858,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var collapsedGroupIds by remember { mutableStateOf(setOf<String>()) }
 
     // Collapsible Panel States
-    var isLayersPanelVisible by remember { mutableStateOf(true) }
-    var isBottomPanelVisible by remember { mutableStateOf(true) }
+    var isLayersPanelVisible by remember { mutableStateOf(false) }
+    var isBottomPanelVisible by remember { mutableStateOf(false) }
     var showEffectsGallery by remember { mutableStateOf(false) }
     var activeFullScreenSheet by remember { mutableStateOf<String?>(null) }
 
@@ -1881,6 +1948,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
             )
         )
         selectedArtboardId = "default"
+        workspaceViewModel.initializeSession(nid)
         isProjectInitialized = true
 
         workspaceViewModel.saveProject(nid, projectName, designWidth, designHeight, scaledLayers, dpi = psd.projectDpi)
@@ -1958,6 +2026,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                         projectName = "Alight Motion Import"
                         layers = parsed.layers
                         selectedLayerId = if (parsed.layers.isNotEmpty()) parsed.layers[0].id else ""
+                        workspaceViewModel.initializeSession(nid)
                         isProjectInitialized = true
 
                         workspaceViewModel.saveProject(nid, projectName, parsed.canvasWidth, parsed.canvasHeight, parsed.layers, dpi = 300)
@@ -2259,6 +2328,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     )
                 )
                 selectedArtboardId = "default"
+                isLayersPanelVisible = false
+                isBottomPanelVisible = false
+                workspaceViewModel.initializeSession(nid)
                 isProjectInitialized = true
                 workspaceViewModel.saveProject(nid, projectName, finalW, finalH, emptyList(), dpi = dpiChosen)
             },
@@ -2271,6 +2343,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 canvasWidthInput = proj.width.toInt().toString()
                 canvasHeightInput = proj.height.toInt().toString()
                 projectDpi = try { proj.dpi } catch (e: Exception) { 300 }
+                isLayersPanelVisible = false
+                isBottomPanelVisible = false
                 scope.launch {
                     val decoded = withContext(Dispatchers.Default) {
                         LayerSerializer.deserialize(proj.layersJson)
@@ -2287,6 +2361,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                         )
                     )
                     selectedArtboardId = "default"
+                    workspaceViewModel.initializeSession(proj.id)
                     isProjectInitialized = true
                 }
             },
@@ -2643,9 +2718,15 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 .background(DarkOnyx)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
         ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // -- TOP PLATFORM CONTROL SHELF --
-            TopControlShelf(
+            // -- FLOATING TOP PLATFORM CONTROL SHELF --
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(8.dp)
+                    .zIndex(10f)
+            ) {
+                TopControlShelf(
                 activeTool = activeTool,
                 onToolChange = { activeTool = it },
                 isLeftToolbarExpanded = isLeftToolbarExpanded,
@@ -2675,6 +2756,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 onExitWorkspace = {
                     // Reset workspace when exiting to main menu
                     isProjectInitialized = false
+                    isLayersPanelVisible = false
+                    isBottomPanelVisible = false
                     projectId = ""
                     projectName = ""
                     layers = emptyList()
@@ -2682,9 +2765,11 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     activeTool = "Brush"
                     imageBitmapCache.clear()
                     advancedBrushResultCache.clear()
+                    workspaceViewModel.clearSession()
                 },
                 onExportCanvas = onExportArtwork
             )
+            }
 
             if (showRenameProjectDialog) {
                 AlertDialog(
@@ -2864,15 +2949,20 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 )
             }
 
-            // -- MAIN CREATIVE CORE GRID --
-            Row(
-                modifier = Modifier
-                    .weight(if (activeFullScreenSheet != null) 0.6f else 1f)
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+            // -- MAIN CREATIVE CORE LAYOUT --
+            Box(
+                modifier = Modifier.fillMaxSize()
             ) {
-                // Leftside Dock Panel: Compact dynamic utility toolstrip with collapsibility
-                if (isLeftToolbarExpanded) {
+                // COMPACT FLOATING LEFT SIDE TOOLBAR
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isLeftToolbarExpanded,
+                    enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
+                    exit = slideOutHorizontally(targetOffsetX = { -it }) + fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 8.dp)
+                        .zIndex(9f)
+                ) {
                     LeftsideToolDock(
                         activeTool = activeTool,
                         onSelectTool = {
@@ -2909,20 +2999,18 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                 rulers = rulers.map { r -> if (r.id == selectedRulerId) r.copy(enabled = true) else r }
                                 isBottomPanelVisible = true
                                 activeFullScreenSheet = "Ruler"
+                            } else if (it == "Visuals") {
+                                showVisualsOverlayHub = true
+                                activeTool = "Move"
                             }
                         }
                     )
                 }
 
-                // Central Workspace Canvas Container
+                // Central Workspace Canvas Container - Full Background immersive view
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .padding(8.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF0F0F12))
-                        .border(1.dp, HighslateOutline, RoundedCornerShape(12.dp))
+                        .fillMaxSize()
                         .onSizeChanged { size ->
                             viewportWidth = size.width.toFloat()
                             viewportHeight = size.height.toFloat()
@@ -6144,10 +6232,6 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                         )
                     }
                 }
-
-                if (isLandscape && isBottomPanelVisible && activeFullScreenSheet == null) {
-                    RenderBottomEffectPanel(isLandscapeMode = true)
-                }
             }
 
             // -- BOTTOM EFFECTS & PARAMETERS PANEL / SPLIT-SHEET OVERLAY (with smooth animated transition) --
@@ -6155,10 +6239,12 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(0.4f)
-                        .background(SlatePanel)
-                        .border(BorderStroke(1.2.dp, HighslateOutline))
+                        .align(Alignment.BottomCenter)
+                        .fillMaxHeight(0.35f)
+                        .background(SlatePanel.copy(alpha = 0.9f))
+                        .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                         .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .zIndex(8f)
                 ) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         // Header Area
@@ -6294,7 +6380,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                             onFontSearchQueryChange = { fontSearchQuery = it },
                                             selectedCategoryFilter = selectedCategoryFilter,
                                             onSelectedCategoryFilterChange = { selectedCategoryFilter = it },
-                                            onImportFontClick = { showFontScannerDialog = true }
+                                            onImportFontClick = { showFontScannerDialog = true },
+                                            customFonts = customFonts
                                         )
                                     } else {
                                         Text("No selected shape layer.", color = TextSecondary, style = Typography.bodyMedium)
@@ -6477,13 +6564,23 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                     }
                 }
             } else {
-                if (!isLandscape) {
-                    AnimatedVisibility(
-                        visible = isBottomPanelVisible,
-                        enter = expandVertically() + fadeIn(),
-                        exit = shrinkVertically() + fadeOut()
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isBottomPanelVisible,
+                    enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                    exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .wrapContentHeight()
+                        .padding(bottom = 8.dp, start = 8.dp, end = 8.dp)
+                        .zIndex(8f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(SlatePanel.copy(alpha = 0.9f), RoundedCornerShape(16.dp))
+                            .border(BorderStroke(1.2.dp, HighslateOutline), RoundedCornerShape(16.dp))
                     ) {
-                        RenderBottomEffectPanel(isLandscapeMode = false)
+                        RenderBottomEffectPanel(isLandscapeMode = isLandscape)
                     }
                 }
             }
@@ -7394,7 +7491,15 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
         )
 
 
-    }
+        if (showVisualsOverlayHub) {
+            AIVisualsOverlayHub(
+                selectedLayerId = selectedLayerId,
+                layers = layers,
+                onLayersUpdated = { layers = it },
+                imageBitmapCache = imageBitmapCache,
+                onDismiss = { showVisualsOverlayHub = false }
+            )
+        }
     }
 }
 
@@ -10998,6 +11103,7 @@ fun BottomEffectPanel(
     onActiveFullScreenSheetChange: (String?) -> Unit = {},
     isLandscape: Boolean = false
 ) {
+    val customFonts by workspaceViewModel.customFonts.collectAsStateWithLifecycle()
     var activeTabOfPanel by remember { mutableStateOf(0) } 
     var isDetailViewActive by remember { mutableStateOf(false) }
 
@@ -11317,6 +11423,7 @@ fun OldBottomEffectPanel(
     onSnapToRulerChange: (Boolean) -> Unit = {},
     isLandscape: Boolean = false
 ) {
+    val customFonts by workspaceViewModel.customFonts.collectAsStateWithLifecycle()
     var activeTabOfPanel by remember { mutableStateOf(0) } // 0: Transform, 1: Edit Shape, 2: Color, 3: Filters & FX Stack
     var isDetailViewActive by remember { mutableStateOf(false) }
 
@@ -11501,7 +11608,8 @@ fun OldBottomEffectPanel(
                             onFontSearchQueryChange = onFontSearchQueryChange,
                             selectedCategoryFilter = selectedCategoryFilter,
                             onSelectedCategoryFilterChange = onSelectedCategoryFilterChange,
-                            onImportFontClick = onImportFontClick
+                            onImportFontClick = onImportFontClick,
+                            customFonts = customFonts
                         )
                         2 -> {
                             Row(

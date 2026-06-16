@@ -759,6 +759,8 @@ fun WebAssetImporterDialog(
                                                 val result = mutableListOf<ArtboardData>()
                                                 for (i in 0 until pageCount) {
                                                     val page = pdfRenderer.openPage(i)
+                                                    val savedWidth = page.width.toFloat()
+                                                    val savedHeight = page.height.toFloat()
                                                     val bitmapW = (page.width * 2).coerceAtMost(2048)
                                                     val bitmapH = (page.height * 2).coerceAtMost(2048)
                                                     val bitmap = android.graphics.Bitmap.createBitmap(bitmapW, bitmapH, android.graphics.Bitmap.Config.ARGB_8888)
@@ -777,8 +779,8 @@ fun WebAssetImporterDialog(
                                                         type = LayerType.IMAGE_CARD,
                                                         positionX = 0f,
                                                         positionY = 0f,
-                                                        width = page.width.toFloat(),
-                                                        height = page.height.toFloat(),
+                                                        width = savedWidth,
+                                                        height = savedHeight,
                                                         imageUri = pageFile.absolutePath
                                                     )
                                                     val artboardId = java.util.UUID.randomUUID().toString()
@@ -786,9 +788,10 @@ fun WebAssetImporterDialog(
                                                         ArtboardData(
                                                             id = artboardId,
                                                             name = "Web PDF Page ${i + 1}",
-                                                            width = page.width.toFloat(),
-                                                            height = page.height.toFloat(),
-                                                            layers = listOf(pdfImageLayer)
+                                                            width = savedWidth,
+                                                            height = savedHeight,
+                                                            layers = listOf(pdfImageLayer),
+                                                            renderedPdfBitmap = bitmap
                                                         )
                                                     )
                                                 }

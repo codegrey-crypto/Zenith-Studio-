@@ -8,6 +8,7 @@ import com.example.studio.database.ProjectRepository
 import com.example.studio.database.StudioDatabase
 import com.example.studio.model.LayerSerializer
 import com.example.studio.model.StudioLayer
+import com.example.studio.ui.StudioRuler
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -15,6 +16,27 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
+
+data class CanvasSessionState(
+    val projectId: String,
+    val gridEnabled: Boolean = false,
+    val gridColumns: Int = 8,
+    val gridRows: Int = 8,
+    val rulers: List<StudioRuler> = listOf(
+        StudioRuler(
+            id = "default_ruler",
+            name = "Primary Ruler",
+            enabled = false,
+            orientation = "Horizontal",
+            position = 300f,
+            angle = 0f,
+            locked = false
+        )
+    ),
+    val selectedRulerId: String = "default_ruler",
+    val snapToRuler: Boolean = true,
+    val allRulersLocked: Boolean = false
+)
 
 class WorkspaceViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: ProjectRepository
@@ -34,6 +56,10 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
     private var lastCategory = "All"
     private var lastQuery = ""
 
+    // Observable session state for decoupled isolated layout configuration
+    private val _sessionState = kotlinx.coroutines.flow.MutableStateFlow<CanvasSessionState?>(null)
+    val sessionState: StateFlow<CanvasSessionState?> = _sessionState
+
     init {
         repository = ProjectRepository(database.projectDao())
         previousProjects = repository.allProjects.stateIn(
@@ -43,6 +69,43 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
         )
         viewModelScope.launch {
             loadCustomFonts()
+        }
+    }
+
+    fun initializeSession(projectId: String) {
+        _sessionState.value = CanvasSessionState(
+            projectId = projectId,
+            gridEnabled = false,
+            gridColumns = 8,
+            gridRows = 8,
+            rulers = listOf(
+                StudioRuler(
+                    id = "default_ruler",
+                    name = "Primary Ruler",
+                    enabled = false,
+                    orientation = "Horizontal",
+                    position = 300f,
+                    angle = 0f,
+                    locked = false
+                )
+            ),
+            selectedRulerId = "default_ruler",
+            snapToRuler = true,
+            allRulersLocked = false
+        )
+    }
+
+    fun clearSession() {
+        _sessionState.value = null
+    }
+
+    fun updateSession(update: (CanvasSessionState) -> CanvasSessionState) {
+        val current = _sessionState.value
+        if (current != null) {
+            _sessionState.value = update(current)
+        } else {
+            // Self-repairing fallback if session is invoked out of cycle
+            _sessionState.value = update(CanvasSessionState(""))
         }
     }
 
@@ -60,7 +123,17 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 val results = withContext(Dispatchers.IO) {
-                    fontDao.searchCustomFonts(category, query, limit = 150)
+                    val all = fontDao.getAllCustomFonts()
+                    _customFonts.value = all
+                    val q = query.trim()
+                    if (category == "All" || category == "Imported") {
+                        if (q.isEmpty()) all else all.filter { it.name.contains(q, ignoreCase = true) }
+                    } else {
+                        all.filter {
+                            it.category.equals(category, ignoreCase = true) &&
+                            (q.isEmpty() || it.name.contains(q, ignoreCase = true))
+                        }
+                    }
                 }
                 _displayedCustomFonts.value = results
             } catch (e: Exception) {
