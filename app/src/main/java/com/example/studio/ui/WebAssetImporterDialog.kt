@@ -123,9 +123,9 @@ fun WebAssetImporterDialog(
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                 modifier = Modifier.height(28.dp)
                             ) {
-                                Icon(Icons.Default.PhotoLibrary, null, modifier = Modifier.size(12.dp), tint = EnergeticYellow)
+                                Icon(Icons.Default.Image, null, modifier = Modifier.size(12.dp), tint = EnergeticYellow)
                                 Spacer(Modifier.width(4.dp))
-                                Text("Import Images (Multi)", style = Typography.labelSmall.copy(fontSize = 10.sp), color = EnergeticYellow)
+                                Text("Import Gallery Images", style = Typography.labelSmall.copy(fontSize = 10.sp), color = EnergeticYellow)
                             }
                         }
                     }
@@ -868,10 +868,36 @@ private fun downloadAndSpawnImage(
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, "Streaming full-resolution web stock asset...", Toast.LENGTH_SHORT).show()
             }
-            val connection = URL(img.second).openConnection() as HttpURLConnection
-            connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+            val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+
+            var connection = URL(img.second).openConnection() as HttpURLConnection
+            connection.setRequestProperty("User-Agent", userAgent)
             connection.connectTimeout = 15000
             connection.readTimeout = 15000
+            connection.instanceFollowRedirects = true
+
+            var status = connection.responseCode
+            var redirectCount = 0
+            var finalUrl = img.second
+            while (status == HttpURLConnection.HTTP_MOVED_TEMP || 
+                   status == HttpURLConnection.HTTP_MOVED_PERM || 
+                   status == HttpURLConnection.HTTP_SEE_OTHER ||
+                   status == 307 || status == 308) {
+                if (redirectCount > 8) break
+                val loc = connection.getHeaderField("Location") ?: break
+                finalUrl = if (loc.startsWith("/")) {
+                    val baseU = URL(finalUrl)
+                    baseU.protocol + "://" + baseU.host + loc
+                } else loc
+                val nextConn = URL(finalUrl).openConnection() as HttpURLConnection
+                nextConn.setRequestProperty("User-Agent", userAgent)
+                nextConn.connectTimeout = 15000
+                nextConn.readTimeout = 15000
+                nextConn.instanceFollowRedirects = true
+                connection = nextConn
+                status = connection.responseCode
+                redirectCount++
+            }
 
             val webAssetsDir = File(context.filesDir, "web_assets")
             if (!webAssetsDir.exists()) webAssetsDir.mkdirs()

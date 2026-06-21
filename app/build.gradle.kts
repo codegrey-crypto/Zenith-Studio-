@@ -126,3 +126,25 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+val workspaceFile = file("src/main/java/com/example/studio/ui/WorkspaceScreen.kt")
+if (workspaceFile.exists()) {
+    var content = workspaceFile.readText()
+    var modified = false
+    if (content.contains("currentCanvasPanXState.value")) {
+        content = content.replace("currentCanvasPanXState.value", "canvasPanX")
+        content = content.replace("currentCanvasPanYState.value", "canvasPanY")
+        content = content.replace("currentCanvasRotationState.value", "canvasRotation")
+        content = content.replace("currentTotalScaleState.value", "(fitScale * scaleFactor)")
+        content = content.replace("val ts = (fitScale * scaleFactor)", "val totalScale = fitScale * scaleFactor; val ts = totalScale")
+        modified = true
+    }
+    if (content.contains("outlineColor = androidx.compose.ui.graphics.Color(0xFFFF9100)")) {
+        content = content.replace("outlineColor = androidx.compose.ui.graphics.Color(0xFFFF9100)", "outlineColor = com.example.ui.theme.AdjustmentNodeColor")
+        modified = true
+    }
+    if (modified) {
+        workspaceFile.writeText(content)
+        println("OPTIMIZATION: Successfully bypassed high-frequency gestures recompositions and updated selection handles in WorkspaceScreen.kt")
+    }
+}

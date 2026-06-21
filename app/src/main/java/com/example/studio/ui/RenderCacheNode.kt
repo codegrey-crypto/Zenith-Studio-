@@ -39,13 +39,22 @@ object ParametricLayerCache {
 
     fun computeParamHash(layer: StudioLayer): Int {
         var result = layer.id.hashCode()
+        result = 31 * result + layer.type.hashCode()
         result = 31 * result + layer.width.hashCode()
         result = 31 * result + layer.height.hashCode()
         result = 31 * result + layer.baseColor.hashCode()
+        result = 31 * result + (layer.imageUri?.hashCode() ?: 0)
+        result = 31 * result + (layer.imageResourceId ?: 0)
         result = 31 * result + layer.textContent.hashCode()
         result = 31 * result + layer.fontSize.hashCode()
+        result = 31 * result + layer.fontFamilyName.hashCode()
+        result = 31 * result + layer.fontIsBold.hashCode()
+        result = 31 * result + layer.fontIsItalic.hashCode()
+        result = 31 * result + layer.fontAlign.hashCode()
+        result = 31 * result + (layer.fontPath?.hashCode() ?: 0)
         result = 31 * result + layer.cornerRadius.hashCode()
         result = 31 * result + layer.polygonEdges.hashCode()
+        result = 31 * result + layer.starInnerRadiusRatio.hashCode()
         result = 31 * result + layer.strokeThickness.hashCode()
         result = 31 * result + layer.opacity.hashCode()
         result = 31 * result + layer.blendMode.hashCode()
@@ -111,10 +120,16 @@ sealed class CanvasEvent {
 
 object CanvasEventLoop {
     private val eventChannel = Channel<CanvasEvent>(Channel.UNLIMITED)
+    private val transformChannel = Channel<CanvasEvent.UpdateTransform>(Channel.CONFLATED)
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val activeSliderJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
     fun emit(event: CanvasEvent) {
-        eventChannel.trySend(event)
+        if (event is CanvasEvent.UpdateTransform) {
+            transformChannel.trySend(event)
+        } else {
+            eventChannel.trySend(event)
+        }
     }
 
     fun startProcessing(
@@ -122,6 +137,24 @@ object CanvasEventLoop {
         onUpdateSlider: (String, String, String, Float) -> Unit,
         onUpdateLayerProp: (String, String, Float) -> Unit
     ) {
+        // Collect transformChannel at 120Hz (approx 8.33ms windows) to coalesce & downsample 360Hz inputs
+        scope.launch {
+            while (isActive) {
+                val transform = transformChannel.tryReceive().getOrNull()
+                if (transform != null) {
+                    var latest = transform
+                    while (true) {
+                        val next = transformChannel.tryReceive().getOrNull() ?: break
+                        latest = next
+                    }
+                    withContext(Dispatchers.Main) {
+                        onUpdateTransform(latest.panX, latest.panY, latest.scale, latest.rotation)
+                    }
+                }
+                delay(8) // Downsample to ~120Hz frame pacing
+            }
+        }
+
         scope.launch {
             for (event in eventChannel) {
                 when (event) {
@@ -131,10 +164,16 @@ object CanvasEventLoop {
                         }
                     }
                     is CanvasEvent.UpdateSlider -> {
-                        ParametricLayerCache.invalidate(event.layerId)
-                        withContext(Dispatchers.Main) {
-                            onUpdateSlider(event.layerId, event.effectId, event.paramName, event.value)
+                        val sliderKey = "${event.layerId}_${event.effectId}_${event.paramName}"
+                        activeSliderJobs[sliderKey]?.cancel()
+                        val debouncedJob = scope.launch {
+                            delay(16) // debounce high frequency updates (approx. 60fps limit)
+                            ParametricLayerCache.invalidate(event.layerId)
+                            withContext(Dispatchers.Main) {
+                                onUpdateSlider(event.layerId, event.effectId, event.paramName, event.value)
+                            }
                         }
+                        activeSliderJobs[sliderKey] = debouncedJob
                     }
                     is CanvasEvent.UpdateLayerProp -> {
                         ParametricLayerCache.invalidate(event.layerId)

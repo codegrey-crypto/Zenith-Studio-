@@ -18,7 +18,8 @@ enum class LayerType {
     TEXT,
     FREEHAND_DRAWING,
     IMAGE_CARD,
-    GROUP
+    GROUP,
+    ADJUSTMENT_LAYER
 }
 
 enum class ZenithBlendMode(val displayName: String) {
@@ -727,13 +728,302 @@ object PhotoshopEffectTemplates {
                     "ColorIntensity" to EffectParameter("Color Intensity", 5f, 1f, 10f)
                 )
             )
-            "BrushStrokes" -> StudioEffect.PhotoshopEffect(
+            "ColoredPencil" -> StudioEffect.PhotoshopEffect(
                 id = id,
-                name = "Brush Strokes",
+                name = "Colored Pencil",
                 category = "Filter Gallery",
                 effectType = effectType,
                 parameters = mapOf(
-                    "InkDensity" to EffectParameter("Ink Density", 5f, 1f, 10f)
+                    // Geometry
+                    "StrokeThickness" to EffectParameter("Stroke Thickness", 1.5f, 1f, 10f),
+                    "StrokeDirectionBias" to EffectParameter("Stroke Direction Bias", 0f, -180f, 180f, "°"),
+                    "StrokeCurvature" to EffectParameter("Stroke Curvature", 5f, 1f, 10f),
+                    "LineJitterAmount" to EffectParameter("Line Jitter Amount", 0.3f, 0f, 1f),
+                    // Tone
+                    "ContrastCompression" to EffectParameter("Contrast Compression", 0.5f, 0f, 1f),
+                    "ShadowLift" to EffectParameter("Shadow Lift", 0.2f, 0f, 1f),
+                    "HighlightClamp" to EffectParameter("Highlight Clamp", 0.9f, 0f, 1f),
+                    "MidtoneBias" to EffectParameter("Midtone Bias", 0.5f, 0f, 1f),
+                    // Color
+                    "ColorSaturationBoost" to EffectParameter("Color Saturation", 1.2f, 0f, 3f),
+                    "HueDrift" to EffectParameter("Hue Drift", 0.05f, 0f, 1f),
+                    "PaletteLimiting" to EffectParameter("Palette Limiting", 0f, 0f, 1f),
+                    "SkinTonePreservation" to EffectParameter("Skin Tone Preservation", 0.8f, 0f, 1f),
+                    // Texture
+                    "PaperGrainStrength" to EffectParameter("Paper Grain Strength", 0.4f, 0f, 1f),
+                    "FiberDirection" to EffectParameter("Fiber Direction", 45f, 0f, 360f, "°"),
+                    "PaperRoughnessScale" to EffectParameter("Paper Roughness", 0.5f, 0f, 1f),
+                    "FiberContrast" to EffectParameter("Fiber Contrast", 0.3f, 0f, 1f),
+                    // Edge
+                    "EdgeReinforcementStrength" to EffectParameter("Edge Reinforcement", 0.6f, 0f, 1f),
+                    "EdgeBleedControl" to EffectParameter("Edge Bleed Control", 0.2f, 0f, 1f),
+                    "EdgeSofteningRadius" to EffectParameter("Edge Softening", 2.0f, 0.1f, 10f, "px"),
+                    // Style
+                    "HandTremorSimulation" to EffectParameter("Hand Tremor", 0.1f, 0f, 1f),
+                    "StrokeRandomSeed" to EffectParameter("Random Seed", 1f, 1f, 100f),
+                    "StrokeDensityMap" to EffectParameter("Stroke Density", 0.7f, 0.1f, 1f),
+                    "StrokeOverlapFactor" to EffectParameter("Stroke Overlap", 0.5f, 0f, 1f)
+                )
+            )
+            "Cutout" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Cutout",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "RegionSegmentationStrength" to EffectParameter("Region Segmentation", 5f, 1f, 10f),
+                    "EdgeSimplificationLevel" to EffectParameter("Edge Simplification", 0.5f, 0f, 1f),
+                    "ShapeMergingRadius" to EffectParameter("Shape Merging Radius", 2f, 0f, 10f),
+                    "ObjectIsolationThreshold" to EffectParameter("Isolation Threshold", 0.3f, 0f, 1f),
+                    // Tone
+                    "PosterizationLevels" to EffectParameter("Posterization Levels", 5f, 2f, 15f),
+                    "ShadowFlattening" to EffectParameter("Shadow Flattening", 0.4f, 0f, 1f),
+                    "HighlightCompression" to EffectParameter("Highlight Compress", 0.3f, 0f, 1f),
+                    "DynamicRangeReduction" to EffectParameter("Dynamic Range Red.", 0.2f, 0f, 1f),
+                    // Color
+                    "PaletteSizeControl" to EffectParameter("Palette Size Control", 6f, 2f, 32f),
+                    "ColorBandShifting" to EffectParameter("Color Band Shifting", 0f, -50f, 50f),
+                    "ChannelQuantization" to EffectParameter("Channel Quantize", 0.5f, 0f, 1f),
+                    "ColorNoiseSuppression" to EffectParameter("Color Noise Suppress", 0.8f, 0f, 1f),
+                    // Texture
+                    "FlatSurfaceBias" to EffectParameter("Flat Surface Bias", 0.6f, 0f, 1f),
+                    "MicroTextureRetention" to EffectParameter("Micro Texture Ret.", 0.1f, 0f, 1f),
+                    "SurfaceUniformity" to EffectParameter("Surface Uniformity", 0.5f, 0f, 1f),
+                    // Edge
+                    "EdgeHardness" to EffectParameter("Edge Hardness", 0.8f, 0f, 1f),
+                    "EdgeGlowSuppression" to EffectParameter("Glow Suppression", 0.5f, 0f, 1f),
+                    "EdgeAntiAliasStrength" to EffectParameter("Anti-alias Strength", 0.4f, 0f, 1f),
+                    // Style
+                    "RegionRandomizationFactor" to EffectParameter("Region Randomization", 0.2f, 0f, 1f),
+                    "ArtisticAbstractionStrength" to EffectParameter("Abstraction Strength", 0.5f, 0f, 1f),
+                    "StylizationDrift" to EffectParameter("Stylization Drift", 0.1f, 0f, 1f)
+                )
+            )
+            "PlasticWrap" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Plastic Wrap",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "HighlightStrength" to EffectParameter("Highlight Strength", 1.2f, 0.1f, 5f),
+                    "Detail" to EffectParameter("Detail", 3f, 1f, 5f),
+                    "Smoothness" to EffectParameter("Smoothness", 0.5f, 0f, 2f),
+                    "ShrinkWrapFactor" to EffectParameter("Shrink Wrap Factor", 0.4f, 0f, 1f),
+                    // Tone
+                    "ReflectionContrast" to EffectParameter("Reflection Contrast", 0.8f, 0.1f, 2f),
+                    "GlossinessIndex" to EffectParameter("Glossiness Index", 0.7f, 0f, 1f),
+                    "HighlightClamp" to EffectParameter("Highlight Clamp", 0.95f, 0f, 1f),
+                    // Color
+                    "SpecularColorShift" to EffectParameter("Specular Shift", 0.05f, -0.5f, 0.5f),
+                    "SubsurfaceScattering" to EffectParameter("Subsurface Scat.", 0.3f, 0f, 1f),
+                    // Texture
+                    "SurfaceRoughness" to EffectParameter("Surface Roughness", 0.2f, 0f, 1f),
+                    "MicroHighlightDetail" to EffectParameter("Micro Highlight Detail", 0.5f, 0f, 1f),
+                    // Edge
+                    "BoundaryWrapGlow" to EffectParameter("Boundary Wrap Glow", 0.4f, 0f, 1f),
+                    "EdgeRefractionStrength" to EffectParameter("Edge Refraction", 0.3f, 0f, 1f),
+                    // Style
+                    "WrinkleFrequency" to EffectParameter("Wrinkle Frequency", 1.5f, 0.1f, 5f),
+                    "RandomWrinkleSeed" to EffectParameter("Random Wrinkle Seed", 1f, 1f, 100f)
+                )
+            )
+            "FilmGrain" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Film Grain",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "GrainDistributionField" to EffectParameter("Grain Dist. Field", 0.5f, 0f, 1f),
+                    "GrainClusteringStrength" to EffectParameter("Grain Clustering", 0.3f, 0f, 1f),
+                    "SpatialGrainFlowDirection" to EffectParameter("Grain Flow Angle", 0f, 0f, 360f, "°"),
+                    // Tone
+                    "ExposureNoiseBias" to EffectParameter("Exposure Noise Bias", 0.2f, -1f, 1f),
+                    "ShadowGrainEmphasis" to EffectParameter("Shadow Emphasis", 0.8f, 0f, 1f),
+                    "HighlightGrainSuppression" to EffectParameter("Highlight Suppression", 0.9f, 0f, 1f),
+                    "GammaLinkedGrain" to EffectParameter("Gamma Linked Response", 0.6f, 0f, 1f),
+                    "Amount" to EffectParameter("Amount", 15f, 0f, 100f, "%"),
+                    // Color
+                    "ChromaticGrainSeparation" to EffectParameter("Chromatic Grain", 0.4f, 0f, 1f),
+                    "RGBChannelGrainOffset" to EffectParameter("RGB Channel Offset", 0.15f, 0f, 1f),
+                    "ColorTempNoiseShift" to EffectParameter("Color Temp Shift", 0.05f, -0.5f, 0.5f),
+                    // Texture
+                    "GrainSizeDistribution" to EffectParameter("Grain Size", 1.2f, 0.1f, 5f),
+                    "FilmStockType" to EffectParameter("Film Stock Type", 0f, 0f, 4f),
+                    "EmulsionLayerDepth" to EffectParameter("Emulsion Depth", 0.3f, 0f, 1f),
+                    // Edge
+                    "EdgeGrainReduction" to EffectParameter("Edge Grain Reduction", 0.5f, 0f, 1f),
+                    "EdgeNoiseSharpening" to EffectParameter("Edge Noise Sharpening", 0.2f, 0f, 1f),
+                    // Style
+                    "FilmStockRandomSeed" to EffectParameter("Stock Seed", 1f, 1f, 100f),
+                    "VintageAgingCurve" to EffectParameter("Vintage Aging", 0.3f, 0f, 1f),
+                    "SensorNoiseModelType" to EffectParameter("Sensor Model Type", 0f, 0f, 3f)
+                )
+            )
+            "BrushStrokes" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Dry Brush",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "StrokeLengthVariability" to EffectParameter("Length Variability", 0.7f, 0f, 1f),
+                    "StrokeBreakFrequency" to EffectParameter("Break Frequency", 0.3f, 0f, 1f),
+                    "BrushAngleVariation" to EffectParameter("Angle Variation", 15f, 0f, 180f, "°"),
+                    "FlowDirectionMapping" to EffectParameter("Flow Mapping", 1f, 0f, 1f),
+                    "InkDensity" to EffectParameter("Ink Density", 5f, 1f, 10f),
+                    // Tone
+                    "InkLoadSimulation" to EffectParameter("Ink Load Simulation", 0.8f, 0f, 1f),
+                    "DrynessLevel" to EffectParameter("Dryness Level", 0.5f, 0f, 1f),
+                    "PressureFalloffCurve" to EffectParameter("Pressure Falloff", 0.6f, 0f, 1f),
+                    "InkSaturationDecay" to EffectParameter("Saturation Decay", 0.3f, 0f, 1f),
+                    // Color
+                    "PigmentMixingStrength" to EffectParameter("Pigment Mixing", 0.7f, 0f, 1f),
+                    "ColorBleedFactor" to EffectParameter("Color Bleed Factor", 0.2f, 0f, 1f),
+                    "MultiColorStrokeBlending" to EffectParameter("Stroke Blending", 0.5f, 0f, 1f),
+                    "HueJitter" to EffectParameter("Hue Jitter", 0.05f, 0f, 1f),
+                    // Texture
+                    "CanvasRoughness" to EffectParameter("Canvas Roughness", 0.5f, 0f, 1f),
+                    "BrushFiberSimulation" to EffectParameter("Fiber Simulation", 0.4f, 0f, 1f),
+                    "PaintDragTexture" to EffectParameter("Paint Drag Texture", 0.6f, 0f, 1f),
+                    "SurfaceAbsorptionRate" to EffectParameter("Absorption Rate", 0.3f, 0f, 1f),
+                    // Edge
+                    "StrokeEdgeFraying" to EffectParameter("Edge Fraying", 0.5f, 0f, 1f),
+                    "EdgeBreakupIntensity" to EffectParameter("Edge Breakup", 0.4f, 0f, 1f),
+                    "EdgeSofteningCurve" to EffectParameter("Edge Softening", 0.3f, 0f, 1f),
+                    // Style
+                    "HandMotionNoise" to EffectParameter("Hand Motion Noise", 0.2f, 0f, 1f),
+                    "StrokeClumpingFactor" to EffectParameter("Stroke Clumping", 0.4f, 0f, 1f),
+                    "RandomStrokeOffset" to EffectParameter("Stroke Offset", 0.1f, 0f, 1f)
+                )
+            )
+            "AccentedEdges" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Accented Edges",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "EdgeWidth" to EffectParameter("Edge Width", 1.8f, 1f, 10f),
+                    "EdgeScale" to EffectParameter("Edge Scale", 1.0f, 0.1f, 5f),
+                    // Tone
+                    "EdgeBrightness" to EffectParameter("Edge Brightness", 0.7f, 0f, 5f),
+                    "BackgroundDarkness" to EffectParameter("Bg Darkness", 0.5f, 0f, 1f),
+                    // Color
+                    "EdgeColorShifting" to EffectParameter("Edge Color Shift", 0.1f, 0f, 1f),
+                    // Texture
+                    "EdgeTextureOverlay" to EffectParameter("Edge Texture", 0.3f, 0f, 1f),
+                    // Edge
+                    "EdgeDetectionThreshold" to EffectParameter("Detection Threshold", 0.4f, 0f, 1f),
+                    // Style
+                    "StylizationAmount" to EffectParameter("Stylization Amount", 0.5f, 0f, 1f)
+                )
+            )
+            "Crosshatch" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Crosshatch",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "StrokeLength" to EffectParameter("Stroke Length", 8f, 1f, 30f),
+                    "LineDensityField" to EffectParameter("Line Density Field", 0.6f, 0.1f, 1f),
+                    "CrossAngleOffset" to EffectParameter("Cross Angle Offset", 45f, 0f, 90f, "°"),
+                    "StrokeInterferencePattern" to EffectParameter("Interference Pat.", 0.2f, 0f, 1f),
+                    "HatchLayerDepth" to EffectParameter("Hatch Layer Depth", 2f, 1f, 5f),
+                    // Tone
+                    "Contrast" to EffectParameter("Contrast", 0.8f, 0.1f, 2f),
+                    "InkPressureCurve" to EffectParameter("Ink Pressure Curve", 0.7f, 0f, 1f),
+                    "ShadowMappingIntensity" to EffectParameter("Shadow Mapping", 0.8f, 0f, 1f),
+                    "TonalBandSeparation" to EffectParameter("Tonal Separation", 0.4f, 0f, 1f),
+                    // Color
+                    "InkColorBlendMode" to EffectParameter("Ink Blend Mode", 0f, 0f, 2f),
+                    "MultiInkLayerMixing" to EffectParameter("Multi-ink Mixing", 0.5f, 0f, 1f),
+                    "ColorTintDrift" to EffectParameter("Color Tint Drift", 0.05f, -0.5f, 0.5f),
+                    // Texture
+                    "PaperFiberInteraction" to EffectParameter("Fiber Interaction", 0.4f, 0f, 1f),
+                    "InkAbsorptionSpread" to EffectParameter("Ink Absorption", 0.3f, 0f, 1f),
+                    "BleedDiffusionModel" to EffectParameter("Bleed Diffusion", 0.2f, 0f, 1f),
+                    // Edge
+                    "EdgeReinforcementMatrix" to EffectParameter("Edge Reinforcement", 0.6f, 0f, 1f),
+                    "ContourDetectionSensitivity" to EffectParameter("Contour Sensitivity", 0.5f, 0f, 1f),
+                    // Style
+                    "ArtistStylePreset" to EffectParameter("Artist Preset", 0f, 0f, 3f),
+                    "ScribbleRandomnessEngine" to EffectParameter("Scribble Randomness", 0.3f, 0f, 1f),
+                    "HandwritingSimModel" to EffectParameter("Handwriting Model", 0.1f, 0f, 1f)
+                )
+            )
+            "SumiE" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Sumi-e",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "StrokePressure" to EffectParameter("Stroke Pressure", 0.7f, 0.1f, 2f),
+                    "StrokeAngle" to EffectParameter("Stroke Angle", 45f, 0f, 360f, "°"),
+                    // Tone
+                    "DarkArea" to EffectParameter("Dark Area", 0.45f, 0f, 1f),
+                    "InkFlowLimit" to EffectParameter("Ink Flow Limit", 0.8f, 0f, 1f),
+                    // Color
+                    "ColorBleeding" to EffectParameter("Color Bleeding", 0.5f, 0f, 1f),
+                    // Texture
+                    "RicePaperTexture" to EffectParameter("Rice Paper Texture", 0.4f, 0f, 1f),
+                    // Edge
+                    "WetEdgeDiffusion" to EffectParameter("Wet Edge diffusion", 0.3f, 0f, 1f),
+                    // Style
+                    "InkSplatterIntensity" to EffectParameter("Splatter Intensity", 0.2f, 0f, 1f)
+                )
+            )
+            "OceanRipple" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Ocean Ripple",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "RippleSize" to EffectParameter("Ripple Size", 8f, 1f, 30f),
+                    "RippleMagnitude" to EffectParameter("Ripple Magnitude", 1.0f, 0.1f, 10f),
+                    "PhaseOffsetMap" to EffectParameter("Phase Offset Map", 0.5f, 0f, 1f),
+                    "DirectionalFlowField" to EffectParameter("Flow Angle", 120f, 0f, 360f, "°"),
+                    "TurbulenceInjection" to EffectParameter("Turbulence", 0.3f, 0f, 1f),
+                    // Tone
+                    "LuminanceBasedWarp" to EffectParameter("Luma-linked Warp", 0.4f, 0f, 1f),
+                    // Color
+                    "ChromaticAberrationShift" to EffectParameter("Chromatic Shift", 0.2f, 0f, 1f),
+                    // Texture
+                    "MicroRippleLayering" to EffectParameter("Micro Ripple Layer", 0.5f, 0f, 1f),
+                    // Edge
+                    "AntiTearBoundary" to EffectParameter("Anti-tear Boundary", 0.8f, 0f, 1f)
+                )
+            )
+            "Glass" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Glass Distortion",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "Distortion" to EffectParameter("Distortion", 5f, 1f, 20f),
+                    "SpiralCenterDrift" to EffectParameter("Center Drift X", 0f, -100f, 100f),
+                    "RotationGradientMap" to EffectParameter("Rotation Map", 45f, 0f, 180f, "°"),
+                    "RadialFalloffCurve" to EffectParameter("Radial Falloff", 0.5f, 0f, 1f),
+                    // Tone
+                    "BrightnessCompression" to EffectParameter("Brightness Compress", 0.3f, 0f, 1f),
+                    // Color
+                    "HueSpiralShift" to EffectParameter("Hue Spiral Shift", 0.1f, 0f, 1f),
+                    "ChannelRotationOffset" to EffectParameter("Offset RGB Shift", 0.15f, 0f, 1f),
+                    // Texture
+                    "SwirlNoiseOverlay" to EffectParameter("Swirl Noise", 0.4f, 0f, 1f),
+                    "VortexTurbulenceField" to EffectParameter("Vortex Turbulence", 0.3f, 0f, 1f),
+                    // Edge
+                    "EdgeCurlStrength" to EffectParameter("Edge Curl Strength", 0.5f, 0f, 1f),
+                    "BoundaryWarpProtection" to EffectParameter("Warp Protection", 0.8f, 0f, 1f),
+                    // Style
+                    "ChaosFactor" to EffectParameter("Chaos Factor", 0.5f, 0f, 1f),
+                    "SpiralStabilityIndex" to EffectParameter("Stability Index", 0.7f, 0.1f, 1f)
                 )
             )
             "Sketch" -> StudioEffect.PhotoshopEffect(
@@ -745,6 +1035,86 @@ object PhotoshopEffectTemplates {
                     "Detail" to EffectParameter("Detail", 5f, 1f, 10f)
                 )
             )
+            "BasRelief" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Bas Relief",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "Detail" to EffectParameter("Detail", 4f, 1f, 10f),
+                    "PerspectiveDeformation" to EffectParameter("Deformation", 0.3f, 0f, 1f),
+                    // Tone
+                    "StonePlasterContrast" to EffectParameter("Stone Contrast", 0.7f, 0f, 1f),
+                    "HighlightSmoothness" to EffectParameter("Highlight Smoothness", 0.5f, 0f, 1f),
+                    // Texture
+                    "PlasterGranularity" to EffectParameter("Plaster Granularity", 0.4f, 0f, 1f),
+                    // Edge
+                    "EdgeSculpting" to EffectParameter("Edge Sculpting", 0.6f, 0f, 1f)
+                )
+            )
+            "HalftonePattern" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Halftone Pattern",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "DotGridType" to EffectParameter("Dot Grid Type", 0f, 0f, 2f), // 0=hex, 1=square, 2=radial
+                    "DotScalingCurve" to EffectParameter("Grid Scaling Curve", 6f, 1f, 20f),
+                    "SpatialFrequencyMap" to EffectParameter("Spatial Freq. Map", 0.5f, 0.1f, 1f),
+                    // Tone
+                    "InkDensityResponse" to EffectParameter("Ink Density Response", 0.7f, 0f, 1f),
+                    "ShadowDotExpansion" to EffectParameter("Shadow Dot Expand", 0.6f, 0f, 1f),
+                    "HighlightDotSuppression" to EffectParameter("Highlight Dot Suppress", 0.8f, 0f, 1f),
+                    // Color
+                    "CMYKSimulationMode" to EffectParameter("CMYK Simulation", 0f, 0f, 1f),
+                    "ChannelSeparatedDot" to EffectParameter("Channel-split Dot", 0.5f, 0f, 1f),
+                    // Texture
+                    "PaperScreenType" to EffectParameter("Paper Screen Type", 0f, 0f, 3f),
+                    "PrintingNoiseSimulation" to EffectParameter("Printing Noise", 0.3f, 0f, 1f),
+                    // Edge
+                    "EdgeDotClustering" to EffectParameter("Edge Dot Clustering", 0.4f, 0f, 1f),
+                    // Style
+                    "PrinterModelEmulation" to EffectParameter("Printer Model Emul.", 0f, 0f, 3f),
+                    "VintagePrintAging" to EffectParameter("Vintage Print Aging", 0.2f, 0f, 1f)
+                )
+            )
+            "Photocopy" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Photocopy",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "EdgeCollapseStrength" to EffectParameter("Edge Collapse", 4f, 1f, 10f),
+                    "DocumentFoldSimulation" to EffectParameter("Document Fold", 0.2f, 0f, 1f),
+                    // Tone
+                    "ThresholdCurve" to EffectParameter("Threshold Curve", 0.8f, 0.1f, 5f),
+                    "ContrastHardening" to EffectParameter("Contrast Hardening", 0.7f, 0f, 1f),
+                    "ShadowBlowoutControl" to EffectParameter("Shadow Blowout", 0.5f, 0f, 1f),
+                    // Color
+                    "TonerSpreadModel" to EffectParameter("Toner Spread Model", 0f, 0f, 2f),
+                    "BlackInkSaturation" to EffectParameter("Black Ink Saturation", 0.9f, 0.1f, 1f),
+                    // Texture
+                    "PaperRollerNoise" to EffectParameter("Paper Roller Noise", 0.3f, 0f, 1f),
+                    "ScanlineArtifacts" to EffectParameter("Scanline Artifacts", 0.4f, 0f, 1f),
+                    // Edge
+                    "EdgeClippingStrength" to EffectParameter("Edge Clipping", 0.5f, 0f, 1f),
+                    // Style
+                    "ScannerQualityModel" to EffectParameter("Scanner Quality", 1f, 0f, 3f),
+                    "LowInkSimulation" to EffectParameter("Low Ink Simulation", 0.2f, 0f, 1f)
+                )
+            )
+            "Chrome" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Chrome Liquid",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Detail" to EffectParameter("Detail", 4f, 1f, 10f)
+                )
+            )
             "Texture" -> StudioEffect.PhotoshopEffect(
                 id = id,
                 name = "Texturizer Tool",
@@ -752,6 +1122,74 @@ object PhotoshopEffectTemplates {
                 effectType = effectType,
                 parameters = mapOf(
                     "Relief" to EffectParameter("Relief", 4f, 1f, 10f)
+                )
+            )
+            "StainedGlass" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Stained Glass",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "CellSize" to EffectParameter("Cell Size", 14f, 2f, 100f),
+                    "BorderThickness" to EffectParameter("Border Thickness", 1.5f, 0.5f, 10f),
+                    "GridDeformation" to EffectParameter("Grid Deformation", 0.3f, 0f, 1f),
+                    // Tone
+                    "LightTranslucency" to EffectParameter("Light Translucency", 0.6f, 0f, 1f),
+                    "HighlightIntensity" to EffectParameter("Highlight Intensity", 0.5f, 0f, 1f),
+                    // Color
+                    "TileColorAveraging" to EffectParameter("Tile Color Averaging", 0.8f, 0f, 1f),
+                    "ColorVibranceBoost" to EffectParameter("Color Vibrance", 1.2f, 0f, 2f),
+                    // Texture
+                    "GlassRoughnessOverlay" to EffectParameter("Glass Roughness", 0.3f, 0f, 1f),
+                    // Edge
+                    "LeadBorderSoftness" to EffectParameter("Border Softness", 0.4f, 0f, 1f),
+                    // Style
+                    "ImperfectTileMode" to EffectParameter("Imperfection Level", 0.2f, 0f, 1f)
+                )
+            )
+            "Craquelure" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Craquelure",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "CrackSpacing" to EffectParameter("Crack Spacing", 15f, 2f, 100f),
+                    "CrackDirectionStressMap" to EffectParameter("Stress Map Angle", 45f, 0f, 360f, "°"),
+                    "FracturePropagation" to EffectParameter("Propagation Factor", 0.6f, 0f, 1f),
+                    // Tone
+                    "CrackDepth" to EffectParameter("Crack Depth", 1.0f, 0.1f, 10f),
+                    "CrackShadowDepth" to EffectParameter("Crack Shadow Depth", 0.7f, 0f, 1f),
+                    "SurfaceAgingCurve" to EffectParameter("Surface Aging Curve", 0.5f, 0f, 1f),
+                    // Color
+                    "OxidationColorShift" to EffectParameter("Oxidation Shift", 0.2f, 0f, 1f),
+                    "DirtAccumulation" to EffectParameter("Dirt Accumulation", 0.4f, 0f, 1f),
+                    // Texture
+                    "MaterialHardnessMap" to EffectParameter("Hardness Index", 0.5f, 0.1f, 1f),
+                    "SurfaceBrittleness" to EffectParameter("Surface Brittleness", 0.6f, 0f, 1f),
+                    // Edge
+                    "CrackEdgeSharpness" to EffectParameter("Crack Sharpness", 0.8f, 0f, 1f),
+                    "FractureAntiAliasing" to EffectParameter("Fracture Anti-alias", 0.5f, 0f, 1f),
+                    // Style
+                    "EnvironmentalWeathering" to EffectParameter("Weathering Simulation", 0.3f, 0f, 1f)
+                )
+            )
+            "Texturizer" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Texturizer",
+                category = "Filter Gallery",
+                effectType = effectType,
+                parameters = mapOf(
+                    // Geometry
+                    "Scaling" to EffectParameter("Scaling", 8f, 1f, 100f),
+                    "GridOrientationBias" to EffectParameter("Orientation Bias", 0f, -90f, 90f, "°"),
+                    // Tone
+                    "Relief" to EffectParameter("Relief", 2f, -10f, 10f),
+                    "LightDirectionSource" to EffectParameter("Light Source Angle", 120f, 0f, 360f, "°"),
+                    // Texture
+                    "CanvasRoughness" to EffectParameter("Canvas Roughness", 0.6f, 0f, 1f),
+                    "FabricDensitySimulation" to EffectParameter("Density Factor", 0.5f, 0.1f, 1f)
                 )
             )
 
@@ -811,6 +1249,20 @@ object PhotoshopEffectTemplates {
                     "WarpFrequency" to EffectParameter("Warp Wave Frequency", 1f, 0f, 5f),
                     "SubjectCutout" to EffectParameter("Subject Cutout Opacity", 1f, 0f, 1f),
                     "CutoutThreshold" to EffectParameter("Cutout Threshold", 230f, 0f, 255f)
+                )
+            )
+            "RasterExtrude" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Raster Extrude",
+                category = "3D",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Alpha" to EffectParameter("Orientation Alpha", 57f, -180f, 180f, "°"),
+                    "Beta" to EffectParameter("Orientation Beta", 0f, -180f, 180f, "°"),
+                    "RotX" to EffectParameter("Rotation X", 0f, -180f, 180f, "°"),
+                    "RotY" to EffectParameter("Rotation Y", 39f, -180f, 180f, "°"),
+                    "RotZ" to EffectParameter("Rotation Z", 0f, -180f, 180f, "°"),
+                    "ExtrusionDepth" to EffectParameter("Extrusion Depth / Width", 20f, 0f, 200f, "%")
                 )
             )
             "ColorGrading" -> StudioEffect.PhotoshopEffect(
@@ -909,6 +1361,9 @@ object PhotoshopEffectTemplates {
         ),
         "Advanced & AI Engines" to listOf(
             "Liquify", "CameraRaw", "NeuralFilters", "PixelStretch"
+        ),
+        "3D" to listOf(
+            "RasterExtrude"
         )
     )
 }
@@ -955,5 +1410,11 @@ data class StudioLayer(
     val fontIsItalic: Boolean = false,
     val fontAlign: String = "Center",
     val fontPath: String? = null,
-    val parentGroupId: String? = null
+    val parentGroupId: String? = null,
+    // Dynamic GPU non-destructive adjustment properties
+    val adjBrightness: Float = 0f,
+    val adjContrast: Float = 1f,
+    val adjSaturation: Float = 1f,
+    val adjColorTint: Color = Color.Transparent,
+    val adjTintColorIntensity: Float = 0f
 )

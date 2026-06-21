@@ -321,6 +321,7 @@ object PsdExportEngine {
                 }
             }
             LayerType.GROUP -> {}
+            LayerType.ADJUSTMENT_LAYER -> {}
         }
 
         canvas.restore()

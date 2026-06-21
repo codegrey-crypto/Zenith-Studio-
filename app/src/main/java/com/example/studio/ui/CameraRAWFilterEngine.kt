@@ -356,7 +356,7 @@ object CameraRAWFilterEngine {
 
                 // Process GLES pixel shaders synchronously inside threads isolated Dispatchers.IO
                 val filteredBmp = withContext(Dispatchers.IO) {
-                    applyGPUImageFilters(context, androidBmp, activeEffects)
+                    applyGPUImageFilters(context, androidBmp, layerId, activeEffects)
                 }
 
                 // Check cancel before updating cache

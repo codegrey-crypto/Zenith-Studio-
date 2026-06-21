@@ -256,10 +256,28 @@ data class LayerDto(
     }
 }
 
+@JsonClass(generateAdapter = true)
+data class ArtboardDto(
+    val id: String,
+    val name: String,
+    val width: Float,
+    val height: Float,
+    val offsetX: Float,
+    val offsetY: Float,
+    val layers: List<LayerDto>
+)
+
+@JsonClass(generateAdapter = true)
+data class WorkspaceStateDto(
+    val artboards: List<ArtboardDto>,
+    val selectedArtboardId: String
+)
+
 object LayerSerializer {
     private val moshi: Moshi = Moshi.Builder().build()
     private val listType = Types.newParameterizedType(List::class.java, LayerDto::class.java)
     private val adapter = moshi.adapter<List<LayerDto>>(listType)
+    private val workspaceStateAdapter = moshi.adapter(WorkspaceStateDto::class.java)
 
     fun serialize(layers: List<StudioLayer>): String {
         val dtos = layers.map { LayerDto.fromLayer(it) }
@@ -274,6 +292,82 @@ object LayerSerializer {
         } catch (e: Exception) {
             e.printStackTrace()
             emptyList()
+        }
+    }
+
+    fun serializeWorkspace(artboards: List<com.example.studio.ui.ArtboardData>, selectedId: String): String {
+        val dtos = artboards.map { art ->
+            ArtboardDto(
+                id = art.id,
+                name = art.name,
+                width = art.width,
+                height = art.height,
+                offsetX = art.offsetX,
+                offsetY = art.offsetY,
+                layers = art.layers.map { LayerDto.fromLayer(it) }
+            )
+        }
+        val workspace = WorkspaceStateDto(
+            artboards = dtos,
+            selectedArtboardId = selectedId
+        )
+        return workspaceStateAdapter.toJson(workspace) ?: "{}"
+    }
+
+    fun deserializeWorkspace(json: String, canvasW: Float, canvasH: Float): Pair<List<com.example.studio.ui.ArtboardData>, String> {
+        if (json.isBlank()) {
+            return Pair(
+                listOf(
+                    com.example.studio.ui.ArtboardData(
+                        id = "default",
+                        name = "Artboard 1",
+                        width = canvasW,
+                        height = canvasH,
+                        layers = emptyList()
+                    )
+                ),
+                "default"
+            )
+        }
+        return try {
+            val trimmed = json.trimStart()
+            if (trimmed.startsWith("{")) {
+                val workspace = workspaceStateAdapter.fromJson(json)
+                if (workspace != null && workspace.artboards.isNotEmpty()) {
+                    val arts = workspace.artboards.map { dto ->
+                        com.example.studio.ui.ArtboardData(
+                            id = dto.id,
+                            name = dto.name,
+                            width = dto.width,
+                            height = dto.height,
+                            offsetX = dto.offsetX,
+                            offsetY = dto.offsetY,
+                            layers = dto.layers.map { it.toLayer() }
+                        )
+                    }
+                    return Pair(arts, workspace.selectedArtboardId)
+                }
+            }
+            // Fallback for legacy format
+            val legacyLayers = deserialize(json)
+            val defaultArt = com.example.studio.ui.ArtboardData(
+                id = "default",
+                name = "Artboard 1",
+                width = canvasW,
+                height = canvasH,
+                layers = legacyLayers
+            )
+            Pair(listOf(defaultArt), "default")
+        } catch (e: Exception) {
+            e.printStackTrace()
+            val defaultArt = com.example.studio.ui.ArtboardData(
+                id = "default",
+                name = "Artboard 1",
+                width = canvasW,
+                height = canvasH,
+                layers = emptyList()
+            )
+            Pair(listOf(defaultArt), "default")
         }
     }
 }

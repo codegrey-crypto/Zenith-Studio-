@@ -28,6 +28,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 import com.example.studio.model.LayerType
 import com.example.studio.model.StudioLayer
 import com.example.studio.model.StudioEffect
@@ -44,12 +47,20 @@ fun PrecisionJogWheel(
     isInt: Boolean = false,
     valueFormatter: ((Float) -> String)? = null,
     testTag: String = "",
+    highFreqKey: String? = null,
     modifier: Modifier = Modifier
 ) {
     var isEditing by remember { mutableStateOf(false) }
-    val density = LocalDensity.current
-    val tickSpacingPx = with(density) { 10.dp.toPx() }
-    val visualOffset = remember { mutableStateOf(0f) }
+
+    // 1. High-speed local state allowing dragging to be extremely responsive at 120 FPS
+    var localValue by remember(value, highFreqKey) { mutableStateOf(SlidersHighFreqState.get(highFreqKey ?: label, value)) }
+    val coroutineScope = rememberCoroutineScope()
+    var pendingUpdateJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    val isColorGradingFilter = label == "Exposure" || label == "Contrast" || label == "Highlights" || label == "Shadows" || label == "Whites" || label == "Blacks" || label == "Temp" || label == "Tint" || label == "Vibrance" || label == "Saturation" || label == "Clarity" || label == "Dehaze" || label == "Brightness" || label == "Sat" || label == "Bright" || label == "Opacity"
+    
+    // Style active filter tracking sliders, thumb controls, and numeric value tracks in Vibrant Neon Purple (#A855F7).
+    val activeColor = if (isColorGradingFilter) Color(0xFFA855F7) else EnergeticYellow
 
     Row(
         modifier = modifier
@@ -67,74 +78,32 @@ fun PrecisionJogWheel(
             color = TextSecondary
         )
 
-        // Endless Drag Jog-Wheel Visual panel
-        Box(
+        // Native/Standard Linear Compose Slider with Debounced, Quantized Low-Latency
+        Slider(
+            value = localValue.coerceIn(valueRange),
+            onValueChange = { newValue ->
+                // Quantize outputs to 2 decimal places
+                val rawQuantized = (newValue * 100f).roundToInt() / 100f
+                val validatedValue = if (isInt) kotlin.math.round(rawQuantized) else rawQuantized
+                
+                localValue = validatedValue
+                
+                // Track value in central SlidersHighFreqState immediately
+                SlidersHighFreqState.set(highFreqKey ?: label, validatedValue)
+            },
+            onValueChangeFinished = {
+                onValueChange(localValue)
+            },
+            valueRange = valueRange.start..valueRange.endInclusive,
+            colors = SliderDefaults.colors(
+                activeTrackColor = activeColor,
+                thumbColor = activeColor,
+                inactiveTrackColor = HighslateOutline.copy(alpha = 0.3f)
+            ),
             modifier = Modifier
                 .weight(1f)
-                .fillMaxHeight()
-                .background(Color(0xFF0C0C0F), RoundedCornerShape(6.dp))
-                .border(BorderStroke(0.5.dp, HighslateOutline.copy(alpha = 0.5f)), RoundedCornerShape(6.dp))
-                .pointerInput(value, valueRange) {
-                    detectDragGestures { change, dragAmount ->
-                        change.consume()
-                        visualOffset.value += dragAmount.x
-
-                        // Calculate sensitivity multiplier & velocity-scrubbing modifiers
-                        val speedMultiplier = if (kotlin.math.abs(dragAmount.x) > 10f) {
-                            3.5f * (1.0f + kotlin.math.abs(dragAmount.x) * 0.05f)
-                        } else {
-                            0.2f
-                        }
-
-                        val rangeSpan = valueRange.endInclusive - valueRange.start
-                        val sensitivity = when {
-                            rangeSpan > 1000000 -> 12f
-                            rangeSpan > 10000 -> 3f
-                            rangeSpan > 180 -> 0.15f
-                            rangeSpan > 50 -> 0.05f
-                            rangeSpan > 2 -> 0.003f
-                            else -> 0.00001f
-                        }
-
-                        val delta = dragAmount.x * speedMultiplier * sensitivity
-                        val nVal = (value + delta).coerceIn(valueRange)
-                        onValueChange(nVal)
-                    }
-                }
                 .testTag(testTag)
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val center = size.width / 2f
-                val tickCount = (size.width / tickSpacingPx).toInt() + 4
-                val offsetMod = visualOffset.value % tickSpacingPx
-
-                for (i in -tickCount / 2..tickCount / 2) {
-                    val x = center + offsetMod + i * tickSpacingPx
-                    if (x in 0f..size.width) {
-                        val tickIndex = ((visualOffset.value / tickSpacingPx).toInt() - i)
-                        val isMajor = tickIndex % 5 == 0
-                        val heightScale = if (isMajor) 0.6f else 0.3f
-                        val color = if (isMajor) EnergeticYellow.copy(alpha = 0.7f) else TextSecondary.copy(alpha = 0.3f)
-                        val strokeW = if (isMajor) 1.5f else 1f
-
-                        drawLine(
-                            color = color,
-                            start = Offset(x, size.height * (1f - heightScale) / 2f),
-                            end = Offset(x, size.height * (1f + heightScale) / 2f),
-                            strokeWidth = strokeW
-                        )
-                    }
-                }
-
-                // Reference Cursor Tick pointer (Yellow bright center element)
-                drawLine(
-                    color = EnergeticYellow,
-                    start = Offset(center, 0f),
-                    end = Offset(center, size.height),
-                    strokeWidth = 2.5f
-                )
-            }
-        }
+        )
 
         // Numerical Override Field
         Box(
@@ -143,7 +112,7 @@ fun PrecisionJogWheel(
         ) {
             if (isEditing) {
                 var editBuf by remember {
-                    mutableStateOf(if (isInt) value.toInt().toString() else "%.2f".format(value))
+                    mutableStateOf(if (isInt) localValue.toInt().toString() else "%.2f".format(localValue))
                 }
                 val focusRequester = remember { FocusRequester() }
 
@@ -151,7 +120,7 @@ fun PrecisionJogWheel(
                     value = editBuf,
                     onValueChange = { editBuf = it },
                     textStyle = Typography.labelSmall.copy(
-                        color = EnergeticYellow,
+                        color = activeColor,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.End
                     ),
@@ -163,7 +132,9 @@ fun PrecisionJogWheel(
                     keyboardActions = KeyboardActions(
                         onDone = {
                             editBuf.toFloatOrNull()?.let {
-                                onValueChange(it.coerceIn(valueRange))
+                                val valCoerced = it.coerceIn(valueRange)
+                                localValue = valCoerced
+                                onValueChange(valCoerced)
                             }
                             isEditing = false
                         }
@@ -171,7 +142,7 @@ fun PrecisionJogWheel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(Color(0xFF09090C), RoundedCornerShape(4.dp))
-                        .border(BorderStroke(1.dp, EnergeticYellow), RoundedCornerShape(4.dp))
+                        .border(BorderStroke(1.dp, activeColor), RoundedCornerShape(4.dp))
                         .padding(vertical = 4.dp, horizontal = 6.dp)
                         .focusRequester(focusRequester)
                         .testTag(testTag + "_input")
@@ -182,11 +153,11 @@ fun PrecisionJogWheel(
                 }
             } else {
                 val displayVal = if (valueFormatter != null) {
-                    valueFormatter(value)
+                    valueFormatter(localValue)
                 } else if (isInt) {
-                    "${value.toInt()}"
+                    "${localValue.toInt()}"
                 } else {
-                    "%.2f".format(value)
+                    "%.2f".format(localValue)
                 }
                 
                 val displaySuffix = if (valueFormatter != null) "" else {
@@ -195,7 +166,7 @@ fun PrecisionJogWheel(
 
                 Text(
                     text = displayVal + displaySuffix,
-                    color = TextPrimary,
+                    color = activeColor,
                     style = Typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.End,
@@ -237,7 +208,7 @@ fun TransformDetailView(
             PrecisionJogWheel(
                 value = selectedLayer.positionX,
                 onValueChange = { onUpdateLayer(selectedLayer.copy(positionX = it)) },
-                valueRange = -1000000f..1000000f,
+                valueRange = -5000f..5000f,
                 label = "Pos-X",
                 isInt = true,
                 testTag = "transform_pos_x_slider"
@@ -246,7 +217,7 @@ fun TransformDetailView(
             PrecisionJogWheel(
                 value = selectedLayer.positionY,
                 onValueChange = { onUpdateLayer(selectedLayer.copy(positionY = it)) },
-                valueRange = -1000000f..1000000f,
+                valueRange = -5000f..5000f,
                 label = "Pos-Y",
                 isInt = true,
                 testTag = "transform_pos_y_slider"
@@ -264,7 +235,7 @@ fun TransformDetailView(
             PrecisionJogWheel(
                 value = selectedLayer.width,
                 onValueChange = { onUpdateLayer(selectedLayer.copy(width = it)) },
-                valueRange = 1f..100000f,
+                valueRange = 1f..5000f,
                 label = "Width",
                 isInt = true,
                 testTag = "transform_width_slider"
@@ -273,7 +244,7 @@ fun TransformDetailView(
             PrecisionJogWheel(
                 value = selectedLayer.height,
                 onValueChange = { onUpdateLayer(selectedLayer.copy(height = it)) },
-                valueRange = 1f..100000f,
+                valueRange = 1f..5000f,
                 label = "Height",
                 isInt = true,
                 testTag = "transform_height_slider"
@@ -793,7 +764,7 @@ fun TypographyOrShapeDetailView(
                     PrecisionJogWheel(
                         value = selectedLayer.width,
                         onValueChange = {
-                            val newW = it.coerceIn(1f, 100000f)
+                            val newW = it.coerceIn(1f, 5000f)
                             val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
                             val newX = oldCenterX - newW / 2f
                             if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
@@ -804,7 +775,7 @@ fun TypographyOrShapeDetailView(
                                 onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
                             }
                         },
-                        valueRange = 1f..100000f,
+                        valueRange = 1f..5000f,
                         label = "Width",
                         isInt = true,
                         testTag = "shape_width_slider"
@@ -813,7 +784,7 @@ fun TypographyOrShapeDetailView(
                     PrecisionJogWheel(
                         value = selectedLayer.height,
                         onValueChange = {
-                            val newH = it.coerceIn(1f, 100000f)
+                            val newH = it.coerceIn(1f, 5000f)
                             val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
                             val newY = oldCenterY - newH / 2f
                             if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
@@ -824,7 +795,7 @@ fun TypographyOrShapeDetailView(
                                 onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
                             }
                         },
-                        valueRange = 1f..100000f,
+                        valueRange = 1f..5000f,
                         label = "Height",
                         isInt = true,
                         testTag = "shape_height_slider"
@@ -1096,6 +1067,128 @@ fun FiltersAndFxDetailView(
                         "Deformation Grid (Warp & Curves)" to listOf("WarpBend", "WarpFrequency"),
                         "Depth & Composition Masking" to listOf("SubjectCutout", "CutoutThreshold")
                     )
+                } else if (actEff is StudioEffect.PhotoshopEffect && (
+                    actEff.effectType == "ColoredPencil" ||
+                    actEff.effectType == "Cutout" ||
+                    actEff.effectType == "PlasticWrap" ||
+                    actEff.effectType == "FilmGrain" ||
+                    actEff.effectType == "BrushStrokes" ||
+                    actEff.effectType == "AccentedEdges" ||
+                    actEff.effectType == "Crosshatch" ||
+                    actEff.effectType == "SumiE" ||
+                    actEff.effectType == "OceanRipple" ||
+                    actEff.effectType == "Glass" ||
+                    actEff.effectType == "BasRelief" ||
+                    actEff.effectType == "HalftonePattern" ||
+                    actEff.effectType == "Photocopy" ||
+                    actEff.effectType == "StainedGlass" ||
+                    actEff.effectType == "Craquelure" ||
+                    actEff.effectType == "Texturizer"
+                )) {
+                    listOf(
+                        "📐 1. Geometry Control (shape, distortion)" to listOf(
+                            "StrokeThickness", "StrokeDirectionBias", "StrokeCurvature", "LineJitterAmount",
+                            "RegionSegmentationStrength", "EdgeSimplificationLevel", "ShapeMergingRadius", "ObjectIsolationThreshold",
+                            "HighlightStrength", "Detail", "Smoothness", "ShrinkWrapFactor",
+                            "GrainDistributionField", "GrainClusteringStrength", "SpatialGrainFlowDirection",
+                            "StrokeLengthVariability", "StrokeBreakFrequency", "BrushAngleVariation", "FlowDirectionMapping", "InkDensity",
+                            "EdgeWidth", "EdgeScale",
+                            "StrokeLength", "LineDensityField", "CrossAngleOffset", "StrokeInterferencePattern", "HatchLayerDepth",
+                            "StrokePressure", "StrokeAngle",
+                            "RippleSize", "RippleMagnitude", "PhaseOffsetMap", "DirectionalFlowField", "TurbulenceInjection",
+                            "Distortion", "SpiralCenterDrift", "RotationGradientMap", "RadialFalloffCurve",
+                            "PerspectiveDeformation",
+                            "DotGridType", "DotScalingCurve", "SpatialFrequencyMap",
+                            "EdgeCollapseStrength", "DocumentFoldSimulation",
+                            "CellSize", "BorderThickness", "GridDeformation",
+                            "CrackSpacing", "CrackDirectionStressMap", "FracturePropagation",
+                            "Scaling", "GridOrientationBias"
+                        ),
+                        "🎭 2. Tone Control (brightness, contrast)" to listOf(
+                            "ContrastCompression", "ShadowLift", "HighlightClamp", "MidtoneBias",
+                            "PosterizationLevels", "ShadowFlattening", "HighlightCompression", "DynamicRangeReduction",
+                            "ReflectionContrast", "GlossinessIndex",
+                            "ExposureNoiseBias", "ShadowGrainEmphasis", "HighlightGrainSuppression", "GammaLinkedGrain", "Amount",
+                            "InkLoadSimulation", "DrynessLevel", "PressureFalloffCurve", "InkSaturationDecay",
+                            "EdgeBrightness", "BackgroundDarkness",
+                            "Contrast", "InkPressureCurve", "ShadowMappingIntensity", "TonalBandSeparation",
+                            "DarkArea", "InkFlowLimit",
+                            "LuminanceBasedWarp",
+                            "BrightnessCompression",
+                            "StonePlasterContrast", "HighlightSmoothness",
+                            "InkDensityResponse", "ShadowDotExpansion", "HighlightDotSuppression",
+                            "ThresholdCurve", "ContrastHardening", "ShadowBlowoutControl",
+                            "LightTranslucency", "HighlightIntensity",
+                            "CrackDepth", "CrackShadowDepth", "SurfaceAgingCurve",
+                            "Relief", "LightDirectionSource"
+                        ),
+                        "🎨 3. Color Control (grading, saturation)" to listOf(
+                            "ColorSaturationBoost", "HueDrift", "PaletteLimiting", "SkinTonePreservation",
+                            "PaletteSizeControl", "ColorBandShifting", "ChannelQuantization", "ColorNoiseSuppression",
+                            "SpecularColorShift", "SubsurfaceScattering",
+                            "ChromaticGrainSeparation", "RGBChannelGrainOffset", "ColorTempNoiseShift",
+                            "PigmentMixingStrength", "ColorBleedFactor", "MultiColorStrokeBlending", "HueJitter",
+                            "EdgeColorShifting",
+                            "InkColorBlendMode", "MultiInkLayerMixing", "ColorTintDrift",
+                            "ColorBleeding",
+                            "ChromaticAberrationShift",
+                            "HueSpiralShift", "ChannelRotationOffset",
+                            "CMYKSimulationMode", "ChannelSeparatedDot",
+                            "TonerSpreadModel", "BlackInkSaturation",
+                            "TileColorAveraging", "ColorVibranceBoost",
+                            "OxidationColorShift", "DirtAccumulation"
+                        ),
+                        "🧫 4. Texture Control (grain, paper, surface)" to listOf(
+                            "PaperGrainStrength", "FiberDirection", "PaperRoughnessScale", "FiberContrast",
+                            "FlatSurfaceBias", "MicroTextureRetention", "SurfaceUniformity",
+                            "SurfaceRoughness", "MicroHighlightDetail",
+                            "GrainSizeDistribution", "FilmStockType", "EmulsionLayerDepth",
+                            "CanvasRoughness", "BrushFiberSimulation", "PaintDragTexture", "SurfaceAbsorptionRate",
+                            "EdgeTextureOverlay",
+                            "PaperFiberInteraction", "InkAbsorptionSpread", "BleedDiffusionModel",
+                            "RicePaperTexture",
+                            "MicroRippleLayering",
+                            "SwirlNoiseOverlay", "VortexTurbulenceField",
+                            "PlasterGranularity",
+                            "PaperScreenType", "PrintingNoiseSimulation",
+                            "PaperRollerNoise", "ScanlineArtifacts",
+                            "GlassRoughnessOverlay",
+                            "MaterialHardnessMap", "SurfaceBrittleness",
+                            "FabricDensitySimulation"
+                        ),
+                        "⚡ 5. Edge Control (sharpness, contour)" to listOf(
+                            "EdgeReinforcementStrength", "EdgeBleedControl", "EdgeSofteningRadius",
+                            "EdgeHardness", "EdgeGlowSuppression", "EdgeAntiAliasStrength",
+                            "BoundaryWrapGlow", "EdgeRefractionStrength",
+                            "EdgeGrainReduction", "EdgeNoiseSharpening",
+                            "StrokeEdgeFraying", "EdgeBreakupIntensity", "EdgeSofteningCurve",
+                            "EdgeDetectionThreshold",
+                            "EdgeReinforcementMatrix", "ContourDetectionSensitivity",
+                            "WetEdgeDiffusion",
+                            "AntiTearBoundary",
+                            "EdgeCurlStrength", "BoundaryWarpProtection",
+                            "EdgeSculpting",
+                            "EdgeDotClustering",
+                            "EdgeClippingStrength",
+                            "LeadBorderSoftness",
+                            "CrackEdgeSharpness", "FractureAntiAliasing"
+                        ),
+                        "🧪 6. Style Behavior Control (flow, random)" to listOf(
+                            "HandTremorSimulation", "StrokeRandomSeed", "StrokeDensityMap", "StrokeOverlapFactor",
+                            "RegionRandomizationFactor", "ArtisticAbstractionStrength", "StylizationDrift",
+                            "WrinkleFrequency", "RandomWrinkleSeed",
+                            "FilmStockRandomSeed", "VintageAgingCurve", "SensorNoiseModelType",
+                            "HandMotionNoise", "StrokeClumpingFactor", "RandomStrokeOffset",
+                            "StylizationAmount",
+                            "ArtistStylePreset", "ScribbleRandomnessEngine", "HandwritingSimModel",
+                            "InkSplatterIntensity",
+                            "ChaosFactor", "SpiralStabilityIndex",
+                            "PrinterModelEmulation", "VintagePrintAging",
+                            "ScannerQualityModel", "LowInkSimulation",
+                            "ImperfectTileMode",
+                            "EnvironmentalWeathering"
+                        )
+                    )
                 } else {
                     listOf("" to actEff.parameters.keys.toList())
                 }
@@ -1122,6 +1215,7 @@ fun FiltersAndFxDetailView(
                                         value = param.value,
                                         onValueChange = { onUpdateEffectParam(actEff.id, pName, it) },
                                         valueRange = param.rangeMin..param.rangeMax,
+                                        highFreqKey = "${selectedLayer.id}_effect_${actEff.id}_${pName}",
                                         label = param.name,
                                         isInt = param.unit.contains("px") || param.unit.contains("%") || isPreset,
                                         valueFormatter = if (isPreset) {

@@ -442,6 +442,7 @@ fun RightsideLayerDrawer(
                                     LayerType.FREEHAND_DRAWING -> "✎"
                                     LayerType.IMAGE_CARD -> "▨"
                                     LayerType.GROUP -> ""
+                                    LayerType.ADJUSTMENT_LAYER -> "🎚"
                                 }
                                 Text(
                                     text = glyph,

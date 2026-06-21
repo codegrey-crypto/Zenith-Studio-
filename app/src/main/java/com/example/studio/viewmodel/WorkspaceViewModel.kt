@@ -271,6 +271,36 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun saveWorkspace(
+        id: String,
+        name: String,
+        width: Float,
+        height: Float,
+        artboards: List<com.example.studio.ui.ArtboardData>,
+        selectedArtboardId: String,
+        dpi: Int = 300,
+        onComplete: (String) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val actualId = id.ifBlank { UUID.randomUUID().toString() }
+            val actualName = name.ifBlank { "Artwork ${width.toInt()}x${height.toInt()}" }
+            val entity = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val json = LayerSerializer.serializeWorkspace(artboards, selectedArtboardId)
+                ProjectEntity(
+                    id = actualId,
+                    name = actualName,
+                    width = width,
+                    height = height,
+                    timestamp = System.currentTimeMillis(),
+                    layersJson = json,
+                    dpi = dpi
+                )
+            }
+            repository.saveProject(entity)
+            onComplete(actualId)
+        }
+    }
+
     fun deleteProject(id: String) {
         viewModelScope.launch {
             repository.deleteProject(id)
