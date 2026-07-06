@@ -27,19 +27,126 @@ import kotlin.math.*
 
 /**
  * High-fidelity OpenGL ES 3.0 & GPUImage inspired Brush Rendering Engine.
- * Supports:
- * 1. Alpha Accumulation preventing dark overlap spots for natural Airbrushing.
- * 2. Gaussian Blur Texture rendering with variable Flow, Hardness, and dense Spacing (1% - 5%).
- * 3. Catmull-Rom Spline Path Smoothing for Vector Brushes.
- * 4. Grainy Noise Shading with simulated/real touch pressure for Pencil Brushes.
- * 5. Background Bleeding Dual-Buffer mixing for realistic Watercolor Brushes.
- * 6. Tapering Math + Pathway stroke width dynamics for Ink/Comic Brushes.
- * 7. MSAA config setups & HardwareBuffer Bitmap caching.
+ * Highly optimized with GC-free pre-allocated nested pools to prevent frame drops.
+ * Supports layered offscreen compositing and robust native blending modes.
  */
 object OpenGLBrushRenderer {
     private const val TAG = "OpenGLBrushRenderer"
 
-    // Caches for compiled textures & processed stroke bitmaps to maximize rendering frames-per-second
+    // Circular reusable paint pool to support nested Paint configurations without GC allocation
+    private class PaintPool {
+        private val paints = Array(12) { Paint() }
+        private var index = 0
+
+        fun acquire(): Paint {
+            val paint = paints[index]
+            paint.reset()
+            index = (index + 1) % paints.size
+            return paint
+        }
+    }
+
+    private val localPaintPool = object : ThreadLocal<PaintPool>() {
+        override fun initialValue() = PaintPool()
+    }
+
+    private fun acquirePaint(): Paint {
+        return localPaintPool.get()?.acquire() ?: Paint()
+    }
+
+    // Circular reusable path pool
+    private class PathPool {
+        private val paths = Array(6) { Path() }
+        private var index = 0
+
+        fun acquire(): Path {
+            val path = paths[index]
+            path.reset()
+            index = (index + 1) % paths.size
+            return path
+        }
+    }
+
+    private val localPathPool = object : ThreadLocal<PathPool>() {
+        override fun initialValue() = PathPool()
+    }
+
+    private fun acquirePath(): Path {
+        return localPathPool.get()?.acquire() ?: Path()
+    }
+
+    // Circular reusable RectF pool
+    private class RectFPool {
+        private val rects = Array(6) { android.graphics.RectF() }
+        private var index = 0
+
+        fun acquire(): android.graphics.RectF {
+            val rect = rects[index]
+            rect.setEmpty()
+            index = (index + 1) % rects.size
+            return rect
+        }
+    }
+
+    private val localRectFPool = object : ThreadLocal<RectFPool>() {
+        override fun initialValue() = RectFPool()
+    }
+
+    private fun acquireRectF(): android.graphics.RectF {
+        return localRectFPool.get()?.acquire() ?: android.graphics.RectF()
+    }
+
+    // Native PorterDuff Mode Mapper
+    private fun getNativePorterDuffMode(blendMode: androidx.compose.ui.graphics.BlendMode): android.graphics.PorterDuff.Mode {
+        return when (blendMode) {
+            androidx.compose.ui.graphics.BlendMode.Multiply -> android.graphics.PorterDuff.Mode.MULTIPLY
+            androidx.compose.ui.graphics.BlendMode.Screen -> android.graphics.PorterDuff.Mode.SCREEN
+            androidx.compose.ui.graphics.BlendMode.Overlay -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    android.graphics.PorterDuff.Mode.SRC_OVER
+                } else {
+                    android.graphics.PorterDuff.Mode.MULTIPLY
+                }
+            }
+            androidx.compose.ui.graphics.BlendMode.Plus -> android.graphics.PorterDuff.Mode.ADD
+            androidx.compose.ui.graphics.BlendMode.DstOut -> android.graphics.PorterDuff.Mode.DST_OUT
+            androidx.compose.ui.graphics.BlendMode.Clear -> android.graphics.PorterDuff.Mode.CLEAR
+            androidx.compose.ui.graphics.BlendMode.Darken -> android.graphics.PorterDuff.Mode.DARKEN
+            androidx.compose.ui.graphics.BlendMode.Lighten -> android.graphics.PorterDuff.Mode.LIGHTEN
+            androidx.compose.ui.graphics.BlendMode.SrcOver -> android.graphics.PorterDuff.Mode.SRC_OVER
+            else -> android.graphics.PorterDuff.Mode.SRC_OVER
+        }
+    }
+
+    // Native BlendMode Mapper for Android Q+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun getNativeBlendMode(blendMode: androidx.compose.ui.graphics.BlendMode): android.graphics.BlendMode? {
+        return when (blendMode) {
+            androidx.compose.ui.graphics.BlendMode.Multiply -> android.graphics.BlendMode.MULTIPLY
+            androidx.compose.ui.graphics.BlendMode.Screen -> android.graphics.BlendMode.SCREEN
+            androidx.compose.ui.graphics.BlendMode.Overlay -> android.graphics.BlendMode.OVERLAY
+            androidx.compose.ui.graphics.BlendMode.Plus -> android.graphics.BlendMode.PLUS
+            androidx.compose.ui.graphics.BlendMode.DstOut -> android.graphics.BlendMode.DST_OUT
+            androidx.compose.ui.graphics.BlendMode.Clear -> android.graphics.BlendMode.CLEAR
+            androidx.compose.ui.graphics.BlendMode.Darken -> android.graphics.BlendMode.DARKEN
+            androidx.compose.ui.graphics.BlendMode.Lighten -> android.graphics.BlendMode.LIGHTEN
+            androidx.compose.ui.graphics.BlendMode.SrcOver -> android.graphics.BlendMode.SRC_OVER
+            else -> null
+        }
+    }
+
+    // Apply Blend Mode helper supporting both Legacy Porter-Duff and Android Q+ hardware-blended configurations
+    private fun applyBlendMode(paint: Paint, blendMode: androidx.compose.ui.graphics.BlendMode) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val bMode = getNativeBlendMode(blendMode)
+            if (bMode != null) {
+                paint.blendMode = bMode
+                return
+            }
+        }
+        paint.xfermode = android.graphics.PorterDuffXfermode(getNativePorterDuffMode(blendMode))
+    }
+
     // Memory-bounded LRU Cache to safely manage heap size and prevent GC thrashing/OOMs
     private val strokeBitmapCache = object : LruCache<String, Bitmap>(48 * 1024 * 1024) {
         override fun sizeOf(key: String?, value: Bitmap?): Int {
@@ -48,7 +155,6 @@ object OpenGLBrushRenderer {
     }
 
     // High-performance cache for pre-compiled stroke results including calculated coordinate offsets
-    // This allows complete O(1) rendering cache-hits with zero calculations or memory allocations!
     private val strokeResultCache = object : LruCache<String, RenderedStrokeResult>(48 * 1024 * 1024) {
         override fun sizeOf(key: String?, value: RenderedStrokeResult?): Int {
             return value?.bitmap?.byteCount ?: 0
@@ -66,7 +172,7 @@ object OpenGLBrushRenderer {
 
     /**
      * Renders a given path/stroke onto an optimized bounding-box Bitmap using GL ES 3.0 shaders
-     * and premium post-effects. Includes adaptive fallback behaviors to guarantee no crash.
+     * and premium post-effects. Enclosed inside robust try/catch sandboxes to avoid application crash.
      */
     fun renderBrushToBitmap(
         points: List<Offset>,
@@ -76,12 +182,13 @@ object OpenGLBrushRenderer {
         presetIndex: Int,
         smoothing: Boolean,
         backdropBitmap: Bitmap? = null,
-        customHardness: Float? = null
+        customHardness: Float? = null,
+        blendMode: androidx.compose.ui.graphics.BlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
     ): RenderedStrokeResult? {
         if (points.isEmpty()) return null
 
         // O(1) Fast-Path: bypass points filtering, bounds calculations, and list iterations entirely on cache hit!
-        val cacheKey = buildCacheKey(points, brushColor, size, opacity, presetIndex, smoothing)
+        val cacheKey = buildCacheKey(points, brushColor, size, opacity, presetIndex, smoothing, blendMode)
         val cachedResult = strokeResultCache.get(cacheKey)
         if (cachedResult != null) {
             return cachedResult
@@ -114,7 +221,7 @@ object OpenGLBrushRenderer {
         val targetWidth = width.coerceAtMost(2048)
         val targetHeight = height.coerceAtMost(2048)
 
-        val cleanCacheKey = buildCacheKey(cleanPoints, brushColor, size, opacity, presetIndex, smoothing)
+        val cleanCacheKey = buildCacheKey(cleanPoints, brushColor, size, opacity, presetIndex, smoothing, blendMode)
         val cached = strokeBitmapCache.get(cleanCacheKey)
         if (cached != null) {
             return RenderedStrokeResult(
@@ -143,24 +250,51 @@ object OpenGLBrushRenderer {
             )
         }
 
-        // Render depending on brush preset
-        when {
-            isAirbrush(presetIndex) -> {
-                renderAirbrushGl(canvas, localPoints, brushColor, size, opacity, presetIndex, customHardness)
+        // Hardware-Buffered Layer Allocation: Isolates brush stamps in an offscreen hardware layer,
+        // drawing them using standard accumulation (SRC_OVER) inside the layer, and then composites
+        // the entire finished stroke as a unified layer using the target blendMode and opacity.
+        val layerPaint = acquirePaint().apply {
+            isAntiAlias = true
+            isDither = true
+            isFilterBitmap = true
+            alpha = (opacity * 255f).toInt().coerceIn(0, 255)
+            applyBlendMode(this, blendMode)
+        }
+
+        val rectF = acquireRectF().apply {
+            set(0f, 0f, targetWidth.toFloat(), targetHeight.toFloat())
+        }
+
+        val saveCount = canvas.saveLayer(rectF, layerPaint)
+
+        try {
+            // Render depending on brush preset inside the isolated offscreen buffer (nested-safe, GC-free)
+            when {
+                isAirbrush(presetIndex) -> {
+                    renderAirbrushGl(canvas, localPoints, brushColor, size, 1.0f, presetIndex, customHardness)
+                }
+                isSketchOrPencil(presetIndex) -> {
+                    renderSketchPencilGl(canvas, localPoints, brushColor, size, 1.0f)
+                }
+                isWatercolor(presetIndex) -> {
+                    renderWatercolorGl(canvas, localPoints, brushColor, size, 1.0f, backdropBitmap, minX - padding, minY - padding)
+                }
+                isInkComic(presetIndex) -> {
+                    renderInkComicGl(canvas, localPoints, brushColor, size, 1.0f, presetIndex)
+                }
+                else -> {
+                    // Default fallback brush drawing
+                    renderStandardBrush(canvas, localPoints, brushColor, size, 1.0f, presetIndex)
+                }
             }
-            isSketchOrPencil(presetIndex) -> {
-                renderSketchPencilGl(canvas, localPoints, brushColor, size, opacity)
-            }
-            isWatercolor(presetIndex) -> {
-                renderWatercolorGl(canvas, localPoints, brushColor, size, opacity, backdropBitmap, minX - padding, minY - padding)
-            }
-            isInkComic(presetIndex) -> {
-                renderInkComicGl(canvas, localPoints, brushColor, size, opacity, presetIndex)
-            }
-            else -> {
-                // Default fallback brush drawing
-                renderStandardBrush(canvas, localPoints, brushColor, size, opacity, presetIndex)
-            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Math division or layout spike inside brush path drawing layer", t)
+            // Fallback thread sandbox: Attempt legacy basic rendering if advanced render fails
+            try {
+                renderStandardBrush(canvas, localPoints, brushColor, size, 1.0f, presetIndex)
+            } catch (ignored: Throwable) {}
+        } finally {
+            canvas.restoreToCount(saveCount)
         }
 
         // Cache the processed result
@@ -178,47 +312,20 @@ object OpenGLBrushRenderer {
         return result
     }
 
-    /**
-     * Decides if preset corresponds to Airbrush category
-     */
-    private fun isAirbrush(preset: Int): Boolean {
-        return preset in listOf(3, 28, 29, 30, 31, 32, 33, 34)
-    }
+    private fun isAirbrush(preset: Int): Boolean = preset in listOf(3, 28, 29, 30, 31, 32, 33, 34)
+    private fun isVectorBrush(preset: Int): Boolean = preset in listOf(8, 9)
+    private fun isSketchOrPencil(preset: Int): Boolean = preset in listOf(10, 11, 12, 13)
+    private fun isWatercolor(preset: Int): Boolean = preset == 21 || preset == 39
+    private fun isInkComic(preset: Int): Boolean = preset in listOf(14, 15, 16, 22, 23, 24, 25, 26, 27, 35, 38)
 
     /**
-     * Decides if preset corresponds to Vector category
-     */
-    private fun isVectorBrush(preset: Int): Boolean {
-        return preset in listOf(8, 9)
-    }
-
-    /**
-     * Decides if preset corresponds to Pencil / Sketch category
-     */
-    private fun isSketchOrPencil(preset: Int): Boolean {
-        return preset in listOf(10, 11, 12, 13)
-    }
-
-    /**
-     * Decides if preset corresponds to Watercolor
-     */
-    private fun isWatercolor(preset: Int): Boolean {
-        return preset == 21 || preset == 39
-    }
-
-    /**
-     * Decides if preset is Ink/Comic (tapering pen, hard turnip, dip bleed, mapping etc.)
-     */
-    private fun isInkComic(preset: Int): Boolean {
-        return preset in listOf(14, 15, 16, 22, 23, 24, 25, 26, 27, 35, 38)
-    }
-
-    /**
-     * Interpolates points using Catmull-Rom spline formula for professional smoothing
+     * Interpolates points using Catmull-Rom spline formula for professional smoothing.
+     * Pre-sized to prevent dynamic array allocations.
      */
     fun interpolateCatmullRom(points: List<Offset>, stepsPerSegment: Int = 5): List<Offset> {
         if (points.size < 3) return points
-        val result = mutableListOf<Offset>()
+        val expectedSize = points.size * stepsPerSegment
+        val result = ArrayList<Offset>(expectedSize)
         result.add(points.first())
 
         for (i in 0 until points.size - 1) {
@@ -249,9 +356,7 @@ object OpenGLBrushRenderer {
     }
 
     /**
-     * 1. Airbrush rendering with Alpha Accumulation behavior.
-     * Generates a Gaussian Blur texture mask based on falloff/hardness,
-     * then stamps onto an accumulation mask with a spacing of 1% to 5% to preserve soft continuous mist look.
+     * 1. Airbrush rendering using Gaussian Blur pre-cached shapes.
      */
     private fun renderAirbrushGl(
         canvas: Canvas,
@@ -263,17 +368,16 @@ object OpenGLBrushRenderer {
         customHardness: Float? = null
     ) {
         if (preset == 33 || preset == 34) {
-            // High-performance particle airbrush (granular noise spray)
             val random = java.util.Random(1234)
             val dispersion = size * 1.5f
             val maxSplats = if (preset == 33) 4 else 2
             val radiusVal = if (preset == 34) 2.2f else 0.8f
-            
-            val paint = Paint().apply {
+
+            val paint = acquirePaint().apply {
                 isAntiAlias = true
                 color = brushColor.toArgb()
             }
-            
+
             for (p in points) {
                 for (dot in 0..maxSplats) {
                     val r = random.nextFloat() * dispersion
@@ -288,14 +392,13 @@ object OpenGLBrushRenderer {
         }
 
         if (preset == 29) {
-            // High-performance triangular aura airbrush nozzle spray
             val tipSize = size.coerceAtLeast(4f)
             val tipTex = getCachedGaussianTexture(tipSize, hardness = 0.25f, brushColor)
             val overlayAlphas = listOf(0.18f, 0.14f, 0.10f)
             val offsets = listOf(-size * 0.15f, 0f, size * 0.15f)
-            
+
             for (step in 0..2) {
-                val paint = Paint().apply {
+                val paint = acquirePaint().apply {
                     isAntiAlias = true
                     isFilterBitmap = true
                     isDither = true
@@ -304,7 +407,7 @@ object OpenGLBrushRenderer {
                 }
                 val dx = offsets[step]
                 val dy = -offsets[step] * 0.5f
-                
+
                 val spacing = (tipSize * 0.18f).coerceAtLeast(2.5f)
                 val finePoints = interpolateDenseSpacing(points, spacing)
                 for (pt in finePoints) {
@@ -319,35 +422,30 @@ object OpenGLBrushRenderer {
             return
         }
 
-        // Standard and Trapezoid Airbrushes
         val hardness = customHardness ?: when (preset) {
-            30 -> 0.20f // Trapezoids
+            30 -> 0.20f
             31 -> 0.40f
             32 -> 0.60f
-            else -> 0.15f // Normal soft airbrush
+            else -> 0.15f
         }
         val flow = when (preset) {
             30 -> 0.12f
             31 -> 0.18f
             32 -> 0.24f
-            else -> 0.08f // Soft mist flow
+            else -> 0.08f
         }
 
-        // Build Gaussian Tip texture pre-colored to avoid expensive and unstable hardware color filters
         val tipSize = size.coerceAtLeast(4f)
         val tipTex = getCachedGaussianTexture(tipSize, hardness, brushColor)
 
-        // Draw overlapping colorized soft tips directly
-        val paint = Paint().apply {
+        val paint = acquirePaint().apply {
             isAntiAlias = true
             isFilterBitmap = true
             isDither = true
             alpha = (flow * opacity * 255).toInt().coerceIn(1, 255)
-            // Use standard SRC_OVER to let transparent radial gradients combine and accumulate naturally
             xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_OVER)
         }
 
-        // Spacing: Optimized 18% spacing is industry-standard for highly responsive, continuous soft airbrushes.
         val spacing = (tipSize * 0.18f).coerceAtLeast(2.5f)
         val finePoints = interpolateDenseSpacing(points, spacing)
 
@@ -361,11 +459,6 @@ object OpenGLBrushRenderer {
         }
     }
 
-    /**
-     * Builds and caches the Gaussian Blur texture mask to avoid rebuilding on every frame.
-     * Generates a high-quality ARGB_8888 gradient mask with completely transparent corners
-     * and in the target color directly, avoiding drawing overlapping solid square blocks.
-     */
     private fun getCachedGaussianTexture(size: Float, hardness: Float, color: Color): Bitmap {
         val intSize = size.toInt().coerceAtLeast(8)
         val baseColor = color.toArgb()
@@ -375,7 +468,6 @@ object OpenGLBrushRenderer {
             return cached
         }
 
-        // Create ARGB_8888 bitmap to guarantee exact color and transparency transitions
         val bmp = Bitmap.createBitmap(intSize, intSize, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val paint = Paint().apply {
@@ -386,8 +478,6 @@ object OpenGLBrushRenderer {
         val half = intSize / 2f
         val radius = half.coerceAtLeast(1f)
 
-        // Analytical Gaussian falloff simulated with Multi-Stop RadialGradient
-        // Low hardness = very soft edge, high hardness = sharp edge
         val sigma = 0.15f + (1.0f - hardness) * 0.35f
         val colors = IntArray(10)
         val stops = FloatArray(10)
@@ -397,13 +487,9 @@ object OpenGLBrushRenderer {
         val blue = AndroidColor.blue(baseColor)
 
         for (i in 0..9) {
-            val ratio = i / 9f
-            stops[i] = ratio
-            // standard Gaussian function exp(-x^2 / (2 * sigma^2))
-            val x = ratio * 1.5f
+            stops[i] = i / 9f
+            val x = stops[i] * 1.5f
             val g = exp(- (x * x) / (2f * sigma * sigma))
-            
-            // Explicitly force ratio=1.0f (corners) to have an alpha of 0 (completely transparent)
             val alphaVal = if (i == 9) 0 else (g * 255f).toInt().coerceIn(0, 255)
             colors[i] = AndroidColor.argb(alphaVal, red, green, blue)
         }
@@ -416,34 +502,12 @@ object OpenGLBrushRenderer {
 
         canvas.drawCircle(half, half, radius, paint)
 
-        // bmp is ARGB_8888 (non-HARDWARE), so we do NOT call cacheHardwareBuffer to prevent native warnings or exceptions.
-
         strokeBitmapCache.put(cacheKey, bmp)
         return bmp
     }
 
     /**
-     * Utility to cache Bitmaps in HardwareBuffers for instantaneous GPU mapping
-     */
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun cacheHardwareBuffer(key: String, bitmap: Bitmap) {
-        try {
-            if (bitmap.config == Bitmap.Config.HARDWARE) {
-                val hwBuffer = bitmap.hardwareBuffer
-                if (hwBuffer != null && hardwareBufferCache != null) {
-                    @Suppress("UNCHECKED_CAST")
-                    (hardwareBufferCache as LruCache<String, HardwareBuffer>).put(key, hwBuffer)
-                }
-            }
-        } catch (t: Throwable) {
-            // Quiet log for expected hardware access limits on certain older API levels or systems
-            Log.d(TAG, "HardwareBuffer is not supported or accessible for this bitmap config")
-        }
-    }
-
-    /**
-     * 2. Sketch / Pencil brush rendering using grain/noise textures.
-     * Simulates rough graphite powder. Varies opacity by simulated pressure.
+     * 2. Sketch / Pencil stipple rendering.
      */
     private fun renderSketchPencilGl(
         canvas: Canvas,
@@ -452,26 +516,22 @@ object OpenGLBrushRenderer {
         size: Float,
         opacity: Float
     ) {
-        val paint = Paint().apply {
+        val paint = acquirePaint().apply {
             isAntiAlias = true
             color = brushColor.toArgb()
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
 
-        // Varied opacity by simulated "pressure" (using touch velocity approximation)
         var lastPt = points.first()
         val random = java.util.Random(1337)
 
         for (i in 1 until points.size) {
             val pt = points[i]
             val distance = sqrt((pt.x - lastPt.x).pow(2) + (pt.y - lastPt.y).pow(2))
-
-            // Speed based pressure: faster drawing = light pressure, slower drawing = heavy pressure
             val speed = distance.coerceIn(1f, 30f)
             val simulatedPressure = (1.0f - (speed / 30f) * 0.5f).coerceIn(0.2f, 1.0f)
 
-            // Draw segmented lines with grainy stippling shader mask
             val stepSize = (size * 0.15f).coerceAtLeast(1.5f)
             val splatCount = (distance / stepSize).toInt().coerceAtLeast(1)
 
@@ -480,7 +540,6 @@ object OpenGLBrushRenderer {
                 val px = lastPt.x + (pt.x - lastPt.x) * ratio
                 val py = lastPt.y + (pt.y - lastPt.y) * ratio
 
-                // Pencil granular spray noise distribution
                 val numGrains = (size * 0.6f).toInt().coerceIn(3, 20)
                 for (g in 0..numGrains) {
                     val r = random.nextFloat() * size * 0.5f
@@ -488,7 +547,6 @@ object OpenGLBrushRenderer {
                     val dx = r * cos(angle)
                     val dy = r * sin(angle)
 
-                    // Draw organic graphite stippling dots
                     paint.alpha = (opacity * simulatedPressure * (random.nextFloat() * 0.4f + 0.3f) * 255).toInt().coerceIn(0, 255)
                     val dotRadius = 0.6f + random.nextFloat() * 0.8f
                     canvas.drawCircle(px + dx, py + dy, dotRadius, paint)
@@ -499,8 +557,7 @@ object OpenGLBrushRenderer {
     }
 
     /**
-     * 3. Watercolor Flat Bleeding.
-     * Uses wet-edge mix blending. Samples backdropBitmap background and bleeds color.
+     * 3. Watercolor multi-pass bleeding blending.
      */
     private fun renderWatercolorGl(
         canvas: Canvas,
@@ -517,7 +574,7 @@ object OpenGLBrushRenderer {
         val outputBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val tempCanvas = Canvas(outputBmp)
 
-        val strokePaint = Paint().apply {
+        val strokePaint = acquirePaint().apply {
             isAntiAlias = true
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -525,8 +582,7 @@ object OpenGLBrushRenderer {
             strokeWidth = size
         }
 
-        // Draw watercolor texture path with wet pooling edges (darker outer ring)
-        val path = Path()
+        val path = acquirePath()
         if (points.isNotEmpty()) {
             path.moveTo(points[0].x, points[0].y)
             for (i in 1 until points.size) {
@@ -534,11 +590,9 @@ object OpenGLBrushRenderer {
             }
         }
 
-        // Layer 1: soft core mixed with sampled backdrop color
         var mixColor = brushColor
         if (backdrop != null) {
             try {
-                // Dual-buffer background simulation: sample typical underlying color
                 val sampleX = (canvasX + width / 2f).toInt().coerceIn(0, backdrop.width - 1)
                 val sampleY = (canvasY + height / 2f).toInt().coerceIn(0, backdrop.height - 1)
                 val bgPixel = backdrop.getPixel(sampleX, sampleY)
@@ -550,37 +604,31 @@ object OpenGLBrushRenderer {
             } catch (ignored: Exception) {}
         }
 
-        // Draw soft bleeding flow
         strokePaint.color = mixColor.toArgb()
         strokePaint.alpha = (opacity * 0.35f * 255).toInt().coerceIn(0, 255)
         strokePaint.strokeWidth = size * 1.3f
         tempCanvas.drawPath(path, strokePaint)
 
-        // Layer 2: wet hard dark edge simulator
         strokePaint.color = mixColor.toArgb()
         strokePaint.alpha = (opacity * 0.65f * 255).toInt().coerceIn(0, 255)
         strokePaint.strokeWidth = size * 0.95f
         tempCanvas.drawPath(path, strokePaint)
 
-        // Layer 3: dark outer boundary
         strokePaint.alpha = (opacity * 0.15f * 255).toInt().coerceIn(0, 255)
         strokePaint.strokeWidth = size * 1.05f
         tempCanvas.drawPath(path, strokePaint)
 
-        canvas.drawBitmap(outputBmp, 0f, 0f, Paint().apply { isAntiAlias = true })
+        val compositePaint = acquirePaint().apply {
+            isAntiAlias = true
+        }
+        canvas.drawBitmap(outputBmp, 0f, 0f, compositePaint)
         outputBmp.recycle()
     }
 
-    /**
-     * Lerp/mix helper
-     */
-    private fun mix(v0: Float, v1: Float, t: Float): Float {
-        return (1f - t) * v0 + t * v1
-    }
+    private fun mix(v0: Float, v1: Float, t: Float): Float = (1f - t) * v0 + t * v1
 
     /**
-     * 4. Ink & Comic Tapered Width styling.
-     * Starts and ends automatically taper thinner. Uses spline pathing with variable width.
+     * 4. Ink & Comic tapered stroke width pathway engine.
      */
     private fun renderInkComicGl(
         canvas: Canvas,
@@ -590,7 +638,7 @@ object OpenGLBrushRenderer {
         opacity: Float,
         preset: Int
     ) {
-        val paint = Paint().apply {
+        val paint = acquirePaint().apply {
             isAntiAlias = true
             color = brushColor.toArgb()
             alpha = (opacity * 255).toInt().coerceIn(0, 255)
@@ -600,19 +648,14 @@ object OpenGLBrushRenderer {
         val N = points.size
         if (N < 2) return
 
-        // Draw variable width circle stamps to simulate tapering Pathway
         for (i in 0 until N - 1) {
             val p0 = points[i]
             val p1 = points[i + 1]
 
-            // Calculate tapered size multiplier
             val t = i.toFloat() / (N - 1).coerceAtLeast(1)
-            // Beautiful organic sine wave tapering at both endpoints
             val taperMult = sin(t.coerceIn(0f, 1f) * Math.PI.toFloat()).pow(0.5f)
-
             val currentWidth = size * taperMult.coerceIn(0.12f, 1.0f)
 
-            // Fill intermediate spaces to keep line perfectly solid and smooth (optimized spacing for 3x rendering speedups)
             val stepSize = (currentWidth * 0.30f).coerceAtLeast(1.2f)
             val d = sqrt((p1.x - p0.x).pow(2) + (p1.y - p0.y).pow(2))
             val stamps = (d / stepSize).toInt().coerceAtLeast(1)
@@ -621,22 +664,13 @@ object OpenGLBrushRenderer {
                 val ratio = step.toFloat() / stamps
                 val px = p0.x + (p1.x - p0.x) * ratio
                 val py = p0.y + (p1.y - p0.y) * ratio
-
                 canvas.drawCircle(px, py, currentWidth / 2f, paint)
             }
         }
     }
 
-    private val localPaint = object : ThreadLocal<Paint>() {
-        override fun initialValue() = Paint()
-    }
-
-    private val localPath = object : ThreadLocal<Path>() {
-        override fun initialValue() = Path()
-    }
-
     /**
-     * Standard traditional brush fallback drawing
+     * Standard traditional brush fallback drawing.
      */
     private fun renderStandardBrush(
         canvas: Canvas,
@@ -646,18 +680,17 @@ object OpenGLBrushRenderer {
         opacity: Float,
         preset: Int
     ) {
-        val paint = localPaint.get()!!
-        paint.reset()
-        paint.isAntiAlias = true
-        paint.color = brushColor.toArgb()
-        paint.alpha = (opacity * 255).toInt().coerceIn(0, 255)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = size
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.strokeJoin = Paint.Join.ROUND
+        val paint = acquirePaint().apply {
+            isAntiAlias = true
+            color = brushColor.toArgb()
+            alpha = (opacity * 255).toInt().coerceIn(0, 255)
+            style = Paint.Style.STROKE
+            strokeWidth = size
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
 
-        val path = localPath.get()!!
-        path.reset()
+        val path = acquirePath()
         if (points.isNotEmpty()) {
             path.moveTo(points[0].x, points[0].y)
             for (i in 1 until points.size) {
@@ -667,11 +700,6 @@ object OpenGLBrushRenderer {
         canvas.drawPath(path, paint)
     }
 
-    /**
-     * Interpolates points to produce high density coordinates suited for smooth airbrush sprays.
-     * Highly optimized: executes exactly one square-root division per segment, handles remainder accumulators
-     * cleanly across segments, and pre-sizes the collection to avoid internal array resizing latency/garbage.
-     */
     private fun interpolateDenseSpacing(points: List<Offset>, spacingDistance: Float): List<Offset> {
         if (points.size < 2) return points
         val result = ArrayList<Offset>(points.size * 2)
@@ -711,18 +739,16 @@ object OpenGLBrushRenderer {
         return result
     }
 
-    /**
-     * Formulates custom unique cache key for a given stroke path
-     */
     private fun buildCacheKey(
         points: List<Offset>,
         color: Color,
         size: Float,
         opacity: Float,
         preset: Int,
-        smoothing: Boolean
+        smoothing: Boolean,
+        blendMode: androidx.compose.ui.graphics.BlendMode
     ): String {
-        return "str_${points.hashCode()}_${color.toArgb()}_${size}_${opacity}_${preset}_${smoothing}"
+        return "str_${points.hashCode()}_${color.toArgb()}_${size}_${opacity}_${preset}_${smoothing}_${blendMode.toString()}"
     }
 
     /**
@@ -737,46 +763,62 @@ object OpenGLBrushRenderer {
         presetIndex: Int,
         smoothing: Boolean,
         backdropBitmap: Bitmap? = null,
-        customHardness: Float? = null
+        customHardness: Float? = null,
+        blendMode: androidx.compose.ui.graphics.BlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
     ) {
         val cleanPoints = points.filter { it != Offset.Unspecified && !it.x.isNaN() && !it.y.isNaN() }
         if (cleanPoints.isEmpty()) return
 
-        // Apply Vector path smoothing via Catmull-Rom spline (bypass on soft airbrushes to prevent O(N) heap churn and latency)
         val processedPoints = if ((isVectorBrush(presetIndex) || smoothing) && !isAirbrush(presetIndex)) {
             interpolateCatmullRom(cleanPoints, stepsPerSegment = 6)
         } else {
             cleanPoints
         }
 
-        when {
-            isAirbrush(presetIndex) -> {
-                renderAirbrushGl(canvas, processedPoints, brushColor, size, opacity, presetIndex, customHardness)
+        // Layered offscreen composition for real-time segments to guarantee color/blend modes are represented accurately
+        val rect = acquireRectF().apply { set(0f, 0f, canvas.width.toFloat(), canvas.height.toFloat()) }
+        val layerPaint = acquirePaint().apply {
+            isAntiAlias = true
+            isDither = true
+            isFilterBitmap = true
+            alpha = (opacity * 255f).toInt().coerceIn(0, 255)
+            applyBlendMode(this, blendMode)
+        }
+
+        val saveCount = canvas.saveLayer(rect, layerPaint)
+
+        try {
+            when {
+                isAirbrush(presetIndex) -> {
+                    renderAirbrushGl(canvas, processedPoints, brushColor, size, 1.0f, presetIndex, customHardness)
+                }
+                isSketchOrPencil(presetIndex) -> {
+                    renderSketchPencilGl(canvas, processedPoints, brushColor, size, 1.0f)
+                }
+                isWatercolor(presetIndex) -> {
+                    renderWatercolorGl(canvas, processedPoints, brushColor, size, 1.0f, backdropBitmap, 0f, 0f)
+                }
+                isInkComic(presetIndex) -> {
+                    renderInkComicGl(canvas, processedPoints, brushColor, size, 1.0f, presetIndex)
+                }
+                else -> {
+                    renderStandardBrush(canvas, processedPoints, brushColor, size, 1.0f, presetIndex)
+                }
             }
-            isSketchOrPencil(presetIndex) -> {
-                renderSketchPencilGl(canvas, processedPoints, brushColor, size, opacity)
-            }
-            isWatercolor(presetIndex) -> {
-                renderWatercolorGl(canvas, processedPoints, brushColor, size, opacity, backdropBitmap, 0f, 0f)
-            }
-            isInkComic(presetIndex) -> {
-                renderInkComicGl(canvas, processedPoints, brushColor, size, opacity, presetIndex)
-            }
-            else -> {
-                renderStandardBrush(canvas, processedPoints, brushColor, size, opacity, presetIndex)
-            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error in WetInk canvas segments rendering layer", t)
+        } finally {
+            canvas.restoreToCount(saveCount)
         }
     }
 
     /**
-     * GC-free pre-allocated coordinate arrays to track touch points safely.
-     * Prevents creation of thousands of garbage objects inside high-frequency pointerInput loops.
+     * GC-free pre-allocated coordinate tracker for fast gestural drawing input.
      */
     class HighPerformanceStrokeTracker {
         private var xCoords = FloatArray(4096)
         private var yCoords = FloatArray(4096)
         var pointCount = 0
-            get() = field
             private set
 
         fun addPoint(x: Float, y: Float) {
@@ -808,8 +850,7 @@ object OpenGLBrushRenderer {
     }
 
     /**
-     * High-speed hardware-backed overlay ("Wet Ink" Pipeline) that isolates the active drawing path.
-     * Eliminates drawing lag and O(N^2) redundancy by drawing incremental segments directly onto a pre-cached Bitmap layer.
+     * High-speed hardware-backed active drawing overlay ("Wet Ink" Pipeline).
      */
     object WetInkRenderer {
         private var wetInkBitmap: Bitmap? = null
@@ -842,13 +883,13 @@ object OpenGLBrushRenderer {
             opacity: Float,
             presetIndex: Int,
             smoothing: Boolean,
-            customHardness: Float? = null
+            customHardness: Float? = null,
+            blendMode: androidx.compose.ui.graphics.BlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
         ) {
             val canvas = wetInkCanvas ?: return
             val currentSize = points.size
             if (currentSize <= lastDrawnPointsCount) return
 
-            // Extract newly added slice (with overlap)
             val startIndex = (lastDrawnPointsCount - 1).coerceAtLeast(0)
             val newPoints = points.subList(startIndex, currentSize)
 
@@ -861,7 +902,8 @@ object OpenGLBrushRenderer {
                     opacity = opacity,
                     presetIndex = presetIndex,
                     smoothing = smoothing,
-                    customHardness = customHardness
+                    customHardness = customHardness,
+                    blendMode = blendMode
                 )
             }
             lastDrawnPointsCount = currentSize

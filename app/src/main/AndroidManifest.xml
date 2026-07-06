@@ -36,6 +36,11 @@
             android:authorities="com.aistudio.zenithstudio.rpxwtq.DropDataProvider"
             android:exported="true"
             android:grantUriPermissions="true" />
+
+        <activity
+            android:name=".CrashActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyApplication" />
     </application>
 
 </manifest>

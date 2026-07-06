@@ -33,7 +33,7 @@ object EffectsProcessor {
                 .distinctUntilChanged { old, new ->
                     old.effects.hashCode() == new.effects.hashCode()
                 }
-                .debounce(16) // Conflate high-frequency updates (approx. 60fps filter limit)
+                .debounce(4) // Conflate high-frequency updates (optimized for ultra-smooth 120 FPS display tracking)
                 .mapLatest { layer ->
                     val layerId = layer.id
                     val activeEffects = layer.effects.filter { it.isEnabled }

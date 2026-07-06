@@ -233,6 +233,10 @@ class LightroomFilter(
     LIGHTROOM_VERTEX_SHADER,
     LIGHTROOM_FRAGMENT_SHADER
 ) {
+    init {
+        updateParams(exposure, contrast, highlights, shadows, whites, blacks, temp, tint, vibrance, saturation, clarity, dehaze, profile)
+    }
+
     private var uExposureLocation: Int = -1
     private var uContrastLocation: Int = -1
     private var uHighlightsLocation: Int = -1
@@ -269,25 +273,30 @@ class LightroomFilter(
         applyParameters()
     }
 
+    private fun safe(v: Float, min: Float, max: Float, default: Float): Float {
+        if (v.isNaN() || v.isInfinite()) return default
+        return v.coerceIn(min, max)
+    }
+
     fun updateParams(
         exposure: Float, contrast: Float, highlights: Float, shadows: Float,
         whites: Float, blacks: Float, temp: Float, tint: Float,
         vibrance: Float, saturation: Float, clarity: Float, dehaze: Float,
         profile: Float = 0f
     ) {
-        this.exposure = exposure
-        this.contrast = contrast
-        this.highlights = highlights
-        this.shadows = shadows
-        this.whites = whites
-        this.blacks = blacks
-        this.temp = temp
-        this.tint = tint
-        this.vibrance = vibrance
-        this.saturation = saturation
-        this.clarity = clarity
-        this.dehaze = dehaze
-        this.profile = profile
+        this.exposure = safe(exposure, -5f, 5f, 0f)
+        this.contrast = safe(contrast, -100f, 100f, 0f)
+        this.highlights = safe(highlights, -100f, 100f, 0f)
+        this.shadows = safe(shadows, -100f, 100f, 0f)
+        this.whites = safe(whites, -100f, 100f, 0f)
+        this.blacks = safe(blacks, -100f, 100f, 0f)
+        this.temp = safe(temp, -100f, 100f, 0f)
+        this.tint = safe(tint, -100f, 100f, 0f)
+        this.vibrance = safe(vibrance, -100f, 100f, 0f)
+        this.saturation = safe(saturation, -100f, 100f, 0f)
+        this.clarity = safe(clarity, -100f, 100f, 0f)
+        this.dehaze = safe(dehaze, -100f, 100f, 0f)
+        this.profile = safe(profile, 0f, 4f, 0f)
         applyParameters()
     }
 

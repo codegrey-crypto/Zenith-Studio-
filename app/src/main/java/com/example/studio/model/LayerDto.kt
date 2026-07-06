@@ -120,6 +120,10 @@ data class LayerDto(
     val skewY: Float = 0f,
     val perspX: Float = 0f,
     val perspY: Float = 0f,
+    val perspWarpEnabled: Boolean = false,
+    val perspWarpSplitY: Float = 0.5f,
+    val perspWarpWidth: Float = 1.0f,
+    val perspWarpHeight: Float = 1.0f,
     val effects: List<EffectDto>,
     val textContent: String,
     val baseColorValue: Long,
@@ -139,7 +143,8 @@ data class LayerDto(
     val fontAlign: String? = "Center",
     val fontPath: String? = null,
     val isAspectLocked: Boolean? = true,
-    val parentGroupId: String? = null
+    val parentGroupId: String? = null,
+    val bezierNodeTypes: List<String>? = emptyList()
 ) {
     fun toLayer(): StudioLayer {
         val pts = mutableListOf<Offset>()
@@ -169,6 +174,10 @@ data class LayerDto(
             skewY = skewY,
             perspX = perspX,
             perspY = perspY,
+            perspWarpEnabled = perspWarpEnabled,
+            perspWarpSplitY = perspWarpSplitY,
+            perspWarpWidth = perspWarpWidth,
+            perspWarpHeight = perspWarpHeight,
             opacity = opacity,
             blendMode = try { ZenithBlendMode.valueOf(blendModeName) } catch (e: Exception) { ZenithBlendMode.NORMAL },
             isVisible = isVisible,
@@ -193,7 +202,8 @@ data class LayerDto(
             fontIsItalic = fontIsItalic ?: false,
             fontAlign = fontAlign ?: "Center",
             fontPath = fontPath,
-            parentGroupId = parentGroupId
+            parentGroupId = parentGroupId,
+            bezierNodeTypes = bezierNodeTypes ?: emptyList()
         )
     }
 
@@ -231,6 +241,10 @@ data class LayerDto(
                 skewY = layer.skewY.sanitize(),
                 perspX = layer.perspX.sanitize(),
                 perspY = layer.perspY.sanitize(),
+                perspWarpEnabled = layer.perspWarpEnabled,
+                perspWarpSplitY = layer.perspWarpSplitY.sanitize(0.5f),
+                perspWarpWidth = layer.perspWarpWidth.sanitize(1.0f),
+                perspWarpHeight = layer.perspWarpHeight.sanitize(1.0f),
                 effects = layer.effects.map { EffectDto.fromEffect(it) },
                 textContent = layer.textContent,
                 baseColorValue = layer.baseColor.value.toLong(),
@@ -250,7 +264,8 @@ data class LayerDto(
                 fontAlign = layer.fontAlign,
                 fontPath = layer.fontPath,
                 isAspectLocked = layer.isAspectLocked,
-                parentGroupId = layer.parentGroupId
+                parentGroupId = layer.parentGroupId,
+                bezierNodeTypes = layer.bezierNodeTypes
             )
         }
     }

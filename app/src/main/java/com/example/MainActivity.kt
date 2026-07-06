@@ -14,6 +14,23 @@ import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Intercept uncaught exceptions to show a beautiful Recovery Screen
+    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+      try {
+        val intent = android.content.Intent(applicationContext, CrashActivity::class.java).apply {
+          putExtra("error_message", throwable.localizedMessage ?: throwable.toString())
+          putExtra("stack_trace", android.util.Log.getStackTraceString(throwable))
+          addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        }
+        applicationContext.startActivity(intent)
+      } catch (e: Exception) {
+        defaultHandler?.uncaughtException(thread, throwable)
+      }
+      android.os.Process.killProcess(android.os.Process.myPid())
+      java.lang.System.exit(10)
+    }
+
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
 
@@ -25,10 +42,10 @@ class MainActivity : ComponentActivity() {
     val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
 
     // Set layout behavior to system bars showing briefly on gesture/swipe and hiding again
-    windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    windowInsetsController?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
     // Hide the system status bar and the screen navigation bar under-pill
-    windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+    windowInsetsController?.hide(WindowInsetsCompat.Type.systemBars())
 
     setContent {
       MyApplicationTheme {

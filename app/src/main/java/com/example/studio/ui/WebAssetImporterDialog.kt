@@ -70,6 +70,7 @@ fun WebAssetImporterDialog(
     ) {
         Surface(
             modifier = Modifier
+                .widthIn(max = 680.dp)
                 .fillMaxWidth(0.95f)
                 .fillMaxHeight(0.85f),
             shape = RoundedCornerShape(16.dp),

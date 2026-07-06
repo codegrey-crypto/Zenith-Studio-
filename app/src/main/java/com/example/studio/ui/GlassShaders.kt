@@ -255,22 +255,50 @@ object GlassShaders {
         uniform float depth;
         uniform float size;
         uniform float soften;
+        uniform float angle;
+        uniform float altitude;
 
         half4 main(float2 coords) {
             half4 color = inputShader.eval(coords);
             if (color.a <= 0.0) return color;
-            float d = max(1.0, size * 0.25);
+
+            float d = max(1.0, size * 0.15);
             float aL = inputShader.eval(coords + float2(-d, 0.0)).a;
             float aR = inputShader.eval(coords + float2(d, 0.0)).a;
             float aT = inputShader.eval(coords + float2(0.0, -d)).a;
             float aB = inputShader.eval(coords + float2(0.0, d)).a;
-            float nx = aR - aL;
-            float ny = aB - aT;
-            float lx = -0.7071;
-            float ly = -0.7071;
-            float intensity = (nx * lx + ny * ly) * (depth / 100.0) * 0.25;
-            half3 lit = color.rgb + half3(intensity);
-            return half4(clamp(lit, 0.0, 1.0), color.a);
+
+            float aTL = inputShader.eval(coords + float2(-d * 0.707, -d * 0.707)).a;
+            float aTR = inputShader.eval(coords + float2(d * 0.707, -d * 0.707)).a;
+            float aBL = inputShader.eval(coords + float2(-d * 0.707, d * 0.707)).a;
+            float aBR = inputShader.eval(coords + float2(d * 0.707, d * 0.707)).a;
+
+            float gx = (aTR + 2.0 * aR + aBR) - (aTL + 2.0 * aL + aBL);
+            float gy = (aBL + 2.0 * aB + aBR) - (aTL + 2.0 * aT + aTR);
+
+            float radA = angle * 3.14159265 / 180.0;
+            float radH = altitude * 3.14159265 / 180.0;
+            float3 L = float3(cos(radH) * cos(radA), cos(radH) * sin(radA), sin(radH));
+
+            float slopeScale = (depth / 100.0) * 8.0;
+            float3 N = normalize(float3(-gx * slopeScale, -gy * slopeScale, 1.0));
+
+            float diffuse = dot(N, L);
+
+            float3 V = float3(0.0, 0.0, 1.0);
+            float3 H_vec = normalize(L + V);
+            float specular = pow(max(0.0, dot(N, H_vec)), 16.0) * (depth / 100.0);
+
+            half3 rgb = color.rgb;
+            if (diffuse > 0.0) {
+                float hlIntensity = diffuse * 0.4 * (depth / 100.0) + specular * 0.6;
+                rgb = rgb + half3(hlIntensity) - rgb * half3(hlIntensity);
+            } else {
+                float shIntensity = -diffuse * 0.5 * (depth / 100.0);
+                rgb = rgb * (half3(1.0) - half3(shIntensity));
+            }
+
+            return half4(clamp(rgb, 0.0, 1.0), color.a);
         }
     """
 
@@ -285,10 +313,14 @@ object GlassShaders {
             val dp = effect.parameters["Depth"]?.value ?: 100f
             val sz = effect.parameters["Size"]?.value ?: 5f
             val sf = effect.parameters["Soften"]?.value ?: 0f
+            val ang = effect.parameters["Angle"]?.value ?: 120f
+            val alt = effect.parameters["Altitude"]?.value ?: 30f
 
             shader.setFloatUniform("depth", dp)
             shader.setFloatUniform("size", sz)
             shader.setFloatUniform("soften", sf)
+            shader.setFloatUniform("angle", ang)
+            shader.setFloatUniform("altitude", alt)
 
             val shaderEffect = RenderEffect.createRuntimeShaderEffect(shader, "inputShader")
             return if (sf > 0.1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

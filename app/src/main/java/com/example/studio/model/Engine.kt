@@ -15,6 +15,34 @@ enum class LayerType {
     VECTOR_OVAL,
     VECTOR_LINE,
     VECTOR_BEZIER,
+    VECTOR_HEART,
+    VECTOR_CROSS,
+    VECTOR_SHIELD,
+    VECTOR_RING,
+    VECTOR_CRESCENT,
+    VECTOR_CLOVER,
+    VECTOR_GEAR,
+    VECTOR_DIAMOND,
+    VECTOR_TILTED_RECT,
+    VECTOR_TRAPEZOID,
+    VECTOR_ROUNDED_RECT,
+    VECTOR_PIE_SLICE,
+    VECTOR_ARROW,
+    VECTOR_SPEECH_BUBBLE,
+    VECTOR_BRACKETS,
+    VECTOR_DOUBLE_ARROW,
+    VECTOR_CROSSHAIR,
+    VECTOR_SPIRAL,
+    VECTOR_WAVE,
+    VECTOR_POLYGON,
+    VECTOR_BLOB,
+    VECTOR_CONTAINER,
+    VECTOR_FLOW_CONNECTOR,
+    VECTOR_NODE,
+    VECTOR_TIMELINE_MARKER,
+    VECTOR_ROUNDED_TRIANGLE,
+    VECTOR_CUT_CORNER_SQUARE,
+    VECTOR_RING_SEGMENT,
     TEXT,
     FREEHAND_DRAWING,
     IMAGE_CARD,
@@ -77,6 +105,7 @@ sealed class StudioEffect {
     abstract val isEnabled: Boolean
     abstract fun updateParameter(paramName: String, newValue: Float): StudioEffect
     abstract fun toggleEnabled(): StudioEffect
+    abstract fun duplicate(): StudioEffect
 
     data class GaussianBlur(
         override val id: String = UUID.randomUUID().toString(),
@@ -95,6 +124,9 @@ sealed class StudioEffect {
         }
         override fun toggleEnabled(): StudioEffect {
             return this.copy(isEnabled = !isEnabled)
+        }
+        override fun duplicate(): StudioEffect {
+            return this.copy(id = UUID.randomUUID().toString())
         }
     }
 
@@ -117,6 +149,9 @@ sealed class StudioEffect {
         override fun toggleEnabled(): StudioEffect {
             return this.copy(isEnabled = !isEnabled)
         }
+        override fun duplicate(): StudioEffect {
+            return this.copy(id = UUID.randomUUID().toString())
+        }
     }
 
     data class ColorBalance(
@@ -138,6 +173,9 @@ sealed class StudioEffect {
         override fun toggleEnabled(): StudioEffect {
             return this.copy(isEnabled = !isEnabled)
         }
+        override fun duplicate(): StudioEffect {
+            return this.copy(id = UUID.randomUUID().toString())
+        }
     }
 
     data class Invert(
@@ -149,6 +187,9 @@ sealed class StudioEffect {
         override fun updateParameter(paramName: String, newValue: Float): StudioEffect = this
         override fun toggleEnabled(): StudioEffect {
             return this.copy(isEnabled = !isEnabled)
+        }
+        override fun duplicate(): StudioEffect {
+            return this.copy(id = UUID.randomUUID().toString())
         }
     }
 
@@ -169,6 +210,9 @@ sealed class StudioEffect {
         override fun toggleEnabled(): StudioEffect {
             return this.copy(isEnabled = !isEnabled)
         }
+        override fun duplicate(): StudioEffect {
+            return this.copy(id = UUID.randomUUID().toString())
+        }
     }
 
     data class Posterize(
@@ -187,6 +231,9 @@ sealed class StudioEffect {
         }
         override fun toggleEnabled(): StudioEffect {
             return this.copy(isEnabled = !isEnabled)
+        }
+        override fun duplicate(): StudioEffect {
+            return this.copy(id = UUID.randomUUID().toString())
         }
     }
 
@@ -217,6 +264,9 @@ sealed class StudioEffect {
         }
         override fun toggleEnabled(): StudioEffect {
             return this.copy(isEnabled = !isEnabled)
+        }
+        override fun duplicate(): StudioEffect {
+            return this.copy(id = UUID.randomUUID().toString())
         }
     }
 }
@@ -315,9 +365,11 @@ object PhotoshopEffectTemplates {
                 category = "Layer Styles (fx)",
                 effectType = effectType,
                 parameters = mapOf(
-                    "Depth" to EffectParameter("Depth", 100f, 1f, 200f, "%"),
-                    "Size" to EffectParameter("Size", 5f, 1f, 50f, "px"),
-                    "Soften" to EffectParameter("Soften", 0f, 0f, 16f, "px")
+                    "Depth" to EffectParameter("Depth", 100f, 1f, 1000f, "%"),
+                    "Size" to EffectParameter("Size", 5f, 1f, 100f, "px"),
+                    "Soften" to EffectParameter("Soften", 0f, 0f, 32f, "px"),
+                    "Angle" to EffectParameter("Angle", 120f, 0f, 360f, "°"),
+                    "Altitude" to EffectParameter("Altitude", 30f, 0f, 90f, "°")
                 )
             )
             "Satin" -> StudioEffect.PhotoshopEffect(
@@ -1337,11 +1389,118 @@ object PhotoshopEffectTemplates {
                     "Grain" to EffectParameter("Film Grain", 0f, 0f, 100f, "%")
                 )
             )
+            "ChromaticAberration" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Chromatic Aberration",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Distance" to EffectParameter("Distance", 16f, 0f, 150f, "px"),
+                    "Angle" to EffectParameter("Angle", 136f, 0f, 360f, "°")
+                )
+            )
+            "Glitch" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Glitch Distortion",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Height" to EffectParameter("Height", 119f, 10f, 500f, "px"),
+                    "Strength" to EffectParameter("Strength", 23f, 0f, 150f, "px"),
+                    "ColorShift" to EffectParameter("Color Shift", 8f, 0f, 100f, "px")
+                )
+            )
+            "Bloom" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Bloom Glow",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Area" to EffectParameter("Area", 100f, 0f, 100f, "%"),
+                    "Radius" to EffectParameter("Radius", 45f, 1f, 150f, "px"),
+                    "Brightness" to EffectParameter("Brightness", 100f, 0f, 300f, "%"),
+                    "Balanced" to EffectParameter("Balanced Blend", 25f, 0f, 100f, "%")
+                )
+            )
+            "CrossFilter" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Cross Filter",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Count" to EffectParameter("Count", 4f, 2f, 8f),
+                    "Direction" to EffectParameter("Direction", 45f, 0f, 360f, "°"),
+                    "Area" to EffectParameter("Area", 10f, 0f, 100f, "%"),
+                    "Brightness" to EffectParameter("Brightness", 50f, 0f, 300f, "%")
+                )
+            )
+            "InnerGlow" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Inner Glow Edge",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Radius" to EffectParameter("Radius", 104f, 5f, 300f, "px"),
+                    "Red" to EffectParameter("Color Red", 1.0f, 0f, 1f),
+                    "Green" to EffectParameter("Color Green", 1.0f, 0f, 1f),
+                    "Blue" to EffectParameter("Color Blue", 1.0f, 0f, 1f)
+                )
+            )
+            "Bevel" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Bevel (Inner/Outer)",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Height" to EffectParameter("Height", 20f, 1f, 100f, "px"),
+                    "Smoothness" to EffectParameter("Smoothness", 45f, 0f, 100f, "px"),
+                    "HighlightSize" to EffectParameter("Highlight Size", 14f, 0f, 100f, "%")
+                )
+            )
+            "Emboss2" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Emboss Pro",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "GrayScale" to EffectParameter("Gray Scale (=1)", 0f, 0f, 1f),
+                    "Height" to EffectParameter("Height", 1f, 1f, 10f, "px"),
+                    "Amount" to EffectParameter("Amount", 500f, 10f, 1000f, "%")
+                )
+            )
+            "Waterdrop" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Waterdrop (Rounded)",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Distance" to EffectParameter("Distance", 100f, 10f, 200f, "%"),
+                    "Flatness" to EffectParameter("Flatness", 10f, 0f, 100f, "%"),
+                    "Height" to EffectParameter("Height", 3f, 1f, 15f, "px")
+                )
+            )
+            "Satin2" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Satin Contour",
+                category = "Light Effects",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Distance" to EffectParameter("Distance", 11f, 1f, 100f, "px"),
+                    "Opacity" to EffectParameter("Opacity", 0.5f, 0f, 1f),
+                    "Red" to EffectParameter("Color Red", 0f, 0f, 1f),
+                    "Green" to EffectParameter("Color Green", 0f, 0f, 1f),
+                    "Blue" to EffectParameter("Color Blue", 0f, 0f, 1f)
+                )
+            )
             else -> StudioEffect.GaussianBlur(id = id)
         }
     }
 
     val ALL_TYPES_BY_CATEGORY = mapOf(
+        "Light Effects" to listOf(
+            "ChromaticAberration", "Glitch", "Bloom", "CrossFilter",
+            "InnerGlow", "Bevel", "Emboss2", "Waterdrop", "Satin2"
+        ),
         "Layer Styles (fx)" to listOf(
             "DropShadow", "InnerShadow", "OuterGlow", "InnerGlow",
             "BevelEmboss", "Satin", "ColorOverlay", "GradientOverlay",
@@ -1383,6 +1542,10 @@ data class StudioLayer(
     val skewY: Float = 0f,
     val perspX: Float = 0f,
     val perspY: Float = 0f,
+    val perspWarpEnabled: Boolean = false,
+    val perspWarpSplitY: Float = 0.5f,
+    val perspWarpWidth: Float = 1.0f,
+    val perspWarpHeight: Float = 1.0f,
     val opacity: Float = 1.0f,
     val blendMode: ZenithBlendMode = ZenithBlendMode.NORMAL,
     val isVisible: Boolean = true,
@@ -1416,5 +1579,6 @@ data class StudioLayer(
     val adjContrast: Float = 1f,
     val adjSaturation: Float = 1f,
     val adjColorTint: Color = Color.Transparent,
-    val adjTintColorIntensity: Float = 0f
+    val adjTintColorIntensity: Float = 0f,
+    val bezierNodeTypes: List<String> = emptyList()
 )

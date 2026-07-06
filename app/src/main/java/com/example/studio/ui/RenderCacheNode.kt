@@ -58,6 +58,10 @@ object ParametricLayerCache {
         result = 31 * result + layer.strokeThickness.hashCode()
         result = 31 * result + layer.opacity.hashCode()
         result = 31 * result + layer.blendMode.hashCode()
+        result = 31 * result + layer.perspWarpEnabled.hashCode()
+        result = 31 * result + layer.perspWarpSplitY.hashCode()
+        result = 31 * result + layer.perspWarpWidth.hashCode()
+        result = 31 * result + layer.perspWarpHeight.hashCode()
         
         // Hash active effects and their slider parameters
         for (effect in layer.effects) {
@@ -137,22 +141,25 @@ object CanvasEventLoop {
         onUpdateSlider: (String, String, String, Float) -> Unit,
         onUpdateLayerProp: (String, String, Float) -> Unit
     ) {
-        // Collect transformChannel at 120Hz (approx 8.33ms windows) to coalesce & downsample 360Hz inputs
-        scope.launch {
-            while (isActive) {
-                val transform = transformChannel.tryReceive().getOrNull()
-                if (transform != null) {
-                    var latest = transform
-                    while (true) {
-                        val next = transformChannel.tryReceive().getOrNull() ?: break
-                        latest = next
-                    }
-                    withContext(Dispatchers.Main) {
+        // Collect transformChannel synchronized with hardware display VSYNC via Choreographer to guarantee perfect 120 FPS
+        scope.launch(Dispatchers.Main) {
+            val callback = object : android.view.Choreographer.FrameCallback {
+                override fun doFrame(frameTimeNanos: Long) {
+                    val transform = transformChannel.tryReceive().getOrNull()
+                    if (transform != null) {
+                        var latest = transform
+                        while (true) {
+                            val next = transformChannel.tryReceive().getOrNull() ?: break
+                            latest = next
+                        }
                         onUpdateTransform(latest.panX, latest.panY, latest.scale, latest.rotation)
                     }
+                    if (isActive) {
+                        android.view.Choreographer.getInstance().postFrameCallback(this)
+                    }
                 }
-                delay(8) // Downsample to ~120Hz frame pacing
             }
+            android.view.Choreographer.getInstance().postFrameCallback(callback)
         }
 
         scope.launch {
@@ -167,7 +174,7 @@ object CanvasEventLoop {
                         val sliderKey = "${event.layerId}_${event.effectId}_${event.paramName}"
                         activeSliderJobs[sliderKey]?.cancel()
                         val debouncedJob = scope.launch {
-                            delay(16) // debounce high frequency updates (approx. 60fps limit)
+                            delay(4) // debounce optimized for ultra-smooth 120 FPS / 240Hz screen refresh rates
                             ParametricLayerCache.invalidate(event.layerId)
                             withContext(Dispatchers.Main) {
                                 onUpdateSlider(event.layerId, event.effectId, event.paramName, event.value)

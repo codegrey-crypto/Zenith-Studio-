@@ -4,6 +4,7 @@ plugins {
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
+  // alias(libs.plugins.chaquopy) // Uncomment to enable Chaquopy locally
 }
 
 android {
@@ -18,6 +19,10 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    ndk {
+      abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
+    }
   }
 
   signingConfigs {
@@ -65,6 +70,17 @@ secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
 }
+
+/*
+chaquopy {
+  defaultConfig {
+    version = "3.10"
+    pip {
+      install("psd-tools")
+    }
+  }
+}
+*/
 
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
@@ -148,3 +164,5 @@ if (workspaceFile.exists()) {
         println("OPTIMIZATION: Successfully bypassed high-frequency gestures recompositions and updated selection handles in WorkspaceScreen.kt")
     }
 }
+
+

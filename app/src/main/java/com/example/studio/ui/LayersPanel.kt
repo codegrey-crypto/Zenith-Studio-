@@ -49,6 +49,7 @@ fun RightsideLayerDrawer(
     onToggleMultiSelect: () -> Unit = {},
     selectedLayersSet: Set<String> = emptySet(),
     onToggleSelectLayerMulti: (String) -> Unit = {},
+    onSelectAllLayers: (Boolean) -> Unit = {},
     onGroupSelected: () -> Unit = {},
     onMergeDown: (String) -> Unit = {},
     collapsedGroupIds: Set<String> = emptySet(),
@@ -156,6 +157,22 @@ fun RightsideLayerDrawer(
                             tint = if (isMultiSelectMode) IndustrialAmber else TextPrimary,
                             modifier = Modifier.size(14.dp)
                         )
+                    }
+
+                    // Select All / Deselect All Button
+                    if (isMultiSelectMode) {
+                        val allSelected = selectedLayersSet.size == layers.size
+                        IconButton(
+                            onClick = { onSelectAllLayers(!allSelected) },
+                            modifier = Modifier.size(24.dp).testTag("select_all_layers_button")
+                        ) {
+                            Icon(
+                                imageVector = if (allSelected) Icons.Default.LibraryAddCheck else Icons.Default.SelectAll,
+                                contentDescription = if (allSelected) "Deselect All Layers" else "Select All Layers",
+                                tint = if (allSelected) IndustrialAmber else TextPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
 
                     // Group Selected Layers Action
@@ -443,6 +460,34 @@ fun RightsideLayerDrawer(
                                     LayerType.IMAGE_CARD -> "▨"
                                     LayerType.GROUP -> ""
                                     LayerType.ADJUSTMENT_LAYER -> "🎚"
+                                    LayerType.VECTOR_HEART -> "♥"
+                                    LayerType.VECTOR_CROSS -> "✚"
+                                    LayerType.VECTOR_SHIELD -> "🛡"
+                                    LayerType.VECTOR_RING -> "◎"
+                                    LayerType.VECTOR_CRESCENT -> "🌙"
+                                    LayerType.VECTOR_CLOVER -> "🍀"
+                                    LayerType.VECTOR_GEAR -> "⚙"
+                                    LayerType.VECTOR_DIAMOND -> "♦"
+                                    LayerType.VECTOR_TILTED_RECT -> "▰"
+                                    LayerType.VECTOR_TRAPEZOID -> "⏢"
+                                    LayerType.VECTOR_ROUNDED_RECT -> "▢"
+                                    LayerType.VECTOR_PIE_SLICE -> "🍕"
+                                    LayerType.VECTOR_ARROW -> "➔"
+                                    LayerType.VECTOR_SPEECH_BUBBLE -> "💬"
+                                    LayerType.VECTOR_BRACKETS -> "❴"
+                                    LayerType.VECTOR_DOUBLE_ARROW -> "↔"
+                                    LayerType.VECTOR_CROSSHAIR -> "⌖"
+                                    LayerType.VECTOR_SPIRAL -> "🌀"
+                                    LayerType.VECTOR_WAVE -> "〰"
+                                    LayerType.VECTOR_POLYGON -> "⬡"
+                                    LayerType.VECTOR_BLOB -> "🫧"
+                                    LayerType.VECTOR_CONTAINER -> "🗏"
+                                    LayerType.VECTOR_FLOW_CONNECTOR -> "☇"
+                                    LayerType.VECTOR_NODE -> "🔗"
+                                    LayerType.VECTOR_TIMELINE_MARKER -> "📍"
+                                    LayerType.VECTOR_ROUNDED_TRIANGLE -> "▲"
+                                    LayerType.VECTOR_CUT_CORNER_SQUARE -> "❖"
+                                    LayerType.VECTOR_RING_SEGMENT -> "🍩"
                                 }
                                 Text(
                                     text = glyph,

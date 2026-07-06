@@ -888,3 +888,559 @@ void main() {
     gl_FragColor = vec4(clamp(retCol, 0.0, 1.0), color.a);
 }
 """
+
+// -------------------------------------------------------------
+// IBIS PAINT STYLE FX FILTERS
+// -------------------------------------------------------------
+
+class GPUImageChromaticAberrationFilter(
+    var distance: Float = 16f,
+    var angle: Float = 136f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, CHROMATIC_ABERRATION_FRAGMENT_SHADER) {
+    private var uDistanceLocation: Int = -1
+    private var uAngleLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uDistanceLocation = GLES20.glGetUniformLocation(program, "uDistance")
+        uAngleLocation = GLES20.glGetUniformLocation(program, "uAngle")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(distance: Float, angle: Float) {
+        this.distance = distance
+        this.angle = angle
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uDistanceLocation, distance / 1000f)
+        setFloat(uAngleLocation, angle)
+    }
+}
+
+const val CHROMATIC_ABERRATION_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uDistance;
+uniform highp float uAngle;
+void main() {
+    highp float rad = uAngle * 3.14159265 / 180.0;
+    highp vec2 offset = vec2(cos(rad), sin(rad)) * uDistance;
+    highp float r = texture2D(inputImageTexture, textureCoordinate - offset).r;
+    highp float g = texture2D(inputImageTexture, textureCoordinate).g;
+    highp float b = texture2D(inputImageTexture, textureCoordinate + offset).b;
+    highp float a = texture2D(inputImageTexture, textureCoordinate).a;
+    gl_FragColor = vec4(r, g, b, a);
+}
+"""
+
+class GPUImageGlitchFilter(
+    var height: Float = 119f,
+    var strength: Float = 23f,
+    var colorShift: Float = 8f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, GLITCH_FRAGMENT_SHADER) {
+    private var uHeightLocation: Int = -1
+    private var uStrengthLocation: Int = -1
+    private var uColorShiftLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uHeightLocation = GLES20.glGetUniformLocation(program, "uHeight")
+        uStrengthLocation = GLES20.glGetUniformLocation(program, "uStrength")
+        uColorShiftLocation = GLES20.glGetUniformLocation(program, "uColorShift")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(height: Float, strength: Float, colorShift: Float) {
+        this.height = height
+        this.strength = strength
+        this.colorShift = colorShift
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uHeightLocation, height)
+        setFloat(uStrengthLocation, strength / 1000f)
+        setFloat(uColorShiftLocation, colorShift / 1000f)
+    }
+}
+
+const val GLITCH_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uHeight;
+uniform highp float uStrength;
+uniform highp float uColorShift;
+void main() {
+    highp float sliceY = floor(textureCoordinate.y * uHeight);
+    highp float wave = sin(sliceY * 13.0) * cos(sliceY * 3.7);
+    highp float dispX = wave * uStrength;
+    
+    highp float r = texture2D(inputImageTexture, vec2(textureCoordinate.x + dispX - uColorShift, textureCoordinate.y)).r;
+    highp float g = texture2D(inputImageTexture, vec2(textureCoordinate.x + dispX, textureCoordinate.y)).g;
+    highp float b = texture2D(inputImageTexture, vec2(textureCoordinate.x + dispX + uColorShift, textureCoordinate.y)).b;
+    highp float a = texture2D(inputImageTexture, vec2(textureCoordinate.x + dispX, textureCoordinate.y)).a;
+    
+    gl_FragColor = vec4(r, g, b, a);
+}
+"""
+
+class GPUImageBloomFilter(
+    var area: Float = 100f,
+    var radius: Float = 45f,
+    var brightness: Float = 100f,
+    var balanced: Float = 25f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, BLOOM_FRAGMENT_SHADER) {
+    private var uAreaLocation: Int = -1
+    private var uRadiusLocation: Int = -1
+    private var uBrightnessLocation: Int = -1
+    private var uBalancedLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uAreaLocation = GLES20.glGetUniformLocation(program, "uArea")
+        uRadiusLocation = GLES20.glGetUniformLocation(program, "uRadius")
+        uBrightnessLocation = GLES20.glGetUniformLocation(program, "uBrightness")
+        uBalancedLocation = GLES20.glGetUniformLocation(program, "uBalanced")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(area: Float, radius: Float, brightness: Float, balanced: Float) {
+        this.area = area
+        this.radius = radius
+        this.brightness = brightness
+        this.balanced = balanced
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uAreaLocation, area / 100f)
+        setFloat(uRadiusLocation, radius / 1000f)
+        setFloat(uBrightnessLocation, brightness / 100f)
+        setFloat(uBalancedLocation, balanced / 100f)
+    }
+}
+
+const val BLOOM_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uArea;
+uniform highp float uRadius;
+uniform highp float uBrightness;
+uniform highp float uBalanced;
+void main() {
+    highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
+    highp vec3 blurred = vec3(0.0);
+    highp float total = 0.0;
+    for (int x = -2; x <= 2; x++) {
+        for (int y = -2; y <= 2; y++) {
+            highp vec2 offset = vec2(float(x), float(y)) * uRadius;
+            highp vec3 sampleCol = texture2D(inputImageTexture, textureCoordinate + offset).rgb;
+            highp float luma = dot(sampleCol, vec3(0.299, 0.587, 0.114));
+            if (luma > (1.0 - uArea)) {
+                blurred += sampleCol;
+                total += 1.0;
+            }
+        }
+    }
+    if (total > 0.0) {
+        blurred = (blurred / total) * uBrightness;
+    } else {
+        blurred = vec3(0.0);
+    }
+    highp vec3 finalColor = mix(baseColor.rgb + blurred, vec3(1.0) - (vec3(1.0) - baseColor.rgb) * (vec3(1.0) - blurred), uBalanced);
+    gl_FragColor = vec4(finalColor, baseColor.a);
+}
+"""
+
+class GPUImageCrossFilterFilter(
+    var count: Float = 4f,
+    var direction: Float = 45f,
+    var area: Float = 10f,
+    var brightness: Float = 50f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, CROSS_FILTER_FRAGMENT_SHADER) {
+    private var uCountLocation: Int = -1
+    private var uDirectionLocation: Int = -1
+    private var uAreaLocation: Int = -1
+    private var uBrightnessLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uCountLocation = GLES20.glGetUniformLocation(program, "uCount")
+        uDirectionLocation = GLES20.glGetUniformLocation(program, "uDirection")
+        uAreaLocation = GLES20.glGetUniformLocation(program, "uArea")
+        uBrightnessLocation = GLES20.glGetUniformLocation(program, "uBrightness")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(count: Float, direction: Float, area: Float, brightness: Float) {
+        this.count = count
+        this.direction = direction
+        this.area = area
+        this.brightness = brightness
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uCountLocation, count)
+        setFloat(uDirectionLocation, direction)
+        setFloat(uAreaLocation, area / 100f)
+        setFloat(uBrightnessLocation, brightness / 100f)
+    }
+}
+
+const val CROSS_FILTER_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uCount;
+uniform highp float uDirection;
+uniform highp float uArea;
+uniform highp float uBrightness;
+void main() {
+    highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
+    highp vec3 flare = vec3(0.0);
+    highp float steps = 6.0;
+    highp float numSpokes = max(2.0, uCount);
+    for (float i = 0.0; i < 8.0; i++) {
+        if (i >= numSpokes) break;
+        highp float angle = uDirection * 3.14159 / 180.0 + (i * 3.14159 / numSpokes);
+        highp vec2 dir = vec2(cos(angle), sin(angle)) * 0.004;
+        for (float j = 1.0; j <= steps; j++) {
+            highp vec2 sampleCoord1 = textureCoordinate + dir * j;
+            highp vec2 sampleCoord2 = textureCoordinate - dir * j;
+            highp vec3 col1 = texture2D(inputImageTexture, sampleCoord1).rgb;
+            highp vec3 col2 = texture2D(inputImageTexture, sampleCoord2).rgb;
+            highp float l1 = dot(col1, vec3(0.299, 0.587, 0.114));
+            highp float l2 = dot(col2, vec3(0.299, 0.587, 0.114));
+            if (l1 > (1.0 - uArea)) {
+                flare += col1 * (1.0 - j/steps);
+            }
+            if (l2 > (1.0 - uArea)) {
+                flare += col2 * (1.0 - j/steps);
+            }
+        }
+    }
+    highp vec3 finalColor = baseColor.rgb + flare * uBrightness;
+    gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), baseColor.a);
+}
+"""
+
+class GPUImageInnerGlowFilter(
+    var radius: Float = 104f,
+    var r: Float = 1.0f,
+    var g: Float = 1.0f,
+    var b: Float = 1.0f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, INNER_GLOW_FRAGMENT_SHADER) {
+    private var uRadiusLocation: Int = -1
+    private var uColorRLocation: Int = -1
+    private var uColorGLocation: Int = -1
+    private var uColorBLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uRadiusLocation = GLES20.glGetUniformLocation(program, "uRadius")
+        uColorRLocation = GLES20.glGetUniformLocation(program, "uColorR")
+        uColorGLocation = GLES20.glGetUniformLocation(program, "uColorG")
+        uColorBLocation = GLES20.glGetUniformLocation(program, "uColorB")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(radius: Float, r: Float, g: Float, b: Float) {
+        this.radius = radius
+        this.r = r
+        this.g = g
+        this.b = b
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uRadiusLocation, radius / 2000f)
+        setFloat(uColorRLocation, r)
+        setFloat(uColorGLocation, g)
+        setFloat(uColorBLocation, b)
+    }
+}
+
+const val INNER_GLOW_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uRadius;
+uniform highp float uColorR;
+uniform highp float uColorG;
+uniform highp float uColorB;
+void main() {
+    highp vec3 uColor = vec3(uColorR, uColorG, uColorB);
+    highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
+    highp float minAlpha = 1.0;
+    for (int x = -2; x <= 2; x++) {
+        for (int y = -2; y <= 2; y++) {
+            highp vec2 offset = vec2(float(x), float(y)) * uRadius;
+            highp float a = texture2D(inputImageTexture, textureCoordinate + offset).a;
+            minAlpha = min(minAlpha, a);
+        }
+    }
+    highp float edgeAmount = (baseColor.a - minAlpha);
+    highp vec3 finalColor = mix(baseColor.rgb, uColor, edgeAmount * 0.8);
+    gl_FragColor = vec4(finalColor, baseColor.a);
+}
+"""
+
+class GPUImageBevelFilter(
+    var height: Float = 20f,
+    var smoothness: Float = 45f,
+    var highlightSize: Float = 14f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, BEVEL_FRAGMENT_SHADER) {
+    private var uHeightLocation: Int = -1
+    private var uSmoothnessLocation: Int = -1
+    private var uHighlightLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uHeightLocation = GLES20.glGetUniformLocation(program, "uHeight")
+        uSmoothnessLocation = GLES20.glGetUniformLocation(program, "uSmoothness")
+        uHighlightLocation = GLES20.glGetUniformLocation(program, "uHighlightSize")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(height: Float, smoothness: Float, highlightSize: Float) {
+        this.height = height
+        this.smoothness = smoothness
+        this.highlightSize = highlightSize
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uHeightLocation, height / 100f)
+        setFloat(uSmoothnessLocation, smoothness / 100f)
+        setFloat(uHighlightLocation, highlightSize / 100f)
+    }
+}
+
+const val BEVEL_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uHeight;
+uniform highp float uSmoothness;
+uniform highp float uHighlightSize;
+void main() {
+    highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
+    highp float step = 0.002 * (1.0 + uSmoothness * 3.0);
+    highp float aL = texture2D(inputImageTexture, textureCoordinate + vec2(-step, 0.0)).a;
+    highp float aR = texture2D(inputImageTexture, textureCoordinate + vec2(step, 0.0)).a;
+    highp float aD = texture2D(inputImageTexture, textureCoordinate + vec2(0.0, -step)).a;
+    highp float aU = texture2D(inputImageTexture, textureCoordinate + vec2(0.0, step)).a;
+    highp vec2 norm2d = vec2(aR - aL, aU - aD) * uHeight;
+    highp vec3 normal = normalize(vec3(norm2d, 1.0));
+    highp vec3 lightDir = normalize(vec3(-0.7, 0.7, 1.2));
+    highp float diffuse = dot(normal, lightDir);
+    highp float specular = pow(max(0.0, diffuse), 4.0) * uHighlightSize * 4.0;
+    highp float shadow = (1.0 - smoothstep(0.0, 0.6, diffuse)) * uHeight * 0.5;
+    highp vec3 litColor = baseColor.rgb + vec3(specular) - vec3(shadow);
+    gl_FragColor = vec4(clamp(litColor, 0.0, 1.0), baseColor.a);
+}
+"""
+
+class GPUImageEmboss2Filter(
+    var grayScale: Float = 0f,
+    var height: Float = 1f,
+    var amount: Float = 500f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, EMBOSS2_FRAGMENT_SHADER) {
+    private var uGrayScaleLocation: Int = -1
+    private var uHeightLocation: Int = -1
+    private var uAmountLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uGrayScaleLocation = GLES20.glGetUniformLocation(program, "uGrayScale")
+        uHeightLocation = GLES20.glGetUniformLocation(program, "uHeight")
+        uAmountLocation = GLES20.glGetUniformLocation(program, "uAmount")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(grayScale: Float, height: Float, amount: Float) {
+        this.grayScale = grayScale
+        this.height = height
+        this.amount = amount
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uGrayScaleLocation, grayScale)
+        setFloat(uHeightLocation, height / 1000f)
+        setFloat(uAmountLocation, amount / 100f)
+    }
+}
+
+const val EMBOSS2_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uGrayScale;
+uniform highp float uHeight;
+uniform highp float uAmount;
+void main() {
+    highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
+    highp vec3 colOffset = texture2D(inputImageTexture, textureCoordinate - vec2(uHeight)).rgb;
+    highp vec3 diff = baseColor.rgb - colOffset;
+    highp float lumaDiff = dot(diff, vec3(0.299, 0.587, 0.114)) * uAmount;
+    highp vec3 embossedColor = baseColor.rgb + vec3(lumaDiff);
+    if (uGrayScale > 0.5) {
+        highp float gray = dot(embossedColor, vec3(0.299, 0.587, 0.114));
+        gl_FragColor = vec4(vec3(gray), baseColor.a);
+    } else {
+        gl_FragColor = vec4(clamp(embossedColor, 0.0, 1.0), baseColor.a);
+    }
+}
+"""
+
+class GPUImageWaterdropFilter(
+    var distance: Float = 100f,
+    var flatness: Float = 10f,
+    var height: Float = 3f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, WATERDROP_FRAGMENT_SHADER) {
+    private var uDistanceLocation: Int = -1
+    private var uFlatnessLocation: Int = -1
+    private var uHeightLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uDistanceLocation = GLES20.glGetUniformLocation(program, "uDistance")
+        uFlatnessLocation = GLES20.glGetUniformLocation(program, "uFlatness")
+        uHeightLocation = GLES20.glGetUniformLocation(program, "uHeight")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(distance: Float, flatness: Float, height: Float) {
+        this.distance = distance
+        this.flatness = flatness
+        this.height = height
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uDistanceLocation, distance / 100f)
+        setFloat(uFlatnessLocation, flatness / 100f)
+        setFloat(uHeightLocation, height / 100f)
+    }
+}
+
+const val WATERDROP_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uDistance;
+uniform highp float uFlatness;
+uniform highp float uHeight;
+void main() {
+    highp vec2 center = vec2(0.5, 0.5);
+    highp vec2 toCenter = textureCoordinate - center;
+    highp float r = length(toCenter);
+    if (r < (0.4 * uDistance)) {
+        highp float d = r / (0.4 * uDistance);
+        highp float bulge = (1.0 - d * d) * uHeight * (1.0 - uFlatness);
+        highp vec2 distCoord = textureCoordinate - toCenter * bulge;
+        highp vec4 c = texture2D(inputImageTexture, distCoord);
+        highp float spec = pow(max(0.0, 1.0 - d), 3.0) * 0.15;
+        gl_FragColor = vec4(clamp(c.rgb + vec3(spec), 0.0, 1.0), c.a);
+    } else {
+        gl_FragColor = texture2D(inputImageTexture, textureCoordinate);
+    }
+}
+"""
+
+class GPUImageSatinFilter(
+    var distance: Float = 11f,
+    var opacity: Float = 0.5f,
+    var r: Float = 0f,
+    var g: Float = 0f,
+    var b: Float = 0f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, SATIN_FRAGMENT_SHADER) {
+    private var uDistanceLocation: Int = -1
+    private var uOpacityLocation: Int = -1
+    private var uColorRLocation: Int = -1
+    private var uColorGLocation: Int = -1
+    private var uColorBLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uDistanceLocation = GLES20.glGetUniformLocation(program, "uDistance")
+        uOpacityLocation = GLES20.glGetUniformLocation(program, "uOpacity")
+        uColorRLocation = GLES20.glGetUniformLocation(program, "uColorR")
+        uColorGLocation = GLES20.glGetUniformLocation(program, "uColorG")
+        uColorBLocation = GLES20.glGetUniformLocation(program, "uColorB")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    fun setParams(distance: Float, opacity: Float, r: Float, g: Float, b: Float) {
+        this.distance = distance
+        this.opacity = opacity
+        this.r = r
+        this.g = g
+        this.b = b
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uDistanceLocation, distance / 1000f)
+        setFloat(uOpacityLocation, opacity)
+        setFloat(uColorRLocation, r)
+        setFloat(uColorGLocation, g)
+        setFloat(uColorBLocation, b)
+    }
+}
+
+const val SATIN_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+uniform highp float uDistance;
+uniform highp float uOpacity;
+uniform highp float uColorR;
+uniform highp float uColorG;
+uniform highp float uColorB;
+void main() {
+    highp vec3 uColor = vec3(uColorR, uColorG, uColorB);
+    highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
+    highp float aOffset1 = texture2D(inputImageTexture, textureCoordinate + vec2(uDistance)).a;
+    highp float aOffset2 = texture2D(inputImageTexture, textureCoordinate - vec2(uDistance)).a;
+    highp float wave = sin(aOffset1 * 3.14159) * cos(aOffset2 * 3.14159);
+    highp float satinVal = (1.0 - wave) * uOpacity;
+    highp vec3 finalColor = mix(baseColor.rgb, uColor, satinVal * baseColor.a);
+    gl_FragColor = vec4(finalColor, baseColor.a);
+}
+"""
+

@@ -16,6 +16,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.toArgb
 import com.example.studio.model.LayerType
 import com.example.studio.model.StudioLayer
@@ -91,6 +92,26 @@ object PsdExportEngine {
         val centerX = layer.width * layer.pivotX
         val centerY = layer.height * layer.pivotY
 
+        // Apply safe mathematical clamp (Vector Matrix Protection Loop) to prevent perspective collapse
+        val cx = layer.width * layer.pivotX
+        val cy = layer.height * layer.pivotY
+        val corners = listOf(
+            -cx to -cy,
+            (layer.width - cx) to -cy,
+            -cx to (layer.height - cy),
+            (layer.width - cx) to (layer.height - cy)
+        )
+        var safeScale = 1.0f
+        for ((x, y) in corners) {
+            val dot = layer.perspX * x + layer.perspY * y
+            if (dot < -0.85f) {
+                val req = -0.85f / dot
+                if (req < safeScale) safeScale = req
+            }
+        }
+        val safePerspX = layer.perspX * safeScale
+        val safePerspY = layer.perspY * safeScale
+
         val m = Matrix().apply {
             reset()
             // 1. Move pivot center to local origin (0, 0)
@@ -101,8 +122,8 @@ object PsdExportEngine {
             getValues(vals)
             vals[Matrix.MSKEW_X] = layer.skewX
             vals[Matrix.MSKEW_Y] = layer.skewY
-            vals[6] = layer.perspX // MPERSP_0 control point
-            vals[7] = layer.perspY // MPERSP_1 control point
+            vals[6] = safePerspX // MPERSP_0 control point
+            vals[7] = safePerspY // MPERSP_1 control point
             setValues(vals)
 
             // 3. Move coordinate framework back to position
@@ -188,6 +209,42 @@ object PsdExportEngine {
                     }
                     close()
                 }
+                val paintToUse = if (layer.cornerRadius > 0f) {
+                    Paint(paint).apply {
+                        pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
+                    }
+                } else paint
+                canvas.drawPath(path, paintToUse)
+            }
+            LayerType.VECTOR_HEART,
+            LayerType.VECTOR_CROSS,
+            LayerType.VECTOR_SHIELD,
+            LayerType.VECTOR_RING,
+            LayerType.VECTOR_CRESCENT,
+            LayerType.VECTOR_CLOVER,
+            LayerType.VECTOR_GEAR,
+            LayerType.VECTOR_DIAMOND,
+            LayerType.VECTOR_TILTED_RECT,
+            LayerType.VECTOR_TRAPEZOID,
+            LayerType.VECTOR_ROUNDED_RECT,
+            LayerType.VECTOR_PIE_SLICE,
+            LayerType.VECTOR_ARROW,
+            LayerType.VECTOR_SPEECH_BUBBLE,
+            LayerType.VECTOR_BRACKETS,
+            LayerType.VECTOR_DOUBLE_ARROW,
+            LayerType.VECTOR_CROSSHAIR,
+            LayerType.VECTOR_SPIRAL,
+            LayerType.VECTOR_WAVE,
+            LayerType.VECTOR_POLYGON,
+            LayerType.VECTOR_BLOB,
+            LayerType.VECTOR_CONTAINER,
+            LayerType.VECTOR_FLOW_CONNECTOR,
+            LayerType.VECTOR_NODE,
+            LayerType.VECTOR_TIMELINE_MARKER,
+            LayerType.VECTOR_ROUNDED_TRIANGLE,
+            LayerType.VECTOR_CUT_CORNER_SQUARE,
+            LayerType.VECTOR_RING_SEGMENT -> {
+                val path = createComplexShapePath(layer.type, layer.width, layer.height, layer.polygonEdges, layer.starInnerRadiusRatio, layer.skewX, layer.skewY, layer.cornerRadius).asAndroidPath()
                 val paintToUse = if (layer.cornerRadius > 0f) {
                     Paint(paint).apply {
                         pathEffect = android.graphics.CornerPathEffect(layer.cornerRadius)
