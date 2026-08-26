@@ -27,6 +27,7 @@ import com.example.ui.theme.*
 fun LandscapeSidebarPanel(
     isLandscape: Boolean,
     activeTool: String,
+    onActiveToolChange: (String) -> Unit = {},
     isRightSidebarExpanded: Boolean,
     onRightSidebarExpandedChange: (Boolean) -> Unit,
     activeFullScreenSheet: String?,
@@ -69,6 +70,12 @@ fun LandscapeSidebarPanel(
     onShowBrushesLibraryChange: (Boolean) -> Unit,
     gridEnabled: Boolean,
     onGridEnabledChange: (Boolean) -> Unit,
+    activeGridType: String = "Standard",
+    onGridTypeChange: (String) -> Unit = {},
+    polarGridCenterX: Float = 0.5f,
+    onPolarGridCenterXChange: (Float) -> Unit = {},
+    polarGridCenterY: Float = 0.5f,
+    onPolarGridCenterYChange: (Float) -> Unit = {},
     rulers: List<StudioRuler>,
     onRulersChange: (List<StudioRuler>) -> Unit,
     selectedRulerId: String,
@@ -99,13 +106,36 @@ fun LandscapeSidebarPanel(
     onSelectedLayerIdChange: (String) -> Unit = {},
     keepBezierSymmetrical: Boolean = true,
     onKeepBezierSymmetricalChange: (Boolean) -> Unit = {},
-    modifier: Modifier = Modifier,
-    onOpenRasterExtrudeEditor: (() -> Unit)? = null
+    warpRepeatMode: String = "Off",
+    onWarpRepeatModeChange: (String) -> Unit = {},
+    warpRepeatX: Float = 1f,
+    onWarpRepeatXChange: (Float) -> Unit = {},
+    warpRepeatY: Float = 1f,
+    onWarpRepeatYChange: (Float) -> Unit = {},
+    warpPhaseX: Float = 0f,
+    onWarpPhaseXChange: (Float) -> Unit = {},
+    warpPhaseY: Float = 0f,
+    onWarpPhaseYChange: (Float) -> Unit = {},
+    warpInterpolation: Boolean = true,
+    onWarpInterpolationChange: (Boolean) -> Unit = {},
+    warpTarget: String = "Layer",
+    onWarpTargetChange: (String) -> Unit = {},
+    onResetWarp: () -> Unit = {},
+    warpMeshDivisionX: Int = 3,
+    onWarpMeshDivisionXChange: (Int) -> Unit = {},
+    warpMeshDivisionY: Int = 3,
+    onWarpMeshDivisionYChange: (Int) -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
     if (!isLandscape) return
 
     val activeValueEditConfigState = remember { mutableStateOf<SliderValueEditConfig?>(null) }
-    val effectiveSheet = activeFullScreenSheet ?: if (activeTool == "Brush" || activeTool == "Eraser" || activeTool == "Pen") "Brush" else "Color"
+    val effectiveSheet = activeFullScreenSheet ?: when (activeTool) {
+        "Brush", "Eraser", "Pen" -> "Brush"
+        "Perspective" -> "Perspective"
+        "Mesh" -> "Mesh"
+        else -> "Color"
+    }
     val sidebarWidth by animateDpAsState(
         targetValue = if (isRightSidebarExpanded) 320.dp else 0.dp,
         label = "SidebarWidth"
@@ -200,11 +230,22 @@ fun LandscapeSidebarPanel(
                             "Transform" to Icons.Default.AspectRatio,
                             "Shape" to Icons.Default.Category,
                             "Effects" to Icons.Default.Tune,
-                            "Grid" to Icons.Default.GridOn,
-                            "Ruler" to Icons.Default.Straighten
+                            "Grids" to Icons.Default.GridOn,
+                            "Ruler" to Icons.Default.Straighten,
+                            "Perspective" to Icons.Default.FilterCenterFocus,
+                            "Mesh" to Icons.Default.BlurOn
                         )
-                        categories.forEach { (cat, icon) ->
-                            val isSelected = effectiveSheet == cat
+                        categories.forEach { (cat, defaultIcon) ->
+                            val isSelected = effectiveSheet == cat || (cat == "Grids" && effectiveSheet == "Grid")
+                            val icon = if (cat == "Shape") {
+                                when (selectedLayer?.type) {
+                                    com.example.studio.model.LayerType.IMAGE_CARD -> Icons.Default.Image
+                                    com.example.studio.model.LayerType.TEXT -> Icons.Default.TextFields
+                                    else -> Icons.Default.Category
+                                }
+                            } else {
+                                defaultIcon
+                            }
                             Box(
                                 modifier = Modifier
                                     .size(38.dp)
@@ -216,7 +257,7 @@ fun LandscapeSidebarPanel(
                                         shape = RoundedCornerShape(8.dp)
                                     )
                                     .clickable {
-                                        onActiveFullScreenSheetChange(cat)
+                                        onActiveFullScreenSheetChange(if (cat == "Grids") "Grid" else cat)
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
@@ -237,7 +278,6 @@ fun LandscapeSidebarPanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .verticalScroll(rememberScrollState())
                     ) {
                         CompositionLocalProvider(LocalSliderValueEditTrigger provides { activeValueEditConfigState.value = it }) {
                             when (effectiveSheet) {
@@ -267,6 +307,28 @@ fun LandscapeSidebarPanel(
                                     if (selectedLayer != null) {
                                         BordersAndShadowsTabPanel(
                                             selectedLayer = selectedLayer,
+                                            onRemoveEffect = { effectId ->
+                                                undoStack.add(layers)
+                                                redoStack.clear()
+                                                val updatedList = layers.map { layer ->
+                                                    if (layer.id == selectedLayer.id) {
+                                                        layer.copy(effects = layer.effects.filter { it.id != effectId })
+                                                    } else layer
+                                                }
+                                                onLayersChange(updatedList)
+                                            },
+                                            onToggleEffectEnabled = { effectId ->
+                                                val updatedList = layers.map { layer ->
+                                                    if (layer.id == selectedLayer.id) {
+                                                        layer.copy(effects = layer.effects.map { eff ->
+                                                            if (eff.id == effectId) {
+                                                                eff.toggleEnabled()
+                                                            } else eff
+                                                        })
+                                                    } else layer
+                                                }
+                                                onLayersChange(updatedList)
+                                            },
                                             onAddEffect = { effect ->
                                                 undoStack.add(layers)
                                                 redoStack.clear()
@@ -320,7 +382,9 @@ fun LandscapeSidebarPanel(
                                             selectedCategoryFilter = selectedCategoryFilter,
                                             onSelectedCategoryFilterChange = onSelectedCategoryFilterChange,
                                             onImportFontClick = { onShowFontScannerDialogChange(true) },
-                                            customFonts = customFonts
+                                            customFonts = customFonts,
+                                            canvasWidth = artboardWidth,
+                                            canvasHeight = artboardHeight
                                         )
                                     } else {
                                         Text("Select a text or shape layer first.", color = TextSecondary, style = Typography.bodyMedium, modifier = Modifier.padding(8.dp))
@@ -358,8 +422,7 @@ fun LandscapeSidebarPanel(
                                                     layerId = selectedLayer.id,
                                                     onClose = { onShowZenithEffectsOverlayChange(false) },
                                                     modifier = Modifier.fillMaxWidth(),
-                                                    isLandscapeMode = true,
-                                                    onOpenRasterExtrudeEditor = onOpenRasterExtrudeEditor
+                                                    isLandscapeMode = true
                                                 )
                                             }
                                         } else {
@@ -453,7 +516,7 @@ fun LandscapeSidebarPanel(
                                     }
                                 }
                                 "Brush" -> {
-                                    if (activeTool == "Pen" || selectedLayer?.type == LayerType.VECTOR_BEZIER) {
+                                    if (activeTool == "Pen") {
                                         BezierVectorControlPane(
                                             layer = selectedLayer,
                                             activeBezierPointIndex = activeBezierPointIndex,
@@ -602,6 +665,11 @@ fun LandscapeSidebarPanel(
                                             isScrollable = false,
                                             keepBezierSymmetrical = keepBezierSymmetrical,
                                             onKeepBezierSymmetricalChange = onKeepBezierSymmetricalChange,
+                                            onClose = {
+                                                onActiveToolChange("Move")
+                                                onActiveBezierPointIndexChange(-1)
+                                                onPenCursorOffsetChange(null)
+                                            },
                                             modifier = Modifier.fillMaxWidth()
                                         )
                                     } else {
@@ -700,6 +768,12 @@ fun LandscapeSidebarPanel(
                                         onGridColumnsChange = onGridColumnsChange,
                                         gridRows = gridRows,
                                         onGridRowsChange = onGridRowsChange,
+                                        activeGridType = activeGridType,
+                                        onGridTypeChange = onGridTypeChange,
+                                        polarGridCenterX = polarGridCenterX,
+                                        onPolarGridCenterXChange = onPolarGridCenterXChange,
+                                        polarGridCenterY = polarGridCenterY,
+                                        onPolarGridCenterYChange = onPolarGridCenterYChange,
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                 }
@@ -734,6 +808,42 @@ fun LandscapeSidebarPanel(
                                         }
                                     }
                                 }
+                                "Perspective" -> {
+                                    PerspectiveControlPane(
+                                        warpRepeatMode = warpRepeatMode,
+                                        onWarpRepeatModeChange = onWarpRepeatModeChange,
+                                        warpRepeatX = warpRepeatX,
+                                        onWarpRepeatXChange = onWarpRepeatXChange,
+                                        warpRepeatY = warpRepeatY,
+                                        onWarpRepeatYChange = onWarpRepeatYChange,
+                                        warpPhaseX = warpPhaseX,
+                                        onWarpPhaseXChange = onWarpPhaseXChange,
+                                        warpPhaseY = warpPhaseY,
+                                        onWarpPhaseYChange = onWarpPhaseYChange,
+                                        warpInterpolation = warpInterpolation,
+                                        onWarpInterpolationChange = onWarpInterpolationChange,
+                                        warpTarget = warpTarget,
+                                        onWarpTargetChange = onWarpTargetChange,
+                                        onResetWarp = onResetWarp,
+                                        onClose = { onActiveToolChange("Move") },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                "Mesh" -> {
+                                    MeshControlPane(
+                                        warpMeshDivisionX = warpMeshDivisionX,
+                                        onWarpMeshDivisionXChange = onWarpMeshDivisionXChange,
+                                        warpMeshDivisionY = warpMeshDivisionY,
+                                        onWarpMeshDivisionYChange = onWarpMeshDivisionYChange,
+                                        warpInterpolation = warpInterpolation,
+                                        onWarpInterpolationChange = onWarpInterpolationChange,
+                                        warpTarget = warpTarget,
+                                        onWarpTargetChange = onWarpTargetChange,
+                                        onResetWarp = onResetWarp,
+                                        onClose = { onActiveToolChange("Move") },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
                             }
                         }
                     }
@@ -746,6 +856,393 @@ fun LandscapeSidebarPanel(
                 config = activeValueEditConfigState.value!!,
                 onDismiss = { activeValueEditConfigState.value = null }
             )
+        }
+    }
+}
+
+@Composable
+fun PerspectiveControlPane(
+    warpRepeatMode: String,
+    onWarpRepeatModeChange: (String) -> Unit,
+    warpRepeatX: Float,
+    onWarpRepeatXChange: (Float) -> Unit,
+    warpRepeatY: Float,
+    onWarpRepeatYChange: (Float) -> Unit,
+    warpPhaseX: Float,
+    onWarpPhaseXChange: (Float) -> Unit,
+    warpPhaseY: Float,
+    onWarpPhaseYChange: (Float) -> Unit,
+    warpInterpolation: Boolean,
+    onWarpInterpolationChange: (Boolean) -> Unit,
+    warpTarget: String,
+    onWarpTargetChange: (String) -> Unit,
+    onResetWarp: () -> Unit,
+    onClose: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "PERSPECTIVE FORM",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = EnergeticYellow
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "Close Perspective", tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+        }
+        
+        // Target: Current Layer / Canvas
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Target", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                listOf("Layer", "Canvas").forEach { mode ->
+                    val isSel = warpTarget == mode
+                    Button(
+                        onClick = { onWarpTargetChange(mode) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSel) IndustrialAmber else MidSlate,
+                            contentColor = if (isSel) DarkOnyx else TextPrimary
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(mode, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Repeat mode options: Off, Inner, Horizon, Full
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Repeat Mode", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                listOf("Off", "Inner", "Horizon", "Full").forEach { mode ->
+                    val isSel = warpRepeatMode == mode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isSel) IndustrialAmber else MidSlate)
+                            .clickable { onWarpRepeatModeChange(mode) }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = mode,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSel) DarkOnyx else TextPrimary
+                        )
+                    }
+                }
+            }
+        }
+
+        // Repeat X slider
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Repeat X", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text(String.format("%d", Math.round(warpRepeatX)), style = MaterialTheme.typography.bodySmall, color = EnergeticYellow)
+            }
+            Slider(
+                value = warpRepeatX,
+                onValueChange = { onWarpRepeatXChange(Math.round(it).toFloat()) },
+                valueRange = 1f..20f,
+                steps = 18,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = IndustrialAmber,
+                    thumbColor = EnergeticYellow
+                )
+            )
+        }
+
+        // Repeat Y slider
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Repeat Y", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text(String.format("%d", Math.round(warpRepeatY)), style = MaterialTheme.typography.bodySmall, color = EnergeticYellow)
+            }
+            Slider(
+                value = warpRepeatY,
+                onValueChange = { onWarpRepeatYChange(Math.round(it).toFloat()) },
+                valueRange = 1f..20f,
+                steps = 18,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = IndustrialAmber,
+                    thumbColor = EnergeticYellow
+                )
+            )
+        }
+
+        // Phase X slider
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Phase X", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text(String.format("%.1f°", warpPhaseX * 360f - 180f), style = MaterialTheme.typography.bodySmall, color = EnergeticYellow)
+            }
+            Slider(
+                value = warpPhaseX,
+                onValueChange = onWarpPhaseXChange,
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = IndustrialAmber,
+                    thumbColor = EnergeticYellow
+                )
+            )
+        }
+
+        // Phase Y slider
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Phase Y", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text(String.format("%.1f°", warpPhaseY * 360f - 180f), style = MaterialTheme.typography.bodySmall, color = EnergeticYellow)
+            }
+            Slider(
+                value = warpPhaseY,
+                onValueChange = onWarpPhaseYChange,
+                valueRange = 0f..1f,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = IndustrialAmber,
+                    thumbColor = EnergeticYellow
+                )
+            )
+        }
+
+        // Interpolation
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Bilinear Interpolation", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+            Switch(
+                checked = warpInterpolation,
+                onCheckedChange = onWarpInterpolationChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = EnergeticYellow,
+                    checkedTrackColor = IndustrialAmber
+                )
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = onClose,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = EnergeticYellow,
+                    contentColor = DarkOnyx
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Check, contentDescription = "Done", modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Done Editing", fontWeight = FontWeight.Bold)
+            }
+
+            Button(
+                onClick = onResetWarp,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFD32F2F),
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = "Reset Nodes", modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Reset Nodes", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun MeshControlPane(
+    warpMeshDivisionX: Int,
+    onWarpMeshDivisionXChange: (Int) -> Unit,
+    warpMeshDivisionY: Int,
+    onWarpMeshDivisionYChange: (Int) -> Unit,
+    warpInterpolation: Boolean,
+    onWarpInterpolationChange: (Boolean) -> Unit,
+    warpTarget: String,
+    onWarpTargetChange: (String) -> Unit,
+    onResetWarp: () -> Unit,
+    onClose: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "MESH FORM",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = EnergeticYellow
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "Close Mesh", tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        // Target: Current Layer / Canvas
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Target", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                listOf("Layer", "Canvas").forEach { mode ->
+                    val isSel = warpTarget == mode
+                    Button(
+                        onClick = { onWarpTargetChange(mode) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSel) IndustrialAmber else MidSlate,
+                            contentColor = if (isSel) DarkOnyx else TextPrimary
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(mode, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Division X
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Division X (Cols)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text("$warpMeshDivisionX", style = MaterialTheme.typography.bodySmall, color = EnergeticYellow)
+            }
+            Slider(
+                value = warpMeshDivisionX.toFloat(),
+                onValueChange = { onWarpMeshDivisionXChange(it.toInt()) },
+                valueRange = 1f..10f,
+                steps = 8,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = IndustrialAmber,
+                    thumbColor = EnergeticYellow
+                )
+            )
+        }
+
+        // Division Y
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Division Y (Rows)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Text("$warpMeshDivisionY", style = MaterialTheme.typography.bodySmall, color = EnergeticYellow)
+            }
+            Slider(
+                value = warpMeshDivisionY.toFloat(),
+                onValueChange = { onWarpMeshDivisionYChange(it.toInt()) },
+                valueRange = 1f..10f,
+                steps = 8,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = IndustrialAmber,
+                    thumbColor = EnergeticYellow
+                )
+            )
+        }
+
+        // Interpolation
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Bilinear Interpolation", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+            Switch(
+                checked = warpInterpolation,
+                onCheckedChange = onWarpInterpolationChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = EnergeticYellow,
+                    checkedTrackColor = IndustrialAmber
+                )
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = onClose,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = EnergeticYellow,
+                    contentColor = DarkOnyx
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Check, contentDescription = "Done", modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Done Editing", fontWeight = FontWeight.Bold)
+            }
+
+            Button(
+                onClick = onResetWarp,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFD32F2F),
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = "Reset Mesh Grid", modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Reset Grid Nodes", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

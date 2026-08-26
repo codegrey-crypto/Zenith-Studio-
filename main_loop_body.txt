@@ -1,0 +1,186 @@
+                                             it.effectType in listOf("CameraRaw", "ColorGrading", "Fast Adjusting", "color_fast_adjusting", "FastAdjusting", "fast_adj", "Solarize", "Emboss", "FindEdges", "ColorHalftone", "Sketch", "Mosaic", "Twirl", "Spherize", "SmartSharpen", "UnsharpMask", "AddNoise")) 
+                                        }
+                                    val hasGlassEffect = layer.effects.any { it.isEnabled && it is com.example.studio.model.StudioEffect.PhotoshopEffect && (it.effectType == "GlassMorphism" || it.effectType == "ReededGlass") }
+                                    val needsBackdrop = hasGlassEffect || hasAdjustmentEffect || layer.blendMode != com.example.studio.model.ZenithBlendMode.NORMAL || layer.effects.any { it.isEnabled && it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType !in listOf("BrushConfig", "DropShadow", "InnerShadow", "BordersAndShadows", "OuterGlow", "InnerGlow", "BevelEmboss", "Satin", "GradientOverlay", "PatternOverlay", "Stroke", "GlassMorphism", "ReededGlass") }
+                                    val currentBackdrop = if (needsBackdrop) {
+                                        val computedBackdrop = generateBackdropForLayer(
+                                            layers = layers,
+                                            currentIndex = index,
+                                            canvasWidth = canvasWidth,
+                                            canvasHeight = canvasHeight,
+                                            imageBitmapCache = imageBitmapCache,
+                                            pathCache = pathCache,
+                                            pathPointsCountCache = pathPointsCountCache,
+                                            existingBitmap = reusableBackdropBitmap
+                                         )
+                                         if (computedBackdrop != null) {
+                                             reusableBackdropBitmap = computedBackdrop
+                                         }
+                                         computedBackdrop
+                                    } else {
+                                        null
+                                    }
+
+                                    // Invoke drawing lambda, constraining within Clipping Mask boundaries if enabled
+                                    if (clippedLayers.isNotEmpty()) {
+                                        try {
+                                            // 1. Draw the base shape layer first (with standard selection highlights if selected)
+                                            drawSingleConnectedLayer(
+                                                layer = layer,
+                                                layerOpacity = layerOpacity,
+                                                selectedLayerId = selectedLayerId,
+                                                pathCache = pathCache,
+                                                pathPointsCountCache = pathPointsCountCache,
+                                                totalScale = totalScale,
+                                                dashEffect = dashEffect8,
+                                                imageBitmapCache = imageBitmapCache,
+                                                composeBlendMode = composeBlendMode,
+                                                sharedTransformMatrix = sharedTransformMatrix,
+                                                backdropBitmap = currentBackdrop,
+                                                globalX = layer.positionX,
+                                                globalY = layer.positionY,
+                                                activeTool = activeTool,
+                                                allLayers = layers,
+                                                liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                                liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f,
+                                                viewportWidth = currentViewportWidthState.value,
+                                                viewportHeight = currentViewportHeightState.value,
+                                                panX = canvasPanX,
+                                                panY = canvasPanY,
+                                                canvasWidth = canvasWidth,
+                                                canvasHeight = canvasHeight,
+                                                pulseAlpha = pulseAlpha,
+                                                spinAngle = spinAngle,
+                                                activeBezierPointIndex = activeBezierPointIndex,
+                                                activeWarpNodeIndex = activeWarpNodeIndex,
+                                                warpRepeatMode = warpRepeatMode,
+                                                warpRepeatX = warpRepeatX,
+                                                warpRepeatY = warpRepeatY,
+                                                warpPhaseX = warpPhaseX,
+                                                warpPhaseY = warpPhaseY,
+                                                warpInterpolation = warpInterpolation,
+                                                warpTarget = warpTarget,
+                                                warpMeshDivisionX = warpMeshDivisionX,
+                                                warpMeshDivisionY = warpMeshDivisionY,
+                                                isDraggingBezierNode = isDraggingBezierNode,
+                                                showGradientControls = showGradientControls
+                                            )
+
+                                            // 2. Perform Advanced multi-layer clipping composition
+                                            val bounds = androidx.compose.ui.geometry.Rect(0f, 0f, canvasWidth, canvasHeight)
+                                            
+                                            // Outer saveLayer (to hold the destination mask shape)
+                                            drawContext.canvas.saveLayer(bounds, androidx.compose.ui.graphics.Paint())
+
+                                            // Draw base shape AGAIN (this becomes the destination alpha)
+                                            drawSingleConnectedLayer(
+                                                layer = layer,
+                                                layerOpacity = layer.opacity,
+                                                selectedLayerId = null,
+                                                pathCache = pathCache,
+                                                pathPointsCountCache = pathPointsCountCache,
+                                                totalScale = totalScale,
+                                                dashEffect = dashEffect8,
+                                                imageBitmapCache = imageBitmapCache,
+                                                composeBlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver,
+                                                 liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                                 liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f,
+                                                sharedTransformMatrix = sharedTransformMatrix,
+                                                backdropBitmap = null,
+                                                globalX = layer.positionX,
+                                                globalY = layer.positionY,
+                                                activeTool = activeTool,
+                                                allLayers = layers,
+                                                viewportWidth = currentViewportWidthState.value,
+                                                viewportHeight = currentViewportHeightState.value,
+                                                panX = canvasPanX,
+                                                panY = canvasPanY,
+                                                canvasWidth = canvasWidth,
+                                                canvasHeight = canvasHeight
+                                            )
+
+                                            // Inner saveLayer (groups all consecutive clipped layers together using BlendMode.SrcIn)
+                                            val groupPaint = androidx.compose.ui.graphics.Paint().apply {
+                                                blendMode = androidx.compose.ui.graphics.BlendMode.SrcIn
+                                             }
+                                             drawContext.canvas.saveLayer(bounds, groupPaint)
+
+                                             // Draw all consecutive clipped layers on top of each other inside the clip-group
+                                             for (clipped in clippedLayers) {
+                                                 drawSingleConnectedLayer(
+                                                     layer = clipped,
+                                                     layerOpacity = clipped.opacity,
+                                                     selectedLayerId = selectedLayerId,
+                                                     pathCache = pathCache,
+                                                     pathPointsCountCache = pathPointsCountCache,
+                                                     totalScale = totalScale,
+                                                     dashEffect = dashEffect8,
+                                                     imageBitmapCache = imageBitmapCache,
+                                                     composeBlendMode = clipped.blendMode.toComposeBlendMode(),
+                                                     liveDragScaleX = if (isResizingActive && clipped.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                                     liveDragScaleY = if (isResizingActive && clipped.id == activeResizingLayerId) liveDragScaleY else 1.0f,
+                                                     sharedTransformMatrix = sharedTransformMatrix,
+                                                     backdropBitmap = null,
+                                                     globalX = clipped.positionX,
+                                                     globalY = clipped.positionY,
+                                                     activeTool = activeTool,
+                                                     allLayers = layers,
+                                                     viewportWidth = currentViewportWidthState.value,
+                                                     viewportHeight = currentViewportHeightState.value,
+                                                     panX = canvasPanX,
+                                                     panY = canvasPanY,
+                                                     canvasWidth = canvasWidth,
+                                                     canvasHeight = canvasHeight,
+                                                     pulseAlpha = pulseAlpha,
+                                                     spinAngle = spinAngle,
+                                                     activeBezierPointIndex = activeBezierPointIndex,
+                                                     activeWarpNodeIndex = activeWarpNodeIndex,
+                                                     isDraggingBezierNode = isDraggingBezierNode,
+                                                     warpRepeatMode = warpRepeatMode,
+                                                     warpRepeatX = warpRepeatX,
+                                                     warpRepeatY = warpRepeatY,
+                                                     warpPhaseX = warpPhaseX,
+                                                     warpPhaseY = warpPhaseY,
+                                                     warpInterpolation = warpInterpolation,
+                                                     warpTarget = warpTarget,
+                                                     warpMeshDivisionX = warpMeshDivisionX,
+                                                     warpMeshDivisionY = warpMeshDivisionY,
+                                                     showGradientControls = showGradientControls
+                                                 )
+                                             }
+
+                                             drawContext.canvas.restore() // Restore Inner saveLayer (composites clipped content with base shape)
+                                             drawContext.canvas.restore() // Restore Outer saveLayer (composites onto canvas)
+                                         } catch (e: Exception) {
+                                             e.printStackTrace()
+                                         }
+                                     } else {
+                                         // Draw single normal layer - live scaling enabled
+                                          drawSingleConnectedLayer(
+                                              layer = layer,
+                                              layerOpacity = layerOpacity,
+                                              selectedLayerId = selectedLayerId,
+                                              pathCache = pathCache,
+                                              pathPointsCountCache = pathPointsCountCache,
+                                              totalScale = totalScale,
+                                              dashEffect = dashEffect8,
+                                              imageBitmapCache = imageBitmapCache,
+                                              composeBlendMode = composeBlendMode,
+                                              sharedTransformMatrix = sharedTransformMatrix,
+                                              backdropBitmap = currentBackdrop,
+                                              globalX = layer.positionX,
+                                              globalY = layer.positionY,
+                                              activeTool = activeTool,
+                                              allLayers = layers,
+                                              liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
+                                              liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f,
+                                              viewportWidth = currentViewportWidthState.value,
+                                              viewportHeight = currentViewportHeightState.value,
+                                              panX = canvasPanX,
+                                              panY = canvasPanY,
+                                              canvasWidth = canvasWidth,
+                                              canvasHeight = canvasHeight, pulseAlpha = pulseAlpha, spinAngle = spinAngle, activeBezierPointIndex = activeBezierPointIndex, activeWarpNodeIndex = activeWarpNodeIndex,
+                                              showGradientControls = showGradientControls,
+                                              warpRepeatMode = warpRepeatMode,
+                                              warpRepeatX = warpRepeatX,
+                                              warpRepeatY = warpRepeatY,

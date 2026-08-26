@@ -510,6 +510,201 @@ void main() {
 """
 
 
+// Fractal Glass Filter
+class GPUImageFractalGlassFilter(
+    var style: Float = 1.0f,
+    var scale: Float = 30.0f,
+    var refraction: Float = 15.0f,
+    var frosting: Float = 10.0f,
+    var shine: Float = 30.0f,
+    var angle: Float = 0.0f
+) : GPUImageFilter(PSG_VERTEX_SHADER, FRACTAL_GLASS_FRAGMENT_SHADER) {
+    private var uStyleLocation: Int = -1
+    private var uScaleLocation: Int = -1
+    private var uRefractionLocation: Int = -1
+    private var uFrostingLocation: Int = -1
+    private var uShineLocation: Int = -1
+    private var uAngleLocation: Int = -1
+    private var uWidthLocation: Int = -1
+    private var uHeightLocation: Int = -1
+
+    private var mWidth: Float = 512f
+    private var mHeight: Float = 512f
+
+    override fun onInit() {
+        super.onInit()
+        uStyleLocation = GLES20.glGetUniformLocation(program, "uStyle")
+        uScaleLocation = GLES20.glGetUniformLocation(program, "uScale")
+        uRefractionLocation = GLES20.glGetUniformLocation(program, "uRefraction")
+        uFrostingLocation = GLES20.glGetUniformLocation(program, "uFrosting")
+        uShineLocation = GLES20.glGetUniformLocation(program, "uShine")
+        uAngleLocation = GLES20.glGetUniformLocation(program, "uAngle")
+        uWidthLocation = GLES20.glGetUniformLocation(program, "uWidth")
+        uHeightLocation = GLES20.glGetUniformLocation(program, "uHeight")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        applyParameters()
+    }
+
+    override fun onOutputSizeChanged(width: Int, height: Int) {
+        super.onOutputSizeChanged(width, height)
+        mWidth = width.toFloat()
+        mHeight = height.toFloat()
+        applyParameters()
+    }
+
+    fun setParams(style: Float, scale: Float, refraction: Float, frosting: Float, shine: Float, angle: Float) {
+        this.style = style
+        this.scale = scale
+        this.refraction = refraction
+        this.frosting = frosting
+        this.shine = shine
+        this.angle = angle
+        applyParameters()
+    }
+
+    private fun applyParameters() {
+        setFloat(uStyleLocation, style)
+        setFloat(uScaleLocation, scale)
+        setFloat(uRefractionLocation, refraction)
+        setFloat(uFrostingLocation, frosting)
+        setFloat(uShineLocation, shine)
+        setFloat(uAngleLocation, (angle * Math.PI / 180.0).toFloat())
+        setFloat(uWidthLocation, mWidth)
+        setFloat(uHeightLocation, mHeight)
+    }
+}
+
+const val FRACTAL_GLASS_FRAGMENT_SHADER = """
+varying highp vec2 textureCoordinate;
+uniform sampler2D inputImageTexture;
+
+uniform highp float uStyle;
+uniform highp float uScale;
+uniform highp float uRefraction;
+uniform highp float uFrosting;
+uniform highp float uShine;
+uniform highp float uAngle;
+uniform highp float uWidth;
+uniform highp float uHeight;
+
+highp vec2 hash22(highp vec2 p) {
+    highp vec2 q = fract(p * vec2(443.897, 441.423));
+    q += dot(q, q.yx + 19.19);
+    return fract((q.xx + q.yx) * q.xy);
+}
+
+void main() {
+    highp vec2 uResolution = vec2(uWidth, uHeight);
+    highp float cosA = cos(uAngle);
+    highp float sinA = sin(uAngle);
+    highp vec2 center = uResolution * 0.5;
+    
+    highp vec2 pixelCoord = textureCoordinate * uResolution;
+    highp vec2 rxry = pixelCoord - center;
+    
+    highp vec2 pxy = vec2(
+        rxry.x * cosA - rxry.y * sinA + center.x,
+        rxry.x * sinA + rxry.y * cosA + center.y
+    );
+    
+    highp vec2 d = vec2(0.0);
+    highp float boundary = 0.0;
+    
+    int styleInt = int(uStyle + 0.5);
+    if (styleInt == 0) { // Ribbed / Linear Flutes
+        highp float frequency = 6.283185307 / uScale;
+        highp float angleArg = pxy.x * frequency;
+        highp float wave = sin(angleArg);
+        highp float slope = cos(angleArg);
+        d.x = slope * uRefraction;
+        boundary = max(0.0, 1.0 - abs(wave));
+    }
+    else if (styleInt == 1) { // Hexagonal/Voronoi cells
+        highp float s = uScale;
+        highp vec2 cell = floor(pxy / s);
+        highp float minDist = 1e9;
+        highp vec2 closestCellCenter = vec2(0.0);
+        
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                highp vec2 offset = vec2(float(x), float(y));
+                highp vec2 cCell = cell + offset;
+                highp vec2 h = hash22(cCell);
+                highp vec2 cellCenter = (cCell + h) * s;
+                highp vec2 diff = pxy - cellCenter;
+                highp float dist = dot(diff, diff);
+                if (dist < minDist) {
+                    minDist = dist;
+                    closestCellCenter = cellCenter;
+                }
+            }
+        }
+        d = (closestCellCenter - pxy) * (uRefraction / s);
+        boundary = clamp(1.0 - sqrt(minDist) / s, 0.0, 1.0);
+    }
+    else if (styleInt == 2) { // Wavy / Sinusoidal
+        highp float frequency = 6.283185307 / uScale;
+        highp float waveX = sin(pxy.x * frequency);
+        highp float waveY = sin(pxy.y * frequency);
+        d.x = cos(pxy.y * frequency) * uRefraction;
+        d.y = cos(pxy.x * frequency) * uRefraction;
+        boundary = (abs(waveX) + abs(waveY)) * 0.5;
+    }
+    else if (styleInt == 3) { // Triangular / Crystallized Facets
+        highp float s = uScale;
+        highp vec2 t = floor(pxy / s);
+        highp vec2 f = (pxy / s) - t;
+        bool inUpper = (f.x + f.y < 1.0);
+        d.x = inUpper ? -uRefraction * f.x : uRefraction * (1.0 - f.x);
+        d.y = inUpper ? -uRefraction * f.y : uRefraction * (1.0 - f.y);
+        boundary = abs(f.x + f.y - 1.0);
+    }
+    else if (styleInt == 4) { // Frosted glass micro-texture
+        highp vec2 h = hash22(pixelCoord);
+        d = (h - 0.5) * uRefraction * 0.4;
+        boundary = 0.0;
+    }
+    else { // Glass bricks
+        highp float s = uScale;
+        highp vec2 b = vec2(floor(pxy.x / s), floor(pxy.y / (s * 0.6)));
+        highp vec2 f = vec2((pxy.x / s) - b.x, (pxy.y / (s * 0.6)) - b.y);
+        highp vec2 borderDist = min(f, 1.0 - f);
+        highp float edgeDist = min(borderDist.x, borderDist.y);
+        d.x = (0.5 - f.x) * uRefraction;
+        d.y = (0.5 - f.y) * uRefraction;
+        boundary = clamp(1.0 - (edgeDist / 0.15), 0.0, 1.0);
+    }
+    
+    highp vec2 sd = vec2(
+        d.x * cosA + d.y * sinA,
+        -d.x * sinA + d.y * cosA
+    );
+    
+    highp vec2 displacedCoord = pixelCoord + sd;
+    
+    if (uFrosting > 0.0) {
+        highp vec2 h = hash22(pixelCoord);
+        displacedCoord += (h - 0.5) * uFrosting * 0.35;
+    }
+    
+    highp vec2 texCoord = displacedCoord / uResolution;
+    texCoord = clamp(texCoord, 0.001, 0.999);
+    
+    highp vec4 color = texture2D(inputImageTexture, texCoord);
+    
+    if (uShine > 0.0 && boundary > 0.0) {
+        highp float hl = pow(boundary, 8.0) * (uShine / 100.0) * 0.43;
+        color.rgb = clamp(color.rgb + vec3(hl), 0.0, 1.0);
+    }
+    
+    gl_FragColor = color;
+}
+"""
+
+
 // -------------------------------------------------------------
 // 4. SKETCH FILTER IMPLEMENTATIONS
 // -------------------------------------------------------------
@@ -928,14 +1123,22 @@ varying highp vec2 textureCoordinate;
 uniform sampler2D inputImageTexture;
 uniform highp float uDistance;
 uniform highp float uAngle;
+
+highp vec4 getSample(highp vec2 uv) {
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return vec4(0.0);
+    }
+    return texture2D(inputImageTexture, uv);
+}
+
 void main() {
     highp float rad = uAngle * 3.14159265 / 180.0;
     highp vec2 offset = vec2(cos(rad), sin(rad)) * uDistance;
-    highp float r = texture2D(inputImageTexture, textureCoordinate - offset).r;
-    highp float g = texture2D(inputImageTexture, textureCoordinate).g;
-    highp float b = texture2D(inputImageTexture, textureCoordinate + offset).b;
-    highp float a = texture2D(inputImageTexture, textureCoordinate).a;
-    gl_FragColor = vec4(r, g, b, a);
+    highp vec4 colR = getSample(textureCoordinate - offset);
+    highp vec4 colG = getSample(textureCoordinate);
+    highp vec4 colB = getSample(textureCoordinate + offset);
+    highp float a = max(colR.a, max(colG.a, colB.a));
+    gl_FragColor = vec4(colR.r, colG.g, colB.b, a);
 }
 """
 
@@ -1146,12 +1349,16 @@ class GPUImageInnerGlowFilter(
     var radius: Float = 104f,
     var r: Float = 1.0f,
     var g: Float = 1.0f,
-    var b: Float = 1.0f
+    var b: Float = 1.0f,
+    var hardness: Float = 0.5f,
+    var blendMode: Float = 2.0f
 ) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(PSG_VERTEX_SHADER, INNER_GLOW_FRAGMENT_SHADER) {
     private var uRadiusLocation: Int = -1
     private var uColorRLocation: Int = -1
     private var uColorGLocation: Int = -1
     private var uColorBLocation: Int = -1
+    private var uHardnessLocation: Int = -1
+    private var uBlendModeLocation: Int = -1
 
     override fun onInit() {
         super.onInit()
@@ -1159,6 +1366,8 @@ class GPUImageInnerGlowFilter(
         uColorRLocation = GLES20.glGetUniformLocation(program, "uColorR")
         uColorGLocation = GLES20.glGetUniformLocation(program, "uColorG")
         uColorBLocation = GLES20.glGetUniformLocation(program, "uColorB")
+        uHardnessLocation = GLES20.glGetUniformLocation(program, "uHardness")
+        uBlendModeLocation = GLES20.glGetUniformLocation(program, "uBlendMode")
     }
 
     override fun onInitialized() {
@@ -1166,11 +1375,13 @@ class GPUImageInnerGlowFilter(
         applyParameters()
     }
 
-    fun setParams(radius: Float, r: Float, g: Float, b: Float) {
+    fun setParams(radius: Float, r: Float, g: Float, b: Float, hardness: Float = 0.5f, blendMode: Float = 2.0f) {
         this.radius = radius
         this.r = r
         this.g = g
         this.b = b
+        this.hardness = hardness
+        this.blendMode = blendMode
         applyParameters()
     }
 
@@ -1179,6 +1390,8 @@ class GPUImageInnerGlowFilter(
         setFloat(uColorRLocation, r)
         setFloat(uColorGLocation, g)
         setFloat(uColorBLocation, b)
+        setFloat(uHardnessLocation, hardness)
+        setFloat(uBlendModeLocation, blendMode)
     }
 }
 
@@ -1189,19 +1402,66 @@ uniform highp float uRadius;
 uniform highp float uColorR;
 uniform highp float uColorG;
 uniform highp float uColorB;
+uniform highp float uHardness;
+uniform highp float uBlendMode;
+
+highp vec3 blendColors(highp vec3 base, highp vec3 blend, highp float mode) {
+    if (mode < 0.5) { // Normal
+        return blend;
+    } else if (mode < 1.5) { // Multiply
+        return base * blend;
+    } else if (mode < 2.5) { // Screen
+        return base + blend - (base * blend);
+    } else if (mode < 3.5) { // Add
+        return min(base + blend, vec3(1.0));
+    } else if (mode < 4.5) { // Overlay
+        highp vec3 result;
+        if (base.r < 0.5) result.r = 2.0 * base.r * blend.r; else result.r = 1.0 - 2.0 * (1.0 - base.r) * (1.0 - blend.r);
+        if (base.g < 0.5) result.g = 2.0 * base.g * blend.g; else result.g = 1.0 - 2.0 * (1.0 - base.g) * (1.0 - blend.g);
+        if (base.b < 0.5) result.b = 2.0 * base.b * blend.b; else result.b = 1.0 - 2.0 * (1.0 - base.b) * (1.0 - blend.b);
+        return result;
+    } else if (mode < 5.5) { // Lighten
+        return max(base, blend);
+    } else if (mode < 6.5) { // Darken
+        return min(base, blend);
+    }
+    return blend;
+}
+
 void main() {
     highp vec3 uColor = vec3(uColorR, uColorG, uColorB);
     highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
-    highp float minAlpha = 1.0;
-    for (int x = -2; x <= 2; x++) {
-        for (int y = -2; y <= 2; y++) {
-            highp vec2 offset = vec2(float(x), float(y)) * uRadius;
-            highp float a = texture2D(inputImageTexture, textureCoordinate + offset).a;
-            minAlpha = min(minAlpha, a);
-        }
+    
+    highp float centerAlpha = baseColor.a;
+    highp float sumAlpha = 0.0;
+    highp float totalWeight = 0.0;
+    
+    // 24-point Fibonacci spiral sampling for pristine, banding-free soft glow transitions
+    for (int i = 0; i < 24; i++) {
+        highp float t = (float(i) + 0.5) / 24.0;
+        highp float r = sqrt(t) * uRadius;
+        highp float angle = float(i) * 2.3999632; // Golden angle in radians
+        highp vec2 offset = vec2(cos(angle), sin(angle)) * r;
+        
+        // Linear falloff weight for beautiful natural soft-edge gradients
+        highp float weight = 1.0 - t; 
+        sumAlpha += texture2D(inputImageTexture, textureCoordinate + offset).a * weight;
+        totalWeight += weight;
     }
-    highp float edgeAmount = (baseColor.a - minAlpha);
-    highp vec3 finalColor = mix(baseColor.rgb, uColor, edgeAmount * 0.8);
+    
+    highp float averageAlpha = sumAlpha / totalWeight;
+    highp float edgeAmount = clamp(centerAlpha - averageAlpha, 0.0, 1.0);
+    
+    // Apply hardness progressively and smoothly
+    if (uHardness >= 0.99) {
+        edgeAmount = step(0.001, edgeAmount);
+    } else {
+        highp float start = uHardness * 0.95;
+        edgeAmount = smoothstep(start, 1.0, edgeAmount);
+    }
+    
+    highp vec3 blendedColor = blendColors(baseColor.rgb, uColor, uBlendMode);
+    highp vec3 finalColor = mix(baseColor.rgb, blendedColor, edgeAmount);
     gl_FragColor = vec4(finalColor, baseColor.a);
 }
 """
@@ -1247,20 +1507,42 @@ uniform sampler2D inputImageTexture;
 uniform highp float uHeight;
 uniform highp float uSmoothness;
 uniform highp float uHighlightSize;
+
 void main() {
     highp vec4 baseColor = texture2D(inputImageTexture, textureCoordinate);
-    highp float step = 0.002 * (1.0 + uSmoothness * 3.0);
-    highp float aL = texture2D(inputImageTexture, textureCoordinate + vec2(-step, 0.0)).a;
-    highp float aR = texture2D(inputImageTexture, textureCoordinate + vec2(step, 0.0)).a;
-    highp float aD = texture2D(inputImageTexture, textureCoordinate + vec2(0.0, -step)).a;
-    highp float aU = texture2D(inputImageTexture, textureCoordinate + vec2(0.0, step)).a;
-    highp vec2 norm2d = vec2(aR - aL, aU - aD) * uHeight;
-    highp vec3 normal = normalize(vec3(norm2d, 1.0));
-    highp vec3 lightDir = normalize(vec3(-0.7, 0.7, 1.2));
-    highp float diffuse = dot(normal, lightDir);
-    highp float specular = pow(max(0.0, diffuse), 4.0) * uHighlightSize * 4.0;
-    highp float shadow = (1.0 - smoothstep(0.0, 0.6, diffuse)) * uHeight * 0.5;
-    highp vec3 litColor = baseColor.rgb + vec3(specular) - vec3(shadow);
+    if (baseColor.a <= 0.0) {
+        gl_FragColor = baseColor;
+        return;
+    }
+
+    highp float maxStep = 0.002 * (1.0 + uSmoothness * 3.0);
+    highp float gx = 0.0;
+    highp float gy = 0.0;
+
+    for (int i = 1; i <= 4; i++) {
+        highp float step = maxStep * (float(i) / 4.0);
+        highp float aL = texture2D(inputImageTexture, textureCoordinate + vec2(-step, 0.0)).a;
+        highp float aR = texture2D(inputImageTexture, textureCoordinate + vec2(step, 0.0)).a;
+        highp float aD = texture2D(inputImageTexture, textureCoordinate + vec2(0.0, -step)).a;
+        highp float aU = texture2D(inputImageTexture, textureCoordinate + vec2(0.0, step)).a;
+        gx += (aR - aL);
+        gy += (aU - aD);
+    }
+    gx /= 4.0;
+    gy /= 4.0;
+
+    highp vec2 lightDir = normalize(vec2(-0.7, 0.7));
+    highp float slope = (gx * lightDir.x + gy * lightDir.y) * uHeight * 3.0;
+
+    highp vec3 litColor = baseColor.rgb;
+    if (slope > 0.001) {
+        highp float hl = clamp(slope * max(0.2, uHighlightSize * 2.0), 0.0, 1.0);
+        litColor = 1.0 - (1.0 - litColor) * (1.0 - vec3(hl * 0.8));
+    } else if (slope < -0.001) {
+        highp float sh = clamp(-slope * 0.8, 0.0, 1.0);
+        litColor = litColor * (1.0 - sh * 0.8);
+    }
+
     gl_FragColor = vec4(clamp(litColor, 0.0, 1.0), baseColor.a);
 }
 """

@@ -1,12 +1,17 @@
 package com.example.studio.ui
 
 import android.graphics.Typeface
+import android.util.LruCache
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
 
 object TypefaceCache {
-    private val typefaceCache = ConcurrentHashMap<String, Typeface>()
+    private const val MAX_CACHE_SIZE = 50
 
+    private val lruCache = object : LruCache<String, Typeface>(MAX_CACHE_SIZE) {
+        override fun sizeOf(key: String, value: Typeface): Int = 1
+    }
+
+    @Synchronized
     fun get(fontPath: String?, fontFamilyName: String?, isBold: Boolean, isItalic: Boolean): Typeface {
         val style = if (isBold && isItalic) {
             Typeface.BOLD_ITALIC
@@ -18,33 +23,50 @@ object TypefaceCache {
             Typeface.NORMAL
         }
 
-        val cacheKey = if (!fontPath.isNullOrEmpty()) {
-            "path|$fontPath|$style"
-        } else {
-            "name|$fontFamilyName|$style"
+        val cacheKey = "p:$fontPath|f:$fontFamilyName|s:$style"
+
+        val cached = lruCache.get(cacheKey)
+        if (cached != null) {
+            return cached
         }
 
-        return typefaceCache.getOrPut(cacheKey) {
+        val typeface = try {
+            val effectivePath = when {
+                !fontPath.isNullOrEmpty() && File(fontPath).exists() -> fontPath
+                !fontFamilyName.isNullOrEmpty() && File(fontFamilyName).exists() -> fontFamilyName
+                else -> null
+            }
+
+            if (!effectivePath.isNullOrEmpty()) {
+                val baseTf = Typeface.createFromFile(effectivePath)
+                Typeface.create(baseTf, style)
+            } else {
+                val famLower = fontFamilyName?.lowercase() ?: ""
+                val family = when {
+                    famLower.contains("mono") -> Typeface.MONOSPACE
+                    famLower.contains("serif") && !famLower.contains("sans") -> Typeface.SERIF
+                    famLower.contains("sans") -> Typeface.SANS_SERIF
+                    famLower.contains("cursive") || famLower.contains("pacifico") || famLower.contains("dancing") || famLower.contains("caveat") || famLower.contains("script") -> Typeface.create("cursive", style)
+                    famLower.contains("casual") || famLower.contains("indie") -> Typeface.create("casual", style)
+                    !fontFamilyName.isNullOrEmpty() -> Typeface.create(fontFamilyName, style)
+                    else -> Typeface.DEFAULT
+                }
+                Typeface.create(family, style)
+            }
+        } catch (e: Exception) {
             try {
-                if (!fontPath.isNullOrEmpty() && File(fontPath).exists()) {
-                    val baseTf = Typeface.createFromFile(fontPath)
-                    Typeface.create(baseTf, style)
-                } else {
-                    val family = when (fontFamilyName) {
-                        "Monospace" -> Typeface.MONOSPACE
-                        "Serif" -> Typeface.SERIF
-                        "Sans-Serif" -> Typeface.SANS_SERIF
-                        else -> Typeface.DEFAULT
-                    }
-                    Typeface.create(family, style)
-                }
-            } catch (e: Exception) {
-                try {
-                    Typeface.defaultFromStyle(style)
-                } catch (ex: Exception) {
-                    Typeface.DEFAULT
-                }
+                Typeface.defaultFromStyle(style)
+            } catch (ex: Exception) {
+                Typeface.DEFAULT
             }
         }
+
+        lruCache.put(cacheKey, typeface)
+        return typeface
+    }
+
+    @Synchronized
+    fun clear() {
+        lruCache.evictAll()
     }
 }

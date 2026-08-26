@@ -1,4 +1,5 @@
 package com.example.studio.ui
+import androidx.compose.material3.MaterialTheme
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,8 +29,8 @@ import androidx.compose.foundation.verticalScroll
 // Color Constants matching Zenith Studio Design System
 private val DarkCanvas = Color(0xFF121212)
 private val SurfaceDark = Color(0xFF1E1E1E)
-private val IndustrialAmber = Color(0xFFFFB300)
-private val EnergeticYellow = Color(0xFFFFD54F)
+private val AccentYellow = Color(0xFFFFB300)
+private val AccentYellowLight = Color(0xFFFFD54F)
 private val TextPrimary = Color(0xFFEEEEEE)
 private val TextSecondary = Color(0xB3EEEEEE)
 
@@ -56,6 +57,9 @@ fun BezierVectorControlPane(
     isScrollable: Boolean = true,
     keepBezierSymmetrical: Boolean = true,
     onKeepBezierSymmetricalChange: (Boolean) -> Unit = {},
+    onRetractHandle: (Boolean) -> Unit = {},
+    onRestoreHandles: () -> Unit = {},
+    onClose: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var nudgeStep by remember { mutableStateOf(5f) }
@@ -89,10 +93,10 @@ fun BezierVectorControlPane(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "BÉZIER PEN STUDIO",
-                    color = IndustrialAmber,
+                    color = MaterialTheme.colorScheme.primary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp
@@ -104,16 +108,19 @@ fun BezierVectorControlPane(
                 )
             }
             
-            // Quick style chips
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Quick style chips & Close button
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 // Fill / Stroke toggle chip
                 InputChip(
                     selected = isFilled,
                     onClick = onToggleFillStyle,
                     label = { Text(if (isFilled) "Filled" else "Outline", fontSize = 10.sp, color = TextPrimary) },
                     colors = InputChipDefaults.inputChipColors(
-                        selectedContainerColor = IndustrialAmber.copy(0.2f),
-                        selectedLabelColor = IndustrialAmber
+                        selectedContainerColor = MaterialTheme.colorScheme.primary.copy(0.2f),
+                        selectedLabelColor = MaterialTheme.colorScheme.primary
                     )
                 )
                 // Close path toggle chip
@@ -122,10 +129,21 @@ fun BezierVectorControlPane(
                     onClick = onToggleClosePath,
                     label = { Text(if (isClosed) "Closed" else "Open", fontSize = 10.sp, color = TextPrimary) },
                     colors = InputChipDefaults.inputChipColors(
-                        selectedContainerColor = EnergeticYellow.copy(0.2f),
-                        selectedLabelColor = EnergeticYellow
+                        selectedContainerColor = MaterialTheme.colorScheme.primary.copy(0.2f),
+                        selectedLabelColor = MaterialTheme.colorScheme.primary
                     )
                 )
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close Pen Studio",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
 
@@ -163,20 +181,20 @@ fun BezierVectorControlPane(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(6.dp))
-                                .background(if (isSelected) IndustrialAmber.copy(0.15f) else Color.Transparent)
+                                .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(0.15f) else Color.Transparent)
                                 .clickable { onPenSubToolChange(mode) }
                                 .padding(vertical = 4.dp)
                         ) {
                             Icon(
                                 imageVector = icon,
                                 contentDescription = label,
-                                tint = if (isSelected) IndustrialAmber else TextSecondary,
+                                tint = if (isSelected) MaterialTheme.colorScheme.primary else TextSecondary,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = label,
-                                color = if (isSelected) IndustrialAmber else TextSecondary,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else TextSecondary,
                                 fontSize = 9.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                             )
@@ -215,7 +233,7 @@ fun BezierVectorControlPane(
                             Icon(
                                 imageVector = Icons.Default.Edit,
                                 contentDescription = "Active point",
-                                tint = EnergeticYellow,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
@@ -226,7 +244,7 @@ fun BezierVectorControlPane(
                             )
                             Text(
                                 text = "($selectedSubPointType)",
-                                color = EnergeticYellow,
+                                color = MaterialTheme.colorScheme.primary,
                                 fontSize = 11.sp
                             )
                         }
@@ -268,7 +286,7 @@ fun BezierVectorControlPane(
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             text = "INTUITIVE HANDLE CURVATURE ADJUSTMENT",
-                            color = IndustrialAmber,
+                            color = MaterialTheme.colorScheme.primary,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -309,7 +327,7 @@ fun BezierVectorControlPane(
                                 modifier = Modifier.weight(1f).height(32.dp),
                                 contentPadding = PaddingValues(0.dp)
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Symmetric", tint = EnergeticYellow, modifier = Modifier.size(14.dp))
+                                Icon(Icons.Default.Refresh, contentDescription = "Symmetric", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Symmetric Curve", fontSize = 10.sp, color = TextPrimary)
                             }
@@ -338,12 +356,10 @@ fun BezierVectorControlPane(
                                             // Single handle selected
                                             val currentIdx = activeBezierPointIndex
                                             updated[currentIdx] = anchor + Offset(cosVal * newDist, sinVal * newDist)
-                                            if (currentNodeType == "SMOOTH" && keepBezierSymmetrical) {
+                                            if (currentNodeType != "CORNER" && keepBezierSymmetrical) {
                                                 val otherIdx = if (currentIdx % 3 == 1) k * 3 + 2 else k * 3 + 1
-                                                val otherPt = updated[otherIdx]
-                                                val otherDist = Math.hypot((otherPt.x - anchor.x).toDouble(), (otherPt.y - anchor.y).toDouble()).toFloat()
                                                 val oppAngle = angleRad + Math.PI
-                                                updated[otherIdx] = anchor + Offset(Math.cos(oppAngle).toFloat() * otherDist, Math.sin(oppAngle).toFloat() * otherDist)
+                                                updated[otherIdx] = anchor + Offset(Math.cos(oppAngle).toFloat() * newDist, Math.sin(oppAngle).toFloat() * newDist)
                                             }
                                         }
                                         onUpdatePoints(updated)
@@ -351,7 +367,7 @@ fun BezierVectorControlPane(
                                 },
                                 valueRange = 0f..200f,
                                 modifier = Modifier.weight(1f).height(30.dp),
-                                colors = SliderDefaults.colors(thumbColor = EnergeticYellow, activeTrackColor = EnergeticYellow)
+                                colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary, activeTrackColor = MaterialTheme.colorScheme.primary)
                             )
                             Text("${currentDist.toInt()}px", color = TextPrimary, fontSize = 10.sp, modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
                         }
@@ -379,12 +395,13 @@ fun BezierVectorControlPane(
                                             // Single handle selected
                                             val currentIdx = activeBezierPointIndex
                                             updated[currentIdx] = anchor + Offset(cosVal * currentDist, sinVal * currentDist)
-                                            if (currentNodeType == "SMOOTH" && keepBezierSymmetrical) {
+                                            if (currentNodeType != "CORNER" && keepBezierSymmetrical) {
                                                 val otherIdx = if (currentIdx % 3 == 1) k * 3 + 2 else k * 3 + 1
                                                 val otherPt = updated[otherIdx]
                                                 val otherDist = Math.hypot((otherPt.x - anchor.x).toDouble(), (otherPt.y - anchor.y).toDouble()).toFloat()
                                                 val oppAngle = angleRad + Math.PI
-                                                updated[otherIdx] = anchor + Offset(Math.cos(oppAngle).toFloat() * otherDist, Math.sin(oppAngle).toFloat() * otherDist)
+                                                // When rotating, keep symmetrical handle distance equal to current handle distance if fully symmetric
+                                                updated[otherIdx] = anchor + Offset(Math.cos(oppAngle).toFloat() * currentDist, Math.sin(oppAngle).toFloat() * currentDist)
                                             }
                                         }
                                         onUpdatePoints(updated)
@@ -392,7 +409,7 @@ fun BezierVectorControlPane(
                                 },
                                 valueRange = 0f..360f,
                                 modifier = Modifier.weight(1f).height(30.dp),
-                                colors = SliderDefaults.colors(thumbColor = EnergeticYellow, activeTrackColor = EnergeticYellow)
+                                colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary, activeTrackColor = MaterialTheme.colorScheme.primary)
                             )
                             Text("${currentAngle.toInt()}°", color = TextPrimary, fontSize = 10.sp, modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
                         }
@@ -405,18 +422,57 @@ fun BezierVectorControlPane(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Collinear Constraint:", color = TextSecondary, fontSize = 11.sp)
+                            Text("Link/Unlink Handles:", color = TextSecondary, fontSize = 11.sp)
                             Button(
                                 onClick = onToggleNodeType,
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (currentNodeType == "SMOOTH") IndustrialAmber else Color.White.copy(0.08f),
+                                    containerColor = if (currentNodeType == "SMOOTH") MaterialTheme.colorScheme.primary else Color.White.copy(0.08f),
                                     contentColor = if (currentNodeType == "SMOOTH") Color.Black else TextPrimary
                                 ),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.height(24.dp)
                             ) {
-                                Text(if (currentNodeType == "SMOOTH") "SMOOTH (SYMMETRIC)" else "CORNER (SHARP)", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text(if (currentNodeType == "SMOOTH") "LINKED (SMOOTH)" else "UNLINKED (CORNER)", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        // Retract and Restore Handles Buttons
+                        Divider(color = Color.White.copy(0.04f))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Handle Visibility:", color = TextSecondary, fontSize = 11.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Button(
+                                    onClick = { onRetractHandle(true) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.08f), contentColor = TextPrimary),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    Text("RETRACT IN", fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Button(
+                                    onClick = { onRetractHandle(false) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.08f), contentColor = TextPrimary),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    Text("RETRACT OUT", fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Button(
+                                    onClick = onRestoreHandles,
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.Black),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    Text("RESTORE", fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
 
@@ -430,7 +486,7 @@ fun BezierVectorControlPane(
                             Button(
                                 onClick = { onKeepBezierSymmetricalChange(!keepBezierSymmetrical) },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (keepBezierSymmetrical) IndustrialAmber else Color.White.copy(0.08f),
+                                    containerColor = if (keepBezierSymmetrical) MaterialTheme.colorScheme.primary else Color.White.copy(0.08f),
                                     contentColor = if (keepBezierSymmetrical) Color.Black else TextPrimary
                                 ),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
@@ -480,7 +536,7 @@ fun BezierVectorControlPane(
                 ) {
                     Text(
                         text = "PATH SIMPLIFICATION UTILITIES",
-                        color = IndustrialAmber,
+                        color = MaterialTheme.colorScheme.primary,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.5.sp
@@ -506,7 +562,7 @@ fun BezierVectorControlPane(
                             contentPadding = PaddingValues(horizontal = 4.dp),
                             shape = RoundedCornerShape(6.dp)
                         ) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Simplify Entire Path", tint = EnergeticYellow, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.Refresh, contentDescription = "Simplify Entire Path", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Simplify Path", fontSize = 10.sp, color = TextPrimary)
                         }
@@ -529,7 +585,7 @@ fun BezierVectorControlPane(
                             contentPadding = PaddingValues(horizontal = 4.dp),
                             shape = RoundedCornerShape(6.dp)
                         ) {
-                            Icon(Icons.Default.Settings, contentDescription = "Simplify Part", tint = if (isNodeSelected) IndustrialAmber else TextSecondary.copy(alpha = 0.3f), modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.Settings, contentDescription = "Simplify Part", tint = if (isNodeSelected) MaterialTheme.colorScheme.primary else TextSecondary.copy(alpha = 0.3f), modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Simplify Part", fontSize = 10.sp, color = if (isNodeSelected) TextPrimary else TextSecondary.copy(alpha = 0.3f))
                         }
@@ -548,7 +604,7 @@ fun BezierVectorControlPane(
                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         text = "STROKE & FILL STYLE SETTINGS",
-                        color = IndustrialAmber,
+                        color = MaterialTheme.colorScheme.primary,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.5.sp
@@ -566,7 +622,7 @@ fun BezierVectorControlPane(
                             onValueChange = { onUpdateLayerProperties(if (it == 0f) -1f else it, layer.baseColor) },
                             valueRange = 0f..24f,
                             modifier = Modifier.weight(1f).height(30.dp),
-                            colors = SliderDefaults.colors(thumbColor = IndustrialAmber, activeTrackColor = IndustrialAmber)
+                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary, activeTrackColor = MaterialTheme.colorScheme.primary)
                         )
                         Text("${currentStrokeVal.toInt()}px", color = TextPrimary, fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
                     }
@@ -644,7 +700,7 @@ fun BezierVectorControlPane(
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(if (nudgeStep == step) IndustrialAmber else Color.White.copy(0.05f))
+                                    .background(if (nudgeStep == step) MaterialTheme.colorScheme.primary else Color.White.copy(0.05f))
                                     .clickable { nudgeStep = step }
                                     .padding(horizontal = 8.dp, vertical = 2.dp)
                             ) {
@@ -680,7 +736,7 @@ fun BezierVectorControlPane(
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Trackpad Icon", tint = IndustrialAmber.copy(0.5f), modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Refresh, contentDescription = "Trackpad Icon", tint = MaterialTheme.colorScheme.primary.copy(0.5f), modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.height(2.dp))
                             Text("Slide Trackpad", color = TextSecondary, fontSize = 9.sp)
                             Text("for fine nudge", color = TextSecondary, fontSize = 8.sp)
@@ -707,7 +763,7 @@ fun BezierVectorControlPane(
                             onClick = { nudgeCursor(0f, -nudgeStep) },
                             modifier = Modifier.align(Alignment.TopCenter).size(28.dp)
                         ) {
-                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Cursor Up", tint = IndustrialAmber)
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Cursor Up", tint = MaterialTheme.colorScheme.primary)
                         }
 
                         // Left Button
@@ -715,7 +771,7 @@ fun BezierVectorControlPane(
                             onClick = { nudgeCursor(-nudgeStep, 0f) },
                             modifier = Modifier.align(Alignment.CenterStart).size(28.dp)
                         ) {
-                            Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Move Cursor Left", tint = IndustrialAmber)
+                            Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Move Cursor Left", tint = MaterialTheme.colorScheme.primary)
                         }
 
                         // Right Button
@@ -723,7 +779,7 @@ fun BezierVectorControlPane(
                             onClick = { nudgeCursor(nudgeStep, 0f) },
                             modifier = Modifier.align(Alignment.CenterEnd).size(28.dp)
                         ) {
-                            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Move Cursor Right", tint = IndustrialAmber)
+                            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Move Cursor Right", tint = MaterialTheme.colorScheme.primary)
                         }
 
                         // Down Button
@@ -731,7 +787,7 @@ fun BezierVectorControlPane(
                             onClick = { nudgeCursor(0f, nudgeStep) },
                             modifier = Modifier.align(Alignment.BottomCenter).size(28.dp)
                         ) {
-                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Cursor Down", tint = IndustrialAmber)
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Cursor Down", tint = MaterialTheme.colorScheme.primary)
                         }
 
                         // Center reset button
@@ -748,30 +804,60 @@ fun BezierVectorControlPane(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Huge action button to Add Node at Pen Cursor Offset
-                Button(
-                    onClick = onAddPoint,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = IndustrialAmber,
-                        contentColor = Color.Black
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(42.dp),
-                    shape = RoundedCornerShape(20.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AddCircle,
-                        contentDescription = "Place point node icon",
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (layer != null && layer.type == com.example.studio.model.LayerType.VECTOR_BEZIER) "PLACE VECTOR NODE" else "CREATE PATH",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.5.sp
-                    )
+                    Button(
+                        onClick = onClose,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = Color.Black
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Done editing icon",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "DONE",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+
+                    // Huge action button to Add Node at Pen Cursor Offset
+                    Button(
+                        onClick = onAddPoint,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = Color.Black
+                        ),
+                        modifier = Modifier
+                            .weight(1.5f)
+                            .height(42.dp),
+                        shape = RoundedCornerShape(20.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AddCircle,
+                            contentDescription = "Place point node icon",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (layer != null && layer.type == com.example.studio.model.LayerType.VECTOR_BEZIER) "PLACE NODE" else "CREATE PATH",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
                 }
             }
         }

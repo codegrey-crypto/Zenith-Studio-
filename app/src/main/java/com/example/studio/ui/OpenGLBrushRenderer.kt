@@ -148,17 +148,22 @@ object OpenGLBrushRenderer {
     }
 
     // Memory-bounded LRU Cache to safely manage heap size and prevent GC thrashing/OOMs
-    private val strokeBitmapCache = object : LruCache<String, Bitmap>(48 * 1024 * 1024) {
+    private val strokeBitmapCache = object : LruCache<String, Bitmap>(if (com.example.studio.model.DevicePerformanceManager.statsState.value.isLowRamModeActive) 12 * 1024 * 1024 else 48 * 1024 * 1024) {
         override fun sizeOf(key: String?, value: Bitmap?): Int {
             return value?.byteCount ?: 0
         }
     }
 
     // High-performance cache for pre-compiled stroke results including calculated coordinate offsets
-    private val strokeResultCache = object : LruCache<String, RenderedStrokeResult>(48 * 1024 * 1024) {
+    private val strokeResultCache = object : LruCache<String, RenderedStrokeResult>(if (com.example.studio.model.DevicePerformanceManager.statsState.value.isLowRamModeActive) 12 * 1024 * 1024 else 48 * 1024 * 1024) {
         override fun sizeOf(key: String?, value: RenderedStrokeResult?): Int {
             return value?.bitmap?.byteCount ?: 0
         }
+    }
+
+    fun clearCaches() {
+        strokeBitmapCache.evictAll()
+        strokeResultCache.evictAll()
     }
 
     // HardwareBuffer cache for Android O+ to allow ultra-fast direct GPU access to brush shapes
@@ -875,6 +880,31 @@ object OpenGLBrushRenderer {
         }
 
         fun isInitialized(): Boolean = wetInkBitmap != null
+
+        fun drawInitialPoint(
+            point: Offset,
+            color: Color,
+            size: Float,
+            opacity: Float,
+            presetIndex: Int,
+            smoothing: Boolean,
+            customHardness: Float? = null,
+            blendMode: androidx.compose.ui.graphics.BlendMode = androidx.compose.ui.graphics.BlendMode.SrcOver
+        ) {
+            val canvas = wetInkCanvas ?: return
+            val points = listOf(point, Offset(point.x + 0.01f, point.y + 0.01f))
+            renderSegmentToCanvas(
+                canvas = canvas,
+                points = points,
+                brushColor = color,
+                size = size,
+                opacity = opacity,
+                presetIndex = presetIndex,
+                smoothing = smoothing,
+                customHardness = customHardness,
+                blendMode = blendMode
+            )
+        }
 
         fun drawSegments(
             points: List<Offset>,

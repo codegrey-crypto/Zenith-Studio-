@@ -1,6 +1,9 @@
 package com.example.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -16,31 +19,49 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.nativeCanvas
 
 /**
- * High-Contrast Professional dark theme configuration
+ * Dynamic Multi-Theme configuration
  * for Zenith Studio Creative Workspace.
  */
-private val DarkColorScheme = darkColorScheme(
-    primary = IndustrialAmber,      // Industrial Accent Amber
-    secondary = EnergeticYellow,    // Energetic Accent Gold
-    tertiary = MatteBlue,           // Cobalt Sub-accent
-    background = DarkOnyx,          // Midnight Obsidian Canvas
-    surface = SlatePanel,           // Slate Tool Panels
-    surfaceVariant = MidSlate,      // Dark Satin Mid-Slate Surface
-    outline = HighslateOutline,     // Subtle Silver-Slate Border Outline
-    onBackground = Color.White,     // White text pops on Midnight Obsidian
-    onSurface = TextPrimary,        // Clean White text on Slate Panels
-    onSurfaceVariant = TextSecondary // Muted Gray info text on Slate Panels
-)
-
 @Composable
 fun MyApplicationTheme(
-    darkTheme: Boolean = true,       // Force Dark theme for the design studio workspace
-    dynamicColor: Boolean = false,   // Preserves professional color system visual rules
+    darkTheme: Boolean = currentThemeStateBySelection.value.isDark,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
+    val theme = currentThemeStateBySelection.value
+    val scheme = darkColorScheme(
+        primary = theme.primary,
+        secondary = theme.secondary,
+        tertiary = theme.tertiary,
+        background = theme.background,
+        surface = theme.surface,
+        surfaceVariant = theme.surfaceVariant,
+        outline = theme.outline,
+        onBackground = theme.onBackground,
+        onSurface = theme.onSurface,
+        onSurfaceVariant = theme.onSurfaceVariant
+    )
+    val baseTypography = Typography
+    val customTypography = baseTypography.copy(
+        displayLarge = baseTypography.displayLarge.copy(fontFamily = theme.fontStyle),
+        displayMedium = baseTypography.displayMedium.copy(fontFamily = theme.fontStyle),
+        displaySmall = baseTypography.displaySmall.copy(fontFamily = theme.fontStyle),
+        headlineLarge = baseTypography.headlineLarge.copy(fontFamily = theme.fontStyle),
+        headlineMedium = baseTypography.headlineMedium.copy(fontFamily = theme.fontStyle),
+        headlineSmall = baseTypography.headlineSmall.copy(fontFamily = theme.fontStyle),
+        titleLarge = baseTypography.titleLarge.copy(fontFamily = theme.fontStyle),
+        titleMedium = baseTypography.titleMedium.copy(fontFamily = theme.fontStyle),
+        titleSmall = baseTypography.titleSmall.copy(fontFamily = theme.fontStyle),
+        bodyLarge = baseTypography.bodyLarge.copy(fontFamily = theme.fontStyle),
+        bodyMedium = baseTypography.bodyMedium.copy(fontFamily = theme.fontStyle),
+        bodySmall = baseTypography.bodySmall.copy(fontFamily = theme.fontStyle),
+        labelLarge = baseTypography.labelLarge.copy(fontFamily = theme.fontStyle),
+        labelMedium = baseTypography.labelMedium.copy(fontFamily = theme.fontStyle),
+        labelSmall = baseTypography.labelSmall.copy(fontFamily = theme.fontStyle)
+    )
     MaterialTheme(
-        colorScheme = DarkColorScheme,
-        typography = Typography,
+        colorScheme = scheme,
+        typography = customTypography,
         content = content
     )
 }
@@ -51,30 +72,51 @@ fun MyApplicationTheme(
  */
 fun Modifier.neonChartreuseGlow(
     glowRadius: Dp = 8.dp,
-    alpha: Float = 0.5f,
+    alpha: Float = 0.4f,
     cornerRadius: Dp = 8.dp
-): Modifier = this.graphicsLayer {
+): Modifier = if (isLowEndOptimizationEnabled.value) this else this.graphicsLayer {
     clip = false
 }.drawBehind {
-    val paint = Paint().asFrameworkPaint().apply {
-        color = Color(0xFFFFB300).copy(alpha = alpha).toArgb() // Beautiful Warm Amber glow
-        setShadowLayer(
-            glowRadius.toPx(),
-            0f,
-            0f,
-            Color(0xFFFFB300).toArgb()
-        )
-    }
-    drawIntoCanvas { canvas ->
-        canvas.nativeCanvas.drawRoundRect(
-            0f,
-            0f,
-            size.width,
-            size.height,
-            cornerRadius.toPx(),
-            cornerRadius.toPx(),
-            paint
-        )
+    val theme = currentThemeStateBySelection.value
+    if (theme.isBrutalist) {
+        val offsetPx = 5.dp.toPx()
+        val paint = Paint().asFrameworkPaint().apply {
+            color = theme.outline.toArgb()
+            style = android.graphics.Paint.Style.FILL
+        }
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawRoundRect(
+                offsetPx,
+                offsetPx,
+                size.width + offsetPx,
+                size.height + offsetPx,
+                4.dp.toPx(),
+                4.dp.toPx(),
+                paint
+            )
+        }
+    } else {
+        val glowColor = theme.secondary
+        val paint = Paint().asFrameworkPaint().apply {
+            color = glowColor.copy(alpha = alpha).toArgb() // Beautiful dynamic glow matching active theme secondary color
+            setShadowLayer(
+                glowRadius.toPx(),
+                0f,
+                0f,
+                glowColor.toArgb()
+            )
+        }
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawRoundRect(
+                0f,
+                0f,
+                size.width,
+                size.height,
+                cornerRadius.toPx(),
+                cornerRadius.toPx(),
+                paint
+            )
+        }
     }
 }
 
@@ -83,30 +125,51 @@ fun Modifier.neonChartreuseGlow(
  */
 fun Modifier.industrialAmberGlow(
     glowRadius: Dp = 8.dp,
-    alpha: Float = 0.5f,
+    alpha: Float = 0.45f,
     cornerRadius: Dp = 8.dp
-): Modifier = this.graphicsLayer {
+): Modifier = if (isLowEndOptimizationEnabled.value) this else this.graphicsLayer {
     clip = false
 }.drawBehind {
-    val paint = Paint().asFrameworkPaint().apply {
-        color = Color(0xFFFFB300).copy(alpha = alpha).toArgb()
-        setShadowLayer(
-            glowRadius.toPx(),
-            0f,
-            0f,
-            Color(0xFFFFB300).toArgb()
-        )
-    }
-    drawIntoCanvas { canvas ->
-        canvas.nativeCanvas.drawRoundRect(
-            0f,
-            0f,
-            size.width,
-            size.height,
-            cornerRadius.toPx(),
-            cornerRadius.toPx(),
-            paint
-        )
+    val theme = currentThemeStateBySelection.value
+    if (theme.isBrutalist) {
+        val offsetPx = 5.dp.toPx()
+        val paint = Paint().asFrameworkPaint().apply {
+            color = theme.outline.toArgb()
+            style = android.graphics.Paint.Style.FILL
+        }
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawRoundRect(
+                offsetPx,
+                offsetPx,
+                size.width + offsetPx,
+                size.height + offsetPx,
+                4.dp.toPx(),
+                4.dp.toPx(),
+                paint
+            )
+        }
+    } else {
+        val glowColor = theme.primary
+        val paint = Paint().asFrameworkPaint().apply {
+            color = glowColor.copy(alpha = alpha).toArgb() // Dynamic glow matching active theme primary color
+            setShadowLayer(
+                glowRadius.toPx(),
+                0f,
+                0f,
+                glowColor.toArgb()
+            )
+        }
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawRoundRect(
+                0f,
+                0f,
+                size.width,
+                size.height,
+                cornerRadius.toPx(),
+                cornerRadius.toPx(),
+                paint
+            )
+        }
     }
 }
 
@@ -115,29 +178,68 @@ fun Modifier.industrialAmberGlow(
  */
 fun Modifier.electricVioletGlow(
     glowRadius: Dp = 8.dp,
-    alpha: Float = 0.5f,
+    alpha: Float = 0.4f,
     cornerRadius: Dp = 8.dp
-): Modifier = this.graphicsLayer {
+): Modifier = if (isLowEndOptimizationEnabled.value) this else this.graphicsLayer {
     clip = false
-}.drawBehind {
-    val paint = Paint().asFrameworkPaint().apply {
-        color = Color(0xFFFFB300).copy(alpha = alpha).toArgb() // Harmonized to Cyber Amber visual accent
-        setShadowLayer(
-            glowRadius.toPx(),
-            0f,
-            0f,
-            Color(0xFFFFB300).toArgb()
-        )
-    }
-    drawIntoCanvas { canvas ->
-        canvas.nativeCanvas.drawRoundRect(
-            0f,
-            0f,
-            size.width,
-            size.height,
-            cornerRadius.toPx(),
-            cornerRadius.toPx(),
-            paint
-        )
+ }.drawBehind {
+    val theme = currentThemeStateBySelection.value
+    if (theme.isBrutalist) {
+        val offsetPx = 5.dp.toPx()
+        val paint = Paint().asFrameworkPaint().apply {
+            color = theme.outline.toArgb()
+            style = android.graphics.Paint.Style.FILL
+        }
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawRoundRect(
+                offsetPx,
+                offsetPx,
+                size.width + offsetPx,
+                size.height + offsetPx,
+                4.dp.toPx(),
+                4.dp.toPx(),
+                paint
+            )
+        }
+    } else {
+        val glowColor = theme.tertiary
+        val paint = Paint().asFrameworkPaint().apply {
+            color = glowColor.copy(alpha = alpha).toArgb() // Dynamic glow matching active theme tertiary color
+            setShadowLayer(
+                glowRadius.toPx(),
+                0f,
+                0f,
+                glowColor.toArgb()
+            )
+        }
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawRoundRect(
+                0f,
+                0f,
+                size.width,
+                size.height,
+                cornerRadius.toPx(),
+                cornerRadius.toPx(),
+                paint
+            )
+        }
     }
 }
+
+// --- DYNAMIC MULTI-DIMENSIONAL ADVANCED RESHAPING SYSTEM ---
+
+val currentTheme: StudioTheme get() = currentThemeStateBySelection.value
+
+val themeCardShape: Shape
+    get() = RoundedCornerShape(currentTheme.cornerRadius.dp)
+
+fun themeCardShape(overrideRadius: Dp): Shape = RoundedCornerShape(if (currentTheme.isBrutalist) 0.dp else overrideRadius)
+
+val themeBorderStroke: BorderStroke
+    get() = BorderStroke(currentTheme.borderWidth.dp, HighslateOutline)
+
+fun themeBorderStroke(width: Dp, color: Color = HighslateOutline): BorderStroke = BorderStroke(if (currentTheme.isBrutalist) currentTheme.borderWidth.dp else width, color)
+
+val themePanelSpacing: Dp
+    get() = currentTheme.panelSpacing.dp
+

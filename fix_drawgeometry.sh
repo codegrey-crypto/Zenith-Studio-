@@ -1,0 +1,5 @@
+#!/bin/bash
+sed -i '27282,27295d' app/src/main/java/com/example/studio/ui/WorkspaceScreen.kt
+
+sed -i '/asFrameworkPaint().alpha = (finalOpacity \* layerOpacity \* 255).toInt().coerceIn(0, 255)/a \
+        }\n\n        val isPaddedDistortion = adjustedBmp != null && styleToUse !is androidx.compose.ui.graphics.drawscope.Stroke && layer.type != com.example.studio.model.LayerType.IMAGE_CARD && !layer.effects.any { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType in listOf("GlassMorphism", "ReededGlass") }\n        if (isPaddedDistortion) {\n            val imgBmp = androidx.compose.ui.graphics.asImageBitmap(adjustedBmp)\n            val p = androidx.compose.ui.graphics.Paint().apply {\n                alpha = finalOpacity * layerOpacity\n                blendMode = blendModeOverride ?: composeBlendMode\n            }\n            drawContext.canvas.drawImage(imgBmp, androidx.compose.ui.geometry.Offset(-60f, -60f), p)\n            return' app/src/main/java/com/example/studio/ui/WorkspaceScreen.kt

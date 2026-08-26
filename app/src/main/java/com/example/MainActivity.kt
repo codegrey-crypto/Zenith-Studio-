@@ -31,8 +31,68 @@ class MainActivity : ComponentActivity() {
       java.lang.System.exit(10)
     }
 
+    // Pre-create WebView Code Cache directories to prevent benign opendir E/chromium warnings/errors on some platforms
+    try {
+        val webViewDir = java.io.File(cacheDir, "WebView")
+        webViewDir.mkdirs()
+        webViewDir.setReadable(true, false)
+        webViewDir.setWritable(true, false)
+        webViewDir.setExecutable(true, false)
+
+        val defaultDir = java.io.File(webViewDir, "Default")
+        defaultDir.mkdirs()
+        defaultDir.setReadable(true, false)
+        defaultDir.setWritable(true, false)
+        defaultDir.setExecutable(true, false)
+
+        val httpCacheDir = java.io.File(defaultDir, "HTTP Cache")
+        httpCacheDir.mkdirs()
+        httpCacheDir.setReadable(true, false)
+        httpCacheDir.setWritable(true, false)
+        httpCacheDir.setExecutable(true, false)
+
+        val codeCacheDir = java.io.File(httpCacheDir, "Code Cache")
+        codeCacheDir.mkdirs()
+        codeCacheDir.setReadable(true, false)
+        codeCacheDir.setWritable(true, false)
+        codeCacheDir.setExecutable(true, false)
+
+        val jsDir = java.io.File(codeCacheDir, "js")
+        jsDir.mkdirs()
+        jsDir.setReadable(true, false)
+        jsDir.setWritable(true, false)
+        jsDir.setExecutable(true, false)
+
+        val wasmDir = java.io.File(codeCacheDir, "wasm")
+        wasmDir.mkdirs()
+        wasmDir.setReadable(true, false)
+        wasmDir.setWritable(true, false)
+        wasmDir.setExecutable(true, false)
+    } catch (e: Exception) {
+        // Ignore any file creation issues
+    }
+
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
+
+    // Initialize Device Performance Manager for low RAM / low storage optimization
+    try {
+        com.example.studio.model.DevicePerformanceManager.initialize(applicationContext)
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+
+    // Restore saved default theme from SharedPreferences
+    try {
+        val pref = getSharedPreferences("studio_prefs", android.content.Context.MODE_PRIVATE)
+        val savedThemeId = pref.getString("default_theme_id", com.example.ui.theme.StudioTheme.MONOCHROME_ACTIVE.id)
+        val savedTheme = com.example.ui.theme.StudioTheme.values().find { it.id == savedThemeId }
+        if (savedTheme != null) {
+            com.example.ui.theme.currentThemeStateBySelection.value = savedTheme
+        }
+    } catch (e: Exception) {
+        // Fallback gracefully
+    }
 
     // Enable Edge-to-Edge layout: forcing the layout hierarchy to draw beneath status and navigation bars
     WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -52,6 +112,18 @@ class MainActivity : ComponentActivity() {
         WorkspaceScreen(modifier = Modifier.fillMaxSize())
       }
     }
+  }
+
+  override fun onTrimMemory(level: Int) {
+    super.onTrimMemory(level)
+    if (level >= TRIM_MEMORY_RUNNING_LOW || level >= TRIM_MEMORY_MODERATE) {
+      com.example.studio.model.DevicePerformanceManager.trimAllMemoryCaches()
+    }
+  }
+
+  override fun onLowMemory() {
+    super.onLowMemory()
+    com.example.studio.model.DevicePerformanceManager.trimAllMemoryCaches()
   }
 }
 

@@ -1,6 +1,10 @@
 package com.example.studio.ui
 
 import androidx.compose.foundation.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -52,14 +56,12 @@ fun PrecisionJogWheel(
     testTag: String = "",
     highFreqKey: String? = null,
     activeColorOverride: Color? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    labelAbove: Boolean = false
 ) {
     var isEditing by remember { mutableStateOf(false) }
-
-    // 1. High-speed local state allowing dragging to be extremely responsive at 120 FPS
-    var localValue by remember(value, highFreqKey) { mutableStateOf(SlidersHighFreqState.get(highFreqKey ?: label, value)) }
-    val coroutineScope = rememberCoroutineScope()
-    var pendingUpdateJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var localValue by remember(value) { mutableFloatStateOf(value) }
+    var lastUpdateTime by remember { mutableLongStateOf(0L) }
 
     val isColorGradingFilter = label == "Exposure" || label == "Contrast" || label == "Highlights" || label == "Shadows" || label == "Whites" || label == "Blacks" || label == "Temp" || label == "Tint" || label == "Vibrance" || label == "Saturation" || label == "Clarity" || label == "Dehaze" || label == "Brightness" || label == "Sat" || label == "Bright" || label == "Opacity"
     
@@ -76,135 +78,267 @@ fun PrecisionJogWheel(
         if (p >= 0f) s else -s
     }
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(40.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Parameter Label
-        Text(
-            text = label,
-            style = Typography.labelSmall,
-            fontSize = 10.sp,
-            modifier = Modifier.width(55.dp),
-            color = TextSecondary
-        )
+    val currentValue = localValue.coerceIn(valueRange)
 
-        // Native/Standard Linear Compose Slider with Debounced, Quantized Low-Latency
-        val sliderValue = if (label.contains("Persp")) {
-            mapPerspToSlider(localValue)
-        } else {
-            localValue.coerceIn(valueRange)
-        }
+    // Native/Standard Linear Compose Slider with Debounced, Quantized Low-Latency
+    val sliderValue = if (label.contains("Persp")) {
+        mapPerspToSlider(currentValue)
+    } else {
+        currentValue
+    }
 
-        val range = if (label.contains("Persp")) {
-            -1f..1f
-        } else {
-            valueRange.start..valueRange.endInclusive
-        }
+    val range = if (label.contains("Persp")) {
+        -1f..1f
+    } else {
+        valueRange.start..valueRange.endInclusive
+    }
 
-        Slider(
-            value = sliderValue,
-            onValueChange = { newValue ->
-                val validatedValue = if (label.contains("Persp")) {
-                    mapSliderToPersp(newValue)
-                } else {
-                    val rawQuantized = (newValue * 100f).roundToInt() / 100f
-                    if (isInt) kotlin.math.round(rawQuantized) else rawQuantized
-                }
-                
-                localValue = validatedValue
-                SlidersHighFreqState.set(highFreqKey ?: label, validatedValue)
-            },
-            onValueChangeFinished = {
-                onValueChange(localValue)
-            },
-            valueRange = range.start..range.endInclusive,
-            colors = SliderDefaults.colors(
-                activeTrackColor = activeColor,
-                thumbColor = activeColor,
-                inactiveTrackColor = HighslateOutline.copy(alpha = 0.3f)
-            ),
-            modifier = Modifier
-                .weight(1f)
-                .testTag(testTag)
-        )
-
-        // Numerical Override Field
-        Box(
-            modifier = Modifier.width(75.dp),
-            contentAlignment = Alignment.CenterEnd
+    if (labelAbove) {
+        Column(
+            modifier = modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            if (isEditing) {
-                val formatStr = if (label.contains("Persp")) "%.5f" else "%.2f"
-                var editBuf by remember {
-                    mutableStateOf(if (isInt) localValue.toInt().toString() else formatStr.format(localValue))
-                }
-                val focusRequester = remember { FocusRequester() }
-
-                BasicTextField(
-                    value = editBuf,
-                    onValueChange = { editBuf = it },
-                    textStyle = Typography.labelSmall.copy(
-                        color = activeColor,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.End
-                    ),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Number,
-                        imeAction = ImeAction.Done
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            editBuf.toFloatOrNull()?.let {
-                                val valCoerced = it.coerceIn(valueRange)
-                                localValue = valCoerced
-                                onValueChange(valCoerced)
-                            }
-                            isEditing = false
-                        }
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF09090C), RoundedCornerShape(4.dp))
-                        .border(BorderStroke(1.dp, activeColor), RoundedCornerShape(4.dp))
-                        .padding(vertical = 4.dp, horizontal = 6.dp)
-                        .focusRequester(focusRequester)
-                        .testTag(testTag + "_input")
-                )
-
-                LaunchedEffect(Unit) {
-                    focusRequester.requestFocus()
-                }
-            } else {
-                val formatStr = if (label.contains("Persp")) "%.5f" else "%.2f"
-                val displayVal = if (valueFormatter != null) {
-                    valueFormatter(localValue)
-                } else if (isInt) {
-                    "${localValue.toInt()}"
-                } else {
-                    formatStr.format(localValue)
-                }
-                
-                val displaySuffix = if (valueFormatter != null) "" else {
-                    if (label == "Rotation") "°" else if (label.contains("Ratio") || label.contains("Skew") || label.contains("Persp") || label.contains("Pivot") || label.contains("Size") || label.contains("Radius")) "" else " px"
-                }
-
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Parameter Label
                 Text(
-                    text = displayVal + displaySuffix,
-                    color = activeColor,
+                    text = label,
                     style = Typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.End,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { isEditing = true }
-                        .padding(vertical = 4.dp, horizontal = 4.dp)
-                        .testTag(testTag + "_readout")
+                    fontSize = 10.sp,
+                    color = TextSecondary
                 )
+
+                // Numerical Override Field
+                Box(
+                    modifier = Modifier.width(75.dp),
+                    contentAlignment = Alignment.CenterEnd
+                ) {
+                    if (isEditing) {
+                        val formatStr = if (label.contains("Persp")) "%.5f" else "%.2f"
+                        var editBuf by remember {
+                            mutableStateOf(if (isInt) currentValue.toInt().toString() else formatStr.format(currentValue))
+                        }
+                        val focusRequester = remember { FocusRequester() }
+
+                        BasicTextField(
+                            value = editBuf,
+                            onValueChange = { editBuf = it },
+                            textStyle = Typography.labelSmall.copy(
+                                color = activeColor,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.End
+                            ),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Number,
+                                imeAction = ImeAction.Done
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onDone = {
+                                    editBuf.toFloatOrNull()?.let {
+                                        val valCoerced = it.coerceIn(valueRange)
+                                        onValueChange(valCoerced)
+                                    }
+                                    isEditing = false
+                                }
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF09090C), RoundedCornerShape(4.dp))
+                                .border(BorderStroke(1.dp, activeColor), RoundedCornerShape(4.dp))
+                                .padding(vertical = 4.dp, horizontal = 6.dp)
+                                .focusRequester(focusRequester)
+                                .testTag(testTag + "_input")
+                        )
+
+                        LaunchedEffect(Unit) {
+                            focusRequester.requestFocus()
+                        }
+                    } else {
+                        val formatStr = if (label.contains("Persp")) "%.5f" else "%.2f"
+                        val displayVal = if (valueFormatter != null) {
+                            valueFormatter(currentValue)
+                        } else if (isInt) {
+                            "${currentValue.toInt()}"
+                        } else {
+                            formatStr.format(currentValue)
+                        }
+                        
+                        val displaySuffix = if (valueFormatter != null) "" else {
+                            if (label == "Rotation") "°" else if (label.contains("Ratio") || label.contains("Skew") || label.contains("Persp") || label.contains("Pivot") || label.contains("Size") || label.contains("Radius")) "" else " px"
+                        }
+
+                        Text(
+                            text = displayVal + displaySuffix,
+                            color = activeColor,
+                            style = Typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.End,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { isEditing = true }
+                                .padding(vertical = 4.dp, horizontal = 4.dp)
+                                .testTag(testTag + "_readout")
+                        )
+                    }
+                }
+            }
+
+            Slider(
+                value = sliderValue,
+                onValueChange = { newValue ->
+                    val validatedValue = if (label.contains("Persp")) {
+                        mapSliderToPersp(newValue)
+                    } else {
+                        val rawQuantized = (newValue * 100f).roundToInt() / 100f
+                        if (isInt) kotlin.math.round(rawQuantized) else rawQuantized
+                    }
+                    
+                    SlidersHighFreqState.set(highFreqKey ?: label, validatedValue)
+                    localValue = validatedValue
+                    val now = System.currentTimeMillis()
+                    if (now - lastUpdateTime > 100) {
+                        onValueChange(validatedValue)
+                        lastUpdateTime = now
+                    }
+                },
+                onValueChangeFinished = { onValueChange(localValue) },
+                valueRange = range.start..range.endInclusive,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = activeColor,
+                    thumbColor = activeColor,
+                    inactiveTrackColor = HighslateOutline.copy(alpha = 0.3f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 36.dp)
+                    .testTag(testTag)
+            )
+        }
+    } else {
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Parameter Label
+            Text(
+                text = label,
+                style = Typography.labelSmall,
+                fontSize = 10.sp,
+                modifier = Modifier.width(55.dp),
+                color = TextSecondary
+            )
+
+            Slider(
+                value = sliderValue,
+                onValueChange = { newValue ->
+                    val validatedValue = if (label.contains("Persp")) {
+                        mapSliderToPersp(newValue)
+                    } else {
+                        val rawQuantized = (newValue * 100f).roundToInt() / 100f
+                        if (isInt) kotlin.math.round(rawQuantized) else rawQuantized
+                    }
+                    
+                    SlidersHighFreqState.set(highFreqKey ?: label, validatedValue)
+                    localValue = validatedValue
+                    val now = System.currentTimeMillis()
+                    if (now - lastUpdateTime > 100) {
+                        onValueChange(validatedValue)
+                        lastUpdateTime = now
+                    }
+                },
+                onValueChangeFinished = { onValueChange(localValue) },
+                valueRange = range.start..range.endInclusive,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = activeColor,
+                    thumbColor = activeColor,
+                    inactiveTrackColor = HighslateOutline.copy(alpha = 0.3f)
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 36.dp)
+                    .testTag(testTag)
+            )
+
+            // Numerical Override Field
+            Box(
+                modifier = Modifier.width(75.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                if (isEditing) {
+                    val formatStr = if (label.contains("Persp")) "%.5f" else "%.2f"
+                    var editBuf by remember {
+                        mutableStateOf(if (isInt) currentValue.toInt().toString() else formatStr.format(currentValue))
+                    }
+                    val focusRequester = remember { FocusRequester() }
+
+                    BasicTextField(
+                        value = editBuf,
+                        onValueChange = { editBuf = it },
+                        textStyle = Typography.labelSmall.copy(
+                            color = activeColor,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.End
+                        ),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                editBuf.toFloatOrNull()?.let {
+                                    val valCoerced = it.coerceIn(valueRange)
+                                    onValueChange(valCoerced)
+                                }
+                                isEditing = false
+                            }
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF09090C), RoundedCornerShape(4.dp))
+                            .border(BorderStroke(1.dp, activeColor), RoundedCornerShape(4.dp))
+                            .padding(vertical = 4.dp, horizontal = 6.dp)
+                            .focusRequester(focusRequester)
+                            .testTag(testTag + "_input")
+                    )
+
+                    LaunchedEffect(Unit) {
+                        focusRequester.requestFocus()
+                    }
+                } else {
+                    val formatStr = if (label.contains("Persp")) "%.5f" else "%.2f"
+                    val displayVal = if (valueFormatter != null) {
+                        valueFormatter(currentValue)
+                    } else if (isInt) {
+                        "${currentValue.toInt()}"
+                    } else {
+                        formatStr.format(currentValue)
+                    }
+                    
+                    val displaySuffix = if (valueFormatter != null) "" else {
+                        if (label == "Rotation") "°" else if (label.contains("Ratio") || label.contains("Skew") || label.contains("Persp") || label.contains("Pivot") || label.contains("Size") || label.contains("Radius")) "" else " px"
+                    }
+
+                    Text(
+                        text = displayVal + displaySuffix,
+                        color = activeColor,
+                        style = Typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isEditing = true }
+                            .padding(vertical = 4.dp, horizontal = 4.dp)
+                            .testTag(testTag + "_readout")
+                    )
+                }
             }
         }
     }
@@ -269,10 +403,29 @@ fun TransformDetailView(
                 activeColorOverride = electricCyan
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Lock Aspect Ratio", style = Typography.labelSmall, color = TextSecondary)
+                Switch(
+                    checked = selectedLayer.isAspectLocked,
+                    onCheckedChange = { onUpdateLayer(selectedLayer.copy(isAspectLocked = it)) }
+                )
+            }
+
             PrecisionJogWheel(
                 value = selectedLayer.width,
-                onValueChange = { onUpdateLayer(selectedLayer.copy(width = it)) },
-                valueRange = 1f..5000f,
+                onValueChange = { newW ->
+                    if (selectedLayer.isAspectLocked && selectedLayer.width > 0f) {
+                        val ratio = selectedLayer.height / selectedLayer.width
+                        onUpdateLayer(selectedLayer.copy(width = newW, height = (newW * ratio).coerceIn(1f, 5000f)))
+                    } else {
+                        onUpdateLayer(selectedLayer.copy(width = newW))
+                    }
+                },
+                valueRange = 1f..2000f,
                 label = "Width",
                 isInt = true,
                 testTag = "transform_width_slider",
@@ -281,8 +434,15 @@ fun TransformDetailView(
 
             PrecisionJogWheel(
                 value = selectedLayer.height,
-                onValueChange = { onUpdateLayer(selectedLayer.copy(height = it)) },
-                valueRange = 1f..5000f,
+                onValueChange = { newH ->
+                    if (selectedLayer.isAspectLocked && selectedLayer.height > 0f) {
+                        val ratio = selectedLayer.width / selectedLayer.height
+                        onUpdateLayer(selectedLayer.copy(height = newH, width = (newH * ratio).coerceIn(1f, 5000f)))
+                    } else {
+                        onUpdateLayer(selectedLayer.copy(height = newH))
+                    }
+                },
+                valueRange = 1f..2000f,
                 label = "Height",
                 isInt = true,
                 testTag = "transform_height_slider",
@@ -682,10 +842,41 @@ fun TypographyOrShapeDetailView(
     selectedCategoryFilter: String,
     onSelectedCategoryFilterChange: (String) -> Unit,
     onImportFontClick: () -> Unit,
-    customFonts: List<com.example.studio.database.CustomFontEntity> = emptyList()
+    customFonts: List<com.example.studio.database.CustomFontEntity> = emptyList(),
+    canvasWidth: Float = 1080f,
+    canvasHeight: Float = 1080f
 ) {
     val detailScrollState = rememberScrollState()
     val context = LocalContext.current
+    FontFavoritesState.ensureInitialized(context)
+    var stepSizeIndex by remember { mutableStateOf(2) } // 0 -> 1px, 1 -> 2px, 2 -> 5px, 3 -> 10px, 4 -> Custom
+    var customStepInput by remember { mutableStateOf("15") }
+    var fontSizeStepIndex by remember { mutableStateOf(1) } // 0 -> 1px, 1 -> 2px, 2 -> 5px, 3 -> 10px, 4 -> Custom
+    var customFontSizeStepInput by remember { mutableStateOf("25") }
+    var showTextPresetDialog by remember { mutableStateOf(false) }
+    var showRichTextSelectionDialog by remember { mutableStateOf(false) }
+
+    if (showTextPresetDialog) {
+        com.aistudio.zenithstudio.rpxwtq.TextPresetLibraryDialog(
+            layerId = selectedLayer.id,
+            currentLayer = selectedLayer,
+            onClose = { showTextPresetDialog = false },
+            onUpdateLayer = { updated ->
+                onUpdateLayer(updated)
+                updated
+            }
+        )
+    }
+
+    if (showRichTextSelectionDialog) {
+        com.aistudio.zenithstudio.rpxwtq.RichTextSelectionDialog(
+            currentLayer = selectedLayer,
+            onClose = { showRichTextSelectionDialog = false },
+            onUpdateLayer = { updated ->
+                onUpdateLayer(updated)
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -703,34 +894,87 @@ fun TypographyOrShapeDetailView(
                     .padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("Typography Style & Font ", style = Typography.labelSmall, color = EnergeticYellow)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Typography Style & Font ", style = Typography.labelSmall, color = EnergeticYellow)
+                    Button(
+                        onClick = { showTextPresetDialog = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = IndustrialAmber,
+                            contentColor = DarkOnyx
+                        ),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp).testTag("open_text_preset_library_button")
+                    ) {
+                        Icon(Icons.Default.Bookmark, contentDescription = "Text Presets", modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("TEXT PRESETS", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
                 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Source Text Content", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary)
                     var txtInputBuf by remember(selectedLayer.id) { mutableStateOf(selectedLayer.textContent) }
+                    androidx.compose.runtime.LaunchedEffect(txtInputBuf) {
+                        if (txtInputBuf != selectedLayer.textContent) {
+                            kotlinx.coroutines.delay(800) // Increased debounce to prevent ANRs on low-end devices
+                            onUpdateLayer(selectedLayer.copy(textContent = txtInputBuf))
+                        }
+                    }
                     OutlinedTextField(
                         value = txtInputBuf,
                         onValueChange = {
                             txtInputBuf = it
-                            onUpdateLayer(selectedLayer.copy(textContent = it))
                         },
-                        modifier = Modifier.fillMaxWidth().height(46.dp).testTag("text_layer_input"),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp, max = 110.dp).testTag("text_layer_input"),
                         textStyle = Typography.labelSmall.copy(color = TextPrimary),
-                        singleLine = true,
+                        singleLine = false,
+                        maxLines = 4,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Default
+                        ),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = IndustrialAmber,
                             unfocusedBorderColor = HighslateOutline,
                             cursorColor = IndustrialAmber
                         )
                     )
+
+                    Button(
+                        onClick = { showRichTextSelectionDialog = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = IndustrialAmber.copy(alpha = 0.15f),
+                            contentColor = IndustrialAmber
+                        ),
+                        border = BorderStroke(1.dp, IndustrialAmber),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.fillMaxWidth().height(36.dp).testTag("open_rich_text_selection_button")
+                    ) {
+                        Icon(Icons.Default.FormatColorFill, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("FORMAT SUBSTRING / SELECTED TEXT...", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
                 
                 Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
 
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                val actualFontSizeStep = when (fontSizeStepIndex) {
+                    0 -> 1f
+                    1 -> 2f
+                    2 -> 5f
+                    3 -> 10f
+                    else -> customFontSizeStepInput.toFloatOrNull()?.coerceIn(1f, 1000f) ?: 2f
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         IconButton(
-                            onClick = { onUpdateLayer(selectedLayer.copy(fontSize = maxOf(8f, selectedLayer.fontSize - 2f))) },
+                            onClick = { onUpdateLayer(selectedLayer.copy(fontSize = maxOf(8f, selectedLayer.fontSize - actualFontSizeStep))) },
                             modifier = Modifier.size(24.dp).testTag("font_size_decrease")
                         ) {
                             Icon(Icons.Default.Remove, "Decrease", modifier = Modifier.size(16.dp), tint = TextSecondary)
@@ -739,20 +983,127 @@ fun TypographyOrShapeDetailView(
                         PrecisionJogWheel(
                             value = selectedLayer.fontSize,
                             onValueChange = { onUpdateLayer(selectedLayer.copy(fontSize = it)) },
-                            valueRange = 8f..150f,
+                            valueRange = 8f..3000f,
                             label = "Font Size",
                             isInt = true,
                             testTag = "font_size_slider",
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            labelAbove = true
                         )
 
                         IconButton(
-                            onClick = { onUpdateLayer(selectedLayer.copy(fontSize = minOf(150f, selectedLayer.fontSize + 2f))) },
+                            onClick = { onUpdateLayer(selectedLayer.copy(fontSize = minOf(3000f, selectedLayer.fontSize + actualFontSizeStep))) },
                             modifier = Modifier.size(24.dp).testTag("font_size_increase")
                         ) {
                             Icon(Icons.Default.Add, "Increase", modifier = Modifier.size(16.dp), tint = TextSecondary)
                         }
                     }
+
+                    // Font Size Step Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("Font Step:", style = Typography.labelSmall, fontSize = 8.5.sp, color = TextSecondary, modifier = Modifier.width(55.dp))
+                        
+                        val fontStepOptions = listOf("1 px", "2 px", "5 px", "10 px", "Custom")
+                        fontStepOptions.forEachIndexed { index, label ->
+                            val isSelected = fontSizeStepIndex == index
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(22.dp)
+                                    .background(
+                                        if (isSelected) GreenActive else Color(0xFF1A1A22),
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .border(
+                                        BorderStroke(0.5.dp, if (isSelected) GreenActive else HighslateOutline),
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .clickable { fontSizeStepIndex = index }
+                                    .padding(horizontal = 2.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = Typography.labelSmall,
+                                    fontSize = 7.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) Color.Black else TextPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    if (fontSizeStepIndex == 4) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("Step Val:", style = Typography.labelSmall, fontSize = 8.5.sp, color = TextSecondary, modifier = Modifier.width(55.dp))
+                            BasicTextField(
+                                value = customFontSizeStepInput,
+                                onValueChange = { newValue ->
+                                    if (newValue.isEmpty() || newValue.all { it.isDigit() }) {
+                                        customFontSizeStepInput = newValue
+                                    }
+                                },
+                                textStyle = Typography.labelSmall.copy(
+                                    color = EnergeticYellow,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 8.sp
+                                ),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number,
+                                    imeAction = ImeAction.Done
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(Color(0xFF09090C), RoundedCornerShape(4.dp))
+                                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(4.dp))
+                                    .padding(vertical = 2.dp, horizontal = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
+                // Text Spacing Parameters: Letter Spacing & Line Spacing
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Text Spacing",
+                        style = Typography.labelSmall,
+                        fontSize = 10.sp,
+                        color = EnergeticYellow,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    PrecisionJogWheel(
+                        value = selectedLayer.letterSpacing,
+                        onValueChange = { onUpdateLayer(selectedLayer.copy(letterSpacing = it)) },
+                        valueRange = -0.5f..2.0f,
+                        label = "Letter Spacing",
+                        valueFormatter = { String.format("%.2f em", it) },
+                        testTag = "letter_spacing_slider",
+                        modifier = Modifier.fillMaxWidth(),
+                        labelAbove = true
+                    )
+
+                    PrecisionJogWheel(
+                        value = selectedLayer.lineSpacing,
+                        onValueChange = { onUpdateLayer(selectedLayer.copy(lineSpacing = it)) },
+                        valueRange = 0.2f..4.0f,
+                        label = "Line Spacing",
+                        valueFormatter = { String.format("%.2f x", it) },
+                        testTag = "line_spacing_slider",
+                        modifier = Modifier.fillMaxWidth(),
+                        labelAbove = true
+                    )
                 }
 
                 Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
@@ -809,6 +1160,134 @@ fun TypographyOrShapeDetailView(
 
                 Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
 
+                Text("Text Bounds Dimensions", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+
+                PrecisionJogWheel(
+                    value = selectedLayer.width,
+                    onValueChange = {
+                        val newW = it.coerceIn(10f, 5000f)
+                        val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                        val newX = oldCenterX - newW / 2f
+                        onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                    },
+                    valueRange = 10f..2000f,
+                    label = "Text Width",
+                    isInt = true,
+                    testTag = "text_width_slider"
+                )
+
+                PrecisionJogWheel(
+                    value = selectedLayer.height,
+                    onValueChange = {
+                        val newH = it.coerceIn(10f, 5000f)
+                        val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                        val newY = oldCenterY - newH / 2f
+                        onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                    },
+                    valueRange = 10f..2000f,
+                    label = "Text Height",
+                    isInt = true,
+                    testTag = "text_height_slider"
+                )
+
+                val actualDimStepSize = when (stepSizeIndex) {
+                    0 -> 1f
+                    1 -> 2f
+                    2 -> 5f
+                    3 -> 10f
+                    else -> customStepInput.toFloatOrNull()?.coerceIn(1f, 1000f) ?: 5f
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Width Controls
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("Adjust Text Width", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    val newW = (selectedLayer.width - actualDimStepSize).coerceIn(10f, 5000f)
+                                    val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                    val newX = oldCenterX - newW / 2f
+                                    onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                contentPadding = PaddingValues(0.dp),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.weight(1f).height(32.dp)
+                            ) {
+                                Icon(Icons.Default.Remove, "Decrease Width", tint = TextPrimary, modifier = Modifier.size(14.dp))
+                            }
+                            Button(
+                                onClick = {
+                                    val newW = (selectedLayer.width + actualDimStepSize).coerceIn(10f, 5000f)
+                                    val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                    val newX = oldCenterX - newW / 2f
+                                    onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                contentPadding = PaddingValues(0.dp),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.weight(1f).height(32.dp)
+                            ) {
+                                Icon(Icons.Default.Add, "Increase Width", tint = TextPrimary, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+
+                    // Height Controls
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("Adjust Text Height", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    val newH = (selectedLayer.height - actualDimStepSize).coerceIn(10f, 5000f)
+                                    val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                    val newY = oldCenterY - newH / 2f
+                                    onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                contentPadding = PaddingValues(0.dp),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.weight(1f).height(32.dp)
+                            ) {
+                                Icon(Icons.Default.Remove, "Decrease Height", tint = TextPrimary, modifier = Modifier.size(14.dp))
+                            }
+                            Button(
+                                onClick = {
+                                    val newH = (selectedLayer.height + actualDimStepSize).coerceIn(10f, 5000f)
+                                    val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                    val newY = oldCenterY - newH / 2f
+                                    onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                contentPadding = PaddingValues(0.dp),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.weight(1f).height(32.dp)
+                            ) {
+                                Icon(Icons.Default.Add, "Increase Height", tint = TextPrimary, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+
+                Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -853,7 +1332,7 @@ fun TypographyOrShapeDetailView(
                         val isSelected = selectedCategoryFilter == cat
                         Button(
                             onClick = { onSelectedCategoryFilterChange(cat) },
-                            colors = ButtonDefaults.buttonColors(containerColor = if (isSelected) IndustrialAmber else MidSlate),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (isSelected) GreenActive else MidSlate),
                             shape = RoundedCornerShape(12.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp),
                             modifier = Modifier.height(24.dp).testTag("font_cat_$cat")
@@ -985,7 +1464,15 @@ fun TypographyOrShapeDetailView(
                     }
                 }
             }
-        } else {            val isShapeLayer = selectedLayer.type.name.startsWith("VECTOR_")
+        } else if (selectedLayer.type == LayerType.IMAGE_CARD) {
+            ImageEditorDetailView(
+                selectedLayer = selectedLayer,
+                onUpdateLayer = onUpdateLayer,
+                canvasWidth = canvasWidth,
+                canvasHeight = canvasHeight
+            )
+        } else {
+            val isShapeLayer = selectedLayer.type.name.startsWith("VECTOR_")
             if (isShapeLayer) {
                 Column(
                     modifier = Modifier
@@ -1023,7 +1510,7 @@ fun TypographyOrShapeDetailView(
                                 onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
                             }
                         },
-                        valueRange = 1f..5000f,
+                        valueRange = 1f..2000f,
                         label = "Width",
                         isInt = true,
                         testTag = "shape_width_slider"
@@ -1043,18 +1530,307 @@ fun TypographyOrShapeDetailView(
                                 onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
                             }
                         },
-                        valueRange = 1f..5000f,
+                        valueRange = 1f..2000f,
                         label = "Height",
                         isInt = true,
                         testTag = "shape_height_slider"
                     )
+
+                    Spacer(Modifier.height(4.dp))
+                    Text("Incremental Pixel Adjustment", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+
+                    // Step Selection Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("Step Size:", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.width(55.dp))
+                        
+                        val options = listOf("1 px", "2 px", "5 px", "10 px", "Custom")
+                        options.forEachIndexed { index, label ->
+                            val isSelected = stepSizeIndex == index
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(26.dp)
+                                    .background(
+                                        if (isSelected) GreenActive else Color(0xFF1A1A22),
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .border(
+                                        BorderStroke(0.5.dp, if (isSelected) GreenActive else HighslateOutline),
+                                        RoundedCornerShape(4.dp)
+                                    )
+                                    .clickable { stepSizeIndex = index }
+                                    .padding(horizontal = 2.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = Typography.labelSmall,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) Color.Black else TextPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    // Custom step input row (if Custom selected)
+                    if (stepSizeIndex == 4) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("Custom:", style = Typography.labelSmall, fontSize = 9.sp, color = TextSecondary, modifier = Modifier.width(55.dp))
+                            BasicTextField(
+                                value = customStepInput,
+                                onValueChange = { newValue ->
+                                    if (newValue.isEmpty() || newValue.all { it.isDigit() }) {
+                                        customStepInput = newValue
+                                    }
+                                },
+                                textStyle = Typography.labelSmall.copy(
+                                    color = EnergeticYellow,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number,
+                                    imeAction = ImeAction.Done
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .background(Color(0xFF09090C), RoundedCornerShape(4.dp))
+                                    .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(4.dp))
+                                    .padding(vertical = 4.dp, horizontal = 6.dp)
+                            )
+                        }
+                    }
+
+                    val actualStepSize = when (stepSizeIndex) {
+                        0 -> 1f
+                        1 -> 2f
+                        2 -> 5f
+                        3 -> 10f
+                        else -> customStepInput.toFloatOrNull()?.coerceIn(1f, 1000f) ?: 5f
+                    }
+
+                    // Adjustment Action Buttons Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Width Controls
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("Adjust Width", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                // Width Minus Button
+                                Button(
+                                    onClick = {
+                                        val newW = (selectedLayer.width - actualStepSize).coerceIn(1f, 5000f)
+                                        val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                        val newX = oldCenterX - newW / 2f
+                                        if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                            val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                            val newY = oldCenterY - newW / 2f
+                                            onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = newY))
+                                        } else {
+                                            onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                    contentPadding = PaddingValues(0.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.weight(1f).height(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Remove,
+                                        contentDescription = "Decrease Width",
+                                        tint = TextPrimary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                // Width Plus Button
+                                Button(
+                                    onClick = {
+                                        val newW = (selectedLayer.width + actualStepSize).coerceIn(1f, 5000f)
+                                        val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                        val newX = oldCenterX - newW / 2f
+                                        if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                            val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                            val newY = oldCenterY - newW / 2f
+                                            onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = newY))
+                                        } else {
+                                            onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                    contentPadding = PaddingValues(0.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.weight(1f).height(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Increase Width",
+                                        tint = EnergeticYellow,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Height Controls
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("Adjust Height", style = Typography.labelSmall, fontSize = 8.sp, color = TextSecondary)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                // Height Minus Button
+                                Button(
+                                    onClick = {
+                                        val newH = (selectedLayer.height - actualStepSize).coerceIn(1f, 5000f)
+                                        val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                        val newY = oldCenterY - newH / 2f
+                                        if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                            val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                            val newX = oldCenterX - newH / 2f
+                                            onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = newX, positionY = newY))
+                                        } else {
+                                            onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                    contentPadding = PaddingValues(0.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.weight(1f).height(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Remove,
+                                        contentDescription = "Decrease Height",
+                                        tint = TextPrimary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                // Height Plus Button
+                                Button(
+                                    onClick = {
+                                        val newH = (selectedLayer.height + actualStepSize).coerceIn(1f, 5000f)
+                                        val oldCenterY = selectedLayer.positionY + selectedLayer.height / 2f
+                                        val newY = oldCenterY - newH / 2f
+                                        if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                            val oldCenterX = selectedLayer.positionX + selectedLayer.width / 2f
+                                            val newX = oldCenterX - newH / 2f
+                                            onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = newX, positionY = newY))
+                                        } else {
+                                            onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22222B)),
+                                    contentPadding = PaddingValues(0.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.weight(1f).height(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Increase Height",
+                                        tint = EnergeticYellow,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
  
                     Spacer(Modifier.height(4.dp))
                     Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
-                     // 1. Corner Radius / Corner Cut / Head Size Slider
+
+                    Spacer(Modifier.height(4.dp))
+                    Text("Stretch to Canvas", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = {
+                                val newW = canvasWidth
+                                val newX = 0f
+                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                    onUpdateLayer(selectedLayer.copy(width = newW, height = newW, positionX = newX, positionY = 0f))
+                                } else {
+                                    onUpdateLayer(selectedLayer.copy(width = newW, positionX = newX))
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E212B)),
+                            border = BorderStroke(0.5.dp, HighslateOutline),
+                            shape = RoundedCornerShape(4.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            modifier = Modifier.weight(1f).height(32.dp)
+                        ) {
+                            Text("Width", style = Typography.labelSmall, fontSize = 9.sp, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                val newH = canvasHeight
+                                val newY = 0f
+                                if (selectedLayer.type == LayerType.VECTOR_CIRCLE) {
+                                    onUpdateLayer(selectedLayer.copy(width = newH, height = newH, positionX = 0f, positionY = newY))
+                                } else {
+                                    onUpdateLayer(selectedLayer.copy(height = newH, positionY = newY))
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E212B)),
+                            border = BorderStroke(0.5.dp, HighslateOutline),
+                            shape = RoundedCornerShape(4.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            modifier = Modifier.weight(1f).height(32.dp)
+                        ) {
+                            Text("Height", style = Typography.labelSmall, fontSize = 9.sp, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                val newW = canvasWidth
+                                val newH = canvasHeight
+                                onUpdateLayer(selectedLayer.copy(
+                                    width = newW,
+                                    height = newH,
+                                    positionX = 0f,
+                                    positionY = 0f
+                                ))
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E2718)),
+                            border = BorderStroke(0.5.dp, IndustrialAmber),
+                            shape = RoundedCornerShape(4.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            modifier = Modifier.weight(1.2f).height(32.dp)
+                        ) {
+                            Text("Stretch All", style = Typography.labelSmall, fontSize = 9.sp, color = IndustrialAmber, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+                    Divider(color = HighslateOutline.copy(alpha = 0.3f), thickness = 0.5.dp)
+                    // 1. Corner Radius / Corner Cut / Head Size Slider
                     val usesCornerRadius = selectedLayer.type in listOf(
                         LayerType.VECTOR_RECT, LayerType.VECTOR_ROUNDED_RECT, LayerType.VECTOR_ROUNDED_TRIANGLE,
-                        LayerType.VECTOR_CUT_CORNER_SQUARE, LayerType.VECTOR_ARROW, LayerType.VECTOR_DOUBLE_ARROW
+                        LayerType.VECTOR_CUT_CORNER_SQUARE, LayerType.VECTOR_ARROW, LayerType.VECTOR_DOUBLE_ARROW,
+                        LayerType.VECTOR_CHAT_BUBBLE
                     )
                     if (usesCornerRadius) {
                         val labelText = when (selectedLayer.type) {
@@ -1073,7 +1849,6 @@ fun TypographyOrShapeDetailView(
                             testTag = "shape_radius_slider"
                         )
                     }
-
                     // 2. Structural Edges / Points / Turns / Frequency / Alignment
                     val usesSidesOrEdges = selectedLayer.type in listOf(
                         LayerType.VECTOR_TRIANGLE, LayerType.VECTOR_PENTAGON, LayerType.VECTOR_HEXAGON,
@@ -1104,14 +1879,13 @@ fun TypographyOrShapeDetailView(
                             testTag = "shape_sides_slider"
                         )
                     }
-
                     // 3. Primary Parameter Ratio Slider (starInnerRadiusRatio)
                     val usesInnerRadiusRatio = selectedLayer.type in listOf(
                         LayerType.VECTOR_STAR, LayerType.VECTOR_CROSS, LayerType.VECTOR_RING,
                         LayerType.VECTOR_CRESCENT, LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT,
                         LayerType.VECTOR_CROSSHAIR, LayerType.VECTOR_TILTED_RECT, LayerType.VECTOR_TRAPEZOID,
                         LayerType.VECTOR_CONTAINER, LayerType.VECTOR_ARROW, LayerType.VECTOR_DOUBLE_ARROW,
-                        LayerType.VECTOR_SPEECH_BUBBLE, LayerType.VECTOR_BRACKETS, LayerType.VECTOR_SPIRAL,
+                        LayerType.VECTOR_SPEECH_BUBBLE, LayerType.VECTOR_CHAT_BUBBLE, LayerType.VECTOR_BRACKETS, LayerType.VECTOR_SPIRAL,
                         LayerType.VECTOR_WAVE, LayerType.VECTOR_BLOB
                     )
                     if (usesInnerRadiusRatio) {
@@ -1125,13 +1899,14 @@ fun TypographyOrShapeDetailView(
                             LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT -> "Sweep Angle Ratio"
                             LayerType.VECTOR_ARROW, LayerType.VECTOR_DOUBLE_ARROW -> "Shaft Thickness Ratio"
                             LayerType.VECTOR_SPEECH_BUBBLE -> "Tail Length Ratio"
+                            LayerType.VECTOR_CHAT_BUBBLE -> "Leg Length Ratio"
                             LayerType.VECTOR_BRACKETS -> "Bracket Thickness"
                             LayerType.VECTOR_SPIRAL -> "Growth Expansion"
                             LayerType.VECTOR_WAVE -> "Wave Amplitude"
                             LayerType.VECTOR_BLOB -> "Random Wobble"
                             else -> "Inner Ratio"
                         }
-                        val minVal = if (selectedLayer.type == LayerType.VECTOR_TILTED_RECT || selectedLayer.type == LayerType.VECTOR_BLOB) 0f else 0.05f
+                        val minVal = if (selectedLayer.type in listOf(LayerType.VECTOR_TILTED_RECT, LayerType.VECTOR_BLOB)) 0f else 0.05f
                         val maxVal = if (selectedLayer.type == LayerType.VECTOR_CROSS) 0.9f else if (selectedLayer.type == LayerType.VECTOR_GEAR) 0.5f else if (selectedLayer.type == LayerType.VECTOR_BLOB) 0.4f else 0.95f
                         Text("Primary Parameter", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
                         PrecisionJogWheel(
@@ -1147,18 +1922,19 @@ fun TypographyOrShapeDetailView(
                     // 4. Secondary Parameter Slider (skewX)
                     val usesSkewX = selectedLayer.type in listOf(
                         LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT,
-                        LayerType.VECTOR_SPEECH_BUBBLE, LayerType.VECTOR_WAVE, LayerType.VECTOR_BLOB
+                        LayerType.VECTOR_SPEECH_BUBBLE, LayerType.VECTOR_CHAT_BUBBLE, LayerType.VECTOR_WAVE, LayerType.VECTOR_BLOB
                     )
                     if (usesSkewX) {
                         val labelText = when (selectedLayer.type) {
                             LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT -> "Start Angle (deg)"
                             LayerType.VECTOR_SPEECH_BUBBLE -> "Tail Width Ratio"
+                            LayerType.VECTOR_CHAT_BUBBLE -> "Leg Width Ratio"
                             LayerType.VECTOR_WAVE -> "Phase Shift (deg)"
                             LayerType.VECTOR_BLOB -> "Random Seed"
                             else -> "Slant X Factor"
                         }
                         val minVal = if (selectedLayer.type == LayerType.VECTOR_WAVE) -180f else 0f
-                        val maxVal = if (selectedLayer.type in listOf(LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT)) 360f else if (selectedLayer.type == LayerType.VECTOR_WAVE) 180f else if (selectedLayer.type == LayerType.VECTOR_SPEECH_BUBBLE) 0.5f else 100f
+                        val maxVal = if (selectedLayer.type in listOf(LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT)) 360f else if (selectedLayer.type == LayerType.VECTOR_WAVE) 180f else if (selectedLayer.type in listOf(LayerType.VECTOR_SPEECH_BUBBLE, LayerType.VECTOR_CHAT_BUBBLE)) 0.5f else 100f
                         Text("Secondary Parameter", style = Typography.labelSmall, fontSize = 10.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
                         PrecisionJogWheel(
                             value = selectedLayer.skewX,
@@ -1172,12 +1948,14 @@ fun TypographyOrShapeDetailView(
 
                     // 5. Tertiary Parameter Slider (skewY)
                     val usesSkewY = selectedLayer.type in listOf(
-                        LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT, LayerType.VECTOR_ARROW
+                        LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT, LayerType.VECTOR_ARROW,
+                        LayerType.VECTOR_CHAT_BUBBLE
                     )
                     if (usesSkewY) {
                         val labelText = when (selectedLayer.type) {
                             LayerType.VECTOR_PIE_SLICE, LayerType.VECTOR_RING_SEGMENT -> "Inner Radius Ratio"
                             LayerType.VECTOR_ARROW -> "Shaft Curvature"
+                            LayerType.VECTOR_CHAT_BUBBLE -> "Leg Position Ratio"
                             else -> "Slant Y Factor"
                         }
                         val minVal = if (selectedLayer.type == LayerType.VECTOR_ARROW) -1f else 0f
@@ -1338,62 +2116,6 @@ fun TypographyOrShapeDetailView(
                             testTag = "shape_stroke_slider"
                         )
                     }
-
-                    val filters = com.aistudio.zenithstudio.rpxwtq.EffectStackManager.getFiltersForLayer(selectedLayer.id)
-                    val filter3D = filters.find { it.id == "3d_raster_extrude" }
-                    if (filter3D != null) {
-                        Spacer(Modifier.height(10.dp))
-                        Divider(color = HighslateOutline.copy(alpha = 0.5f), thickness = 0.5.dp)
-                        
-                        val texPath = com.aistudio.zenithstudio.rpxwtq.EffectStackManager.texturesByLayer[selectedLayer.id]
-                        val texBmp = remember(texPath) {
-                            if (texPath != null) {
-                                try {
-                                    android.graphics.BitmapFactory.decodeFile(texPath)?.asImageBitmap()
-                                } catch (e: Exception) {
-                                    null
-                                }
-                            } else null
-                        }
-                        
-                        val props = remember(filter3D, texBmp) {
-                            com.aistudio.zenithstudio.rpxwtq.ui.canvas.get3DPropertiesFromFilter(filter3D, texBmp)
-                        }
-                        
-                        com.aistudio.zenithstudio.rpxwtq.ui.canvas.Comprehensive3DPropertySheet(
-                            initialProperties = props,
-                            onPropertiesChanged = { updatedProps ->
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Rotation X", updatedProps.rotationX)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Rotation Y", updatedProps.rotationY)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Rotation Z", updatedProps.rotationZ)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Extrusion Depth", updatedProps.extrusionDepth)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Bevel Radius", updatedProps.bevelRadius)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Bevel Segments", updatedProps.bevelSegments.toFloat())
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Specular Intensity", updatedProps.specularIntensity)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Roughness", updatedProps.roughness)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Ambient Occlusion", updatedProps.ambientOcclusion)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Metallic", updatedProps.metallic)
-                                
-                                val typeVal = when(updatedProps.lightType) {
-                                    com.aistudio.zenithstudio.rpxwtq.ui.canvas.LightSourceType.FLAT -> 0f
-                                    com.aistudio.zenithstudio.rpxwtq.ui.canvas.LightSourceType.DIRECTIONAL -> 1f
-                                    com.aistudio.zenithstudio.rpxwtq.ui.canvas.LightSourceType.POINT -> 2f
-                                }
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Light Type", typeVal)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Light Azimuth", updatedProps.lightAzimuth)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Light Elevation", updatedProps.lightElevation)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Light Intensity", updatedProps.lightIntensity)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Light Color R", updatedProps.lightColor.red * 255f)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Light Color G", updatedProps.lightColor.green * 255f)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Light Color B", updatedProps.lightColor.blue * 255f)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "UV Scale X", updatedProps.uvScaleX)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "UV Scale Y", updatedProps.uvScaleY)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "UV Offset X", updatedProps.uvOffsetX)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "UV Offset Y", updatedProps.uvOffsetY)
-                                com.aistudio.zenithstudio.rpxwtq.EffectStackManager.updateParameter("3d_raster_extrude", "Use Texture", if (updatedProps.textureMaterial != null) 1.0f else 0.0f)
-                            }
-                        )
-                    }
                 }
             } else {
                 Column(
@@ -1430,6 +2152,321 @@ fun TypographyOrShapeDetailView(
 }
 
 @Composable
+fun ImageEditorDetailView(
+    selectedLayer: StudioLayer,
+    onUpdateLayer: (StudioLayer) -> Unit,
+    canvasWidth: Float = 1080f,
+    canvasHeight: Float = 1080f
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF131317), RoundedCornerShape(8.dp))
+            .border(BorderStroke(0.5.dp, HighslateOutline), RoundedCornerShape(8.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Section Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(Icons.Default.Crop, contentDescription = null, tint = EnergeticYellow, modifier = Modifier.size(18.dp))
+                Text("Crop & Edit Image", style = Typography.labelMedium, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+            }
+            Button(
+                onClick = {
+                    val oldFracW = (selectedLayer.cropRight - selectedLayer.cropLeft).coerceAtLeast(0.05f)
+                    val oldFracH = (selectedLayer.cropBottom - selectedLayer.cropTop).coerceAtLeast(0.05f)
+                    val baseW = selectedLayer.width / oldFracW
+                    val baseH = selectedLayer.height / oldFracH
+                    onUpdateLayer(selectedLayer.copy(
+                        cropLeft = 0f,
+                        cropTop = 0f,
+                        cropRight = 1.0f,
+                        cropBottom = 1.0f,
+                        width = baseW,
+                        height = baseH
+                    ))
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF222630)),
+                border = BorderStroke(0.5.dp, HighslateOutline),
+                shape = RoundedCornerShape(4.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                modifier = Modifier.height(24.dp)
+            ) {
+                Text("Reset Crop", fontSize = 9.sp, color = IndustrialAmber, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Divider(color = HighslateOutline.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+        // 1. ASPECT RATIO & CROP PRESETS
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Aspect Ratio Crop Presets", style = Typography.labelSmall, fontSize = 11.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+
+            val aspectPresets = listOf(
+                "Original / Free" to 0f,
+                "1:1 Square" to 1.0f,
+                "4:3 Landscape" to (4f / 3f),
+                "16:9 Widescreen" to (16f / 9f),
+                "9:16 Story" to (9f / 16f),
+                "3:4 Portrait" to (3f / 4f),
+                "2:3 Poster" to (2f / 3f)
+            )
+
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(aspectPresets) { (label, targetRatio) ->
+                    val isSelected = if (targetRatio == 0f) {
+                        selectedLayer.cropLeft == 0f && selectedLayer.cropTop == 0f && selectedLayer.cropRight == 1f && selectedLayer.cropBottom == 1f
+                    } else {
+                        val currCropW = (selectedLayer.cropRight - selectedLayer.cropLeft) * selectedLayer.width
+                        val currCropH = (selectedLayer.cropBottom - selectedLayer.cropTop) * selectedLayer.height
+                        val currRatio = if (currCropH > 0f) currCropW / currCropH else 1f
+                        Math.abs(currRatio - targetRatio) < 0.05f
+                    }
+
+                    Button(
+                        onClick = {
+                            if (targetRatio == 0f) {
+                                val oldFracW = (selectedLayer.cropRight - selectedLayer.cropLeft).coerceAtLeast(0.05f)
+                                val oldFracH = (selectedLayer.cropBottom - selectedLayer.cropTop).coerceAtLeast(0.05f)
+                                val baseW = selectedLayer.width / oldFracW
+                                val baseH = selectedLayer.height / oldFracH
+                                onUpdateLayer(selectedLayer.copy(
+                                    cropLeft = 0f,
+                                    cropTop = 0f,
+                                    cropRight = 1.0f,
+                                    cropBottom = 1.0f,
+                                    width = baseW,
+                                    height = baseH
+                                ))
+                            } else {
+                                val baseW = selectedLayer.width / (selectedLayer.cropRight - selectedLayer.cropLeft).coerceAtLeast(0.1f)
+                                val baseH = selectedLayer.height / (selectedLayer.cropBottom - selectedLayer.cropTop).coerceAtLeast(0.1f)
+                                val currentFullRatio = baseW / baseH.coerceAtLeast(1f)
+
+                                if (currentFullRatio >= targetRatio) {
+                                    val cropFraction = targetRatio / currentFullRatio
+                                    val cL = ((1f - cropFraction) / 2f).coerceIn(0f, 0.45f)
+                                    val cR = 1f - cL
+                                    val newLayerW = baseH * targetRatio
+                                    onUpdateLayer(selectedLayer.copy(
+                                        cropLeft = cL,
+                                        cropRight = cR,
+                                        cropTop = 0f,
+                                        cropBottom = 1.0f,
+                                        width = newLayerW,
+                                        height = baseH
+                                    ))
+                                } else {
+                                    val cropFraction = currentFullRatio / targetRatio
+                                    val cT = ((1f - cropFraction) / 2f).coerceIn(0f, 0.45f)
+                                    val cB = 1f - cT
+                                    val newLayerH = baseW / targetRatio
+                                    onUpdateLayer(selectedLayer.copy(
+                                        cropTop = cT,
+                                        cropBottom = cB,
+                                        cropLeft = 0f,
+                                        cropRight = 1.0f,
+                                        width = baseW,
+                                        height = newLayerH
+                                    ))
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSelected) IndustrialAmber else Color(0xFF1E212B)
+                        ),
+                        border = BorderStroke(0.5.dp, if (isSelected) IndustrialAmber else HighslateOutline),
+                        shape = RoundedCornerShape(6.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Text(label, style = Typography.labelSmall, fontSize = 9.sp, color = if (isSelected) DarkOnyx else TextPrimary, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            // Manual Crop Sliders
+            Text("Manual Crop Inset Boundaries", style = Typography.labelSmall, fontSize = 11.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+
+            PrecisionJogWheel(
+                value = selectedLayer.cropLeft * 100f,
+                onValueChange = { newVal ->
+                    val cL = (newVal / 100f).coerceIn(0f, selectedLayer.cropRight - 0.1f)
+                    val oldFracW = (selectedLayer.cropRight - selectedLayer.cropLeft).coerceAtLeast(0.05f)
+                    val baseW = selectedLayer.width / oldFracW
+                    val newFracW = (selectedLayer.cropRight - cL).coerceAtLeast(0.05f)
+                    val newW = baseW * newFracW
+                    onUpdateLayer(selectedLayer.copy(cropLeft = cL, width = newW))
+                },
+                valueRange = 0f..45f,
+                label = "Crop Inset Left (%)",
+                isInt = true,
+                testTag = "image_crop_left_slider"
+            )
+
+            PrecisionJogWheel(
+                value = (1.0f - selectedLayer.cropRight) * 100f,
+                onValueChange = { newVal ->
+                    val cR = (1.0f - newVal / 100f).coerceIn(selectedLayer.cropLeft + 0.1f, 1.0f)
+                    val oldFracW = (selectedLayer.cropRight - selectedLayer.cropLeft).coerceAtLeast(0.05f)
+                    val baseW = selectedLayer.width / oldFracW
+                    val newFracW = (cR - selectedLayer.cropLeft).coerceAtLeast(0.05f)
+                    val newW = baseW * newFracW
+                    onUpdateLayer(selectedLayer.copy(cropRight = cR, width = newW))
+                },
+                valueRange = 0f..45f,
+                label = "Crop Inset Right (%)",
+                isInt = true,
+                testTag = "image_crop_right_slider"
+            )
+
+            PrecisionJogWheel(
+                value = selectedLayer.cropTop * 100f,
+                onValueChange = { newVal ->
+                    val cT = (newVal / 100f).coerceIn(0f, selectedLayer.cropBottom - 0.1f)
+                    val oldFracH = (selectedLayer.cropBottom - selectedLayer.cropTop).coerceAtLeast(0.05f)
+                    val baseH = selectedLayer.height / oldFracH
+                    val newFracH = (selectedLayer.cropBottom - cT).coerceAtLeast(0.05f)
+                    val newH = baseH * newFracH
+                    onUpdateLayer(selectedLayer.copy(cropTop = cT, height = newH))
+                },
+                valueRange = 0f..45f,
+                label = "Crop Inset Top (%)",
+                isInt = true,
+                testTag = "image_crop_top_slider"
+            )
+
+            PrecisionJogWheel(
+                value = (1.0f - selectedLayer.cropBottom) * 100f,
+                onValueChange = { newVal ->
+                    val cB = (1.0f - newVal / 100f).coerceIn(selectedLayer.cropTop + 0.1f, 1.0f)
+                    val oldFracH = (selectedLayer.cropBottom - selectedLayer.cropTop).coerceAtLeast(0.05f)
+                    val baseH = selectedLayer.height / oldFracH
+                    val newFracH = (cB - selectedLayer.cropTop).coerceAtLeast(0.05f)
+                    val newH = baseH * newFracH
+                    onUpdateLayer(selectedLayer.copy(cropBottom = cB, height = newH))
+                },
+                valueRange = 0f..45f,
+                label = "Crop Inset Bottom (%)",
+                isInt = true,
+                testTag = "image_crop_bottom_slider"
+            )
+        }
+
+        Divider(color = HighslateOutline.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+        // 2. CORNER RADIUS MASK
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Corner Radius Mask", style = Typography.labelSmall, fontSize = 11.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+
+            PrecisionJogWheel(
+                value = selectedLayer.cornerRadius,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(cornerRadius = it)) },
+                valueRange = 0f..maxOf(selectedLayer.width, selectedLayer.height) / 2f,
+                label = "Corner Radius Mask (px)",
+                isInt = true,
+                testTag = "image_corner_radius_slider"
+            )
+        }
+
+        Divider(color = HighslateOutline.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+        // 3. FLIP & ROTATION CONTROLS
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Flip & Rotation", style = Typography.labelSmall, fontSize = 11.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                // Flip Horizontal
+                Button(
+                    onClick = {
+                        onUpdateLayer(selectedLayer.copy(scaleX = -selectedLayer.scaleX))
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (selectedLayer.scaleX < 0) IndustrialAmber.copy(alpha = 0.3f) else Color(0xFF1E212B)
+                    ),
+                    border = BorderStroke(0.5.dp, if (selectedLayer.scaleX < 0) IndustrialAmber else HighslateOutline),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.weight(1f).height(34.dp)
+                ) {
+                    Icon(Icons.Default.Flip, contentDescription = "Flip Horizontally", modifier = Modifier.size(14.dp), tint = TextPrimary)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Flip H", fontSize = 10.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                }
+
+                // Flip Vertical
+                Button(
+                    onClick = {
+                        onUpdateLayer(selectedLayer.copy(scaleY = -selectedLayer.scaleY))
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (selectedLayer.scaleY < 0) IndustrialAmber.copy(alpha = 0.3f) else Color(0xFF1E212B)
+                    ),
+                    border = BorderStroke(0.5.dp, if (selectedLayer.scaleY < 0) IndustrialAmber else HighslateOutline),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.weight(1f).height(34.dp)
+                ) {
+                    Icon(Icons.Default.FlipCameraAndroid, contentDescription = "Flip Vertically", modifier = Modifier.size(14.dp), tint = TextPrimary)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Flip V", fontSize = 10.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                }
+
+                // Rotate -90°
+                Button(
+                    onClick = {
+                        val newRot = (selectedLayer.rotation - 90f) % 360f
+                        onUpdateLayer(selectedLayer.copy(rotation = newRot))
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E212B)),
+                    border = BorderStroke(0.5.dp, HighslateOutline),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.weight(1f).height(34.dp)
+                ) {
+                    Icon(Icons.Default.RotateLeft, contentDescription = "Rotate Left", modifier = Modifier.size(14.dp), tint = TextPrimary)
+                    Spacer(Modifier.width(2.dp))
+                    Text("-90°", fontSize = 10.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                }
+
+                // Rotate +90°
+                Button(
+                    onClick = {
+                        val newRot = (selectedLayer.rotation + 90f) % 360f
+                        onUpdateLayer(selectedLayer.copy(rotation = newRot))
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E212B)),
+                    border = BorderStroke(0.5.dp, HighslateOutline),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.weight(1f).height(34.dp)
+                ) {
+                    Icon(Icons.Default.RotateRight, contentDescription = "Rotate Right", modifier = Modifier.size(14.dp), tint = TextPrimary)
+                    Spacer(Modifier.width(2.dp))
+                    Text("+90°", fontSize = 10.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            PrecisionJogWheel(
+                value = selectedLayer.rotation,
+                onValueChange = { onUpdateLayer(selectedLayer.copy(rotation = it)) },
+                valueRange = -180f..180f,
+                label = "Rotation Angle (°)",
+                isInt = true,
+                testTag = "image_rotation_slider"
+            )
+        }
+    }
+}
+
+@Composable
 fun FiltersAndFxDetailView(
     selectedLayer: StudioLayer,
     selectedEffectIndex: Int,
@@ -1440,6 +2477,8 @@ fun FiltersAndFxDetailView(
     onUpdateEffectParam: (String, String, Float) -> Unit,
     onOpenEffectsGallery: () -> Unit
 ) {
+    var isPresetLibraryOpen by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1449,34 +2488,34 @@ fun FiltersAndFxDetailView(
         // Header
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text(
-                    text = "Layer FX Stack",
-                    color = TextPrimary,
-                    style = Typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "${selectedLayer.effects.size} active effects on [${selectedLayer.name}]",
-                    color = TextSecondary,
-                    style = Typography.labelSmall,
-                    fontSize = 10.sp
-                )
-            }
-            
-            Button(
-                onClick = onOpenEffectsGallery,
-                colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
-                shape = RoundedCornerShape(6.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                modifier = Modifier.height(32.dp)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Add Effect", tint = DarkOnyx, modifier = Modifier.size(14.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Add Effect", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { isPresetLibraryOpen = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = MidSlate),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(1.dp, HighslateOutline),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Icon(Icons.Default.Tune, contentDescription = "Presets", tint = IndustrialAmber, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Presets", style = Typography.labelSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                }
+
+                Button(
+                    onClick = onOpenEffectsGallery,
+                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),
+                    shape = RoundedCornerShape(6.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Add Effect", tint = DarkOnyx, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add Effect", style = Typography.labelSmall, color = DarkOnyx, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
@@ -1527,7 +2566,10 @@ fun FiltersAndFxDetailView(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(selectedLayer.effects.size) { index ->
+                items(
+                    count = selectedLayer.effects.size,
+                    key = { index -> selectedLayer.effects[index].id }
+                ) { index ->
                     val effect = selectedLayer.effects[index]
                     val isSelected = index == selectedEffectIndex
                     
@@ -1627,60 +2669,174 @@ fun FiltersAndFxDetailView(
                                         verticalArrangement = Arrangement.spacedBy(10.dp),
                                         modifier = Modifier.padding(horizontal = 4.dp)
                                     ) {
-                                        effect.parameters.forEach { (pName, param) ->
-                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                        // Solid Color / Coloring Palette selector for Solid Color effect
+                                        val isSolidColorEffect = effect is com.example.studio.model.StudioEffect.PhotoshopEffect && 
+                                            (effect.effectType == "SolidColor" || effect.effectType == "ColorOverlay")
+                                        
+                                        if (isSolidColorEffect) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .background(Color(0xFF131519), RoundedCornerShape(6.dp))
+                                                    .border(BorderStroke(0.8.dp, HighslateOutline), RoundedCornerShape(6.dp))
+                                                    .padding(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                val currR = effect.parameters["Red"]?.value ?: effect.parameters["ColorRed"]?.value ?: 0f
+                                                val currG = effect.parameters["Green"]?.value ?: effect.parameters["ColorGreen"]?.value ?: 0.9f
+                                                val currB = effect.parameters["Blue"]?.value ?: effect.parameters["ColorBlue"]?.value ?: 1.0f
+                                                val activeColor = Color(currR, currG, currB)
+
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
                                                     horizontalArrangement = Arrangement.SpaceBetween,
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = param.name,
-                                                            color = TextPrimary,
-                                                            style = Typography.labelSmall,
-                                                            fontSize = 11.sp
-                                                        )
-                                                        if (param.value != 0f) {
-                                                            Icon(
-                                                                imageVector = Icons.Default.Refresh,
-                                                                contentDescription = "Reset",
-                                                                tint = TextSecondary,
-                                                                modifier = Modifier
-                                                                    .size(12.dp)
-                                                                    .clickable {
-                                                                        onUpdateEffectParam(effect.id, pName, 0f)
-                                                                    }
-                             )
-                                                        }
-                                                    }
-                                                    
-                                                    Text(
-                                                        text = "${"%.2f".format(param.value)} ${param.unit}".trim(),
-                                                        color = EnergeticYellow,
-                                                        style = Typography.labelSmall,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold
+                                                    Text("Coloring Palette", style = Typography.labelSmall, color = EnergeticYellow, fontWeight = FontWeight.Bold)
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(18.dp)
+                                                            .clip(RoundedCornerShape(3.dp))
+                                                            .background(activeColor)
+                                                            .border(0.5.dp, Color.White, RoundedCornerShape(3.dp))
                                                     )
                                                 }
                                                 
-                                                Slider(
-                                                    value = param.value,
-                                                    valueRange = param.rangeMin..param.rangeMax,
-                                                    onValueChange = { newValue ->
-                                                        onUpdateEffectParam(effect.id, pName, newValue)
-                                                    },
-                                                    colors = SliderDefaults.colors(
-                                                        thumbColor = IndustrialAmber,
-                                                        activeTrackColor = IndustrialAmber,
-                                                        inactiveTrackColor = HighslateOutline
-                                                    ),
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .height(24.dp)
+                                                val colorSwatches = listOf(
+                                                    Color(0xFF00E5FF), // Cyan
+                                                    Color(0xFF00FF66), // Green
+                                                    Color(0xFFFFCC00), // Amber
+                                                    Color(0xFFFF3366), // Pink
+                                                    Color(0xFFFF1744), // Crimson
+                                                    Color(0xFF7C4DFF), // Purple
+                                                    Color(0xFF2979FF), // Electric Blue
+                                                    Color(0xFF00E676), // Emerald
+                                                    Color(0xFFFF9100), // Orange
+                                                    Color(0xFFFFFFFF), // White
+                                                    Color(0xFF212121)  // Dark
+                                                )
+
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    colorSwatches.forEach { color ->
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(24.dp)
+                                                                .clip(RoundedCornerShape(4.dp))
+                                                                .background(color)
+                                                                .border(
+                                                                    width = if (Math.abs(color.red - currR) < 0.1f && Math.abs(color.green - currG) < 0.1f && Math.abs(color.blue - currB) < 0.1f) 2.dp else 0.5.dp,
+                                                                    color = if (Math.abs(color.red - currR) < 0.1f && Math.abs(color.green - currG) < 0.1f && Math.abs(color.blue - currB) < 0.1f) IndustrialAmber else HighslateOutline,
+                                                                    shape = RoundedCornerShape(4.dp)
+                                                                )
+                                                                .clickable {
+                                                                    onUpdateEffectParam(effect.id, "Red", color.red)
+                                                                    onUpdateEffectParam(effect.id, "Green", color.green)
+                                                                    onUpdateEffectParam(effect.id, "Blue", color.blue)
+                                                                    onUpdateEffectParam(effect.id, "ColorRed", color.red)
+                                                                    onUpdateEffectParam(effect.id, "ColorGreen", color.green)
+                                                                    onUpdateEffectParam(effect.id, "ColorBlue", color.blue)
+                                                                }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        effect.parameters.forEach { (pName, param) ->
+                                            val isInnerGlowColorParam = effect is com.example.studio.model.StudioEffect.PhotoshopEffect && effect.effectType == "InnerGlow" && 
+                                                (pName in listOf("Red", "Green", "Blue", "Color_R", "Color_G", "Color_B"))
+                                            val isSolidColorRGBParam = isSolidColorEffect && (pName in listOf("Red", "Green", "Blue", "ColorRed", "ColorGreen", "ColorBlue"))
+
+                                            if (!isInnerGlowColorParam && !isSolidColorRGBParam) {
+                                                Column(modifier = Modifier.fillMaxWidth()) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = param.name,
+                                                                color = TextPrimary,
+                                                                style = Typography.labelSmall,
+                                                                fontSize = 11.sp
+                                                            )
+                                                            if (param.value != 0f && pName != "BlendMode") {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Refresh,
+                                                                    contentDescription = "Reset",
+                                                                    tint = TextSecondary,
+                                                                    modifier = Modifier
+                                                                        .size(12.dp)
+                                                                        .clickable {
+                                                                            onUpdateEffectParam(effect.id, pName, 0f)
+                                                                        }
+                                                                )
+                                                            }
+                                                        }
+                                                        
+                                                        val displayVal = if (pName == "BlendMode") {
+                                                            val modes = listOf("Normal", "Multiply", "Screen", "Add", "Overlay", "Lighten", "Darken")
+                                                            modes.getOrNull(param.value.toInt()) ?: "Screen"
+                                                        } else {
+                                                            "${"%.2f".format(param.value)} ${param.unit}".trim()
+                                                        }
+                                                        Text(
+                                                            text = displayVal,
+                                                            color = EnergeticYellow,
+                                                            style = Typography.labelSmall,
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
+                                                    
+                                                    if (pName == "BlendMode") {
+                                                        BlendModeSelector(
+                                                            currentVal = param.value,
+                                                            onValueChange = { onUpdateEffectParam(effect.id, pName, it) },
+                                                            modifier = Modifier.padding(vertical = 4.dp)
+                                                        )
+                                                    } else {
+                                                        EffectParamSlider(
+                                                            effectId = effect.id,
+                                                            paramName = pName,
+                                                            value = param.value,
+                                                            rangeMin = param.rangeMin,
+                                                            rangeMax = param.rangeMax,
+                                                            onUpdateEffectParam = onUpdateEffectParam,
+                                                            modifier = Modifier.fillMaxWidth()
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (effect is com.example.studio.model.StudioEffect.PhotoshopEffect && effect.effectType == "InnerGlow") {
+                                            val rParam = effect.parameters["Red"] ?: effect.parameters["Color_R"]
+                                            val gParam = effect.parameters["Green"] ?: effect.parameters["Color_G"]
+                                            val bParam = effect.parameters["Blue"] ?: effect.parameters["Color_B"]
+                                            val opacityParam = effect.parameters["Opacity"]
+                                            
+                                            if (rParam != null && gParam != null && bParam != null) {
+                                                Spacer(Modifier.height(12.dp))
+                                                Text("Glow Color Wheel", style = Typography.labelSmall, color = EnergeticYellow)
+                                                Spacer(Modifier.height(6.dp))
+                                                EffectColorPicker(
+                                                    red = rParam.value,
+                                                    green = gParam.value,
+                                                    blue = bParam.value,
+                                                    opacity = opacityParam?.value ?: 1.0f,
+                                                    onColorChanged = { newCol ->
+                                                        onUpdateEffectParam(effect.id, if (effect.parameters.containsKey("Red")) "Red" else "Color_R", newCol.red)
+                                                        onUpdateEffectParam(effect.id, if (effect.parameters.containsKey("Green")) "Green" else "Color_G", newCol.green)
+                                                        onUpdateEffectParam(effect.id, if (effect.parameters.containsKey("Blue")) "Blue" else "Color_B", newCol.blue)
+                                                    }
                                                 )
                                             }
                                         }
@@ -1693,122 +2849,92 @@ fun FiltersAndFxDetailView(
             }
         }
     }
+
+    if (isPresetLibraryOpen) {
+        com.example.studio.ui.EffectPresetLibraryDialog(
+            layerId = selectedLayer.id,
+            currentLayer = selectedLayer,
+            onClose = { isPresetLibraryOpen = false }
+        )
+    }
 }
 
 @Composable
-fun RasterExtrude3DDetailView(
-    selectedLayer: StudioLayer,
-    onUpdateEffectParam: (String, String, Float) -> Unit,
-    onAddEffect: (StudioEffect) -> Unit,
+fun BlendModeSelector(
+    currentVal: Float,
+    onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val electricCyan = Color(0xFF00E5FF)
-    val extrudeEffect = remember(selectedLayer.effects) {
-        selectedLayer.effects.find { it is StudioEffect.PhotoshopEffect && it.effectType == "RasterExtrude" } as? StudioEffect.PhotoshopEffect
-    }
-
-    LaunchedEffect(extrudeEffect) {
-        if (extrudeEffect == null) {
-            val newEffect = com.example.studio.model.PhotoshopEffectTemplates.create(effectType = "RasterExtrude")
-            onAddEffect(newEffect)
-        }
-    }
-
-    if (extrudeEffect == null) {
-        Box(
-            modifier = modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            CircularProgressIndicator(color = electricCyan)
-        }
-        return
-    }
-
-    val scrollState = rememberScrollState()
-
-    Column(
+    val modes = listOf("Normal", "Multiply", "Screen", "Add", "Overlay", "Lighten", "Darken")
+    val currentIndex = currentVal.toInt().coerceIn(0, modes.lastIndex)
+    
+    Row(
         modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(scrollState)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Text(
-            "Configure 3D Depth, angles and rotation directly on the active canvas layer in real-time.",
-            style = Typography.labelSmall,
-            color = TextSecondary
-        )
-
-        // 1. Extrusion Depth
-        val depthParam = extrudeEffect.parameters["ExtrusionDepth"] ?: com.example.studio.model.EffectParameter("Extrusion Depth", 20f, 0f, 200f)
-        PrecisionJogWheel(
-            value = depthParam.value,
-            onValueChange = { onUpdateEffectParam(extrudeEffect.id, "ExtrusionDepth", it) },
-            valueRange = depthParam.rangeMin..depthParam.rangeMax,
-            label = "Depth",
-            isInt = true,
-            highFreqKey = "${selectedLayer.id}_extrude_depth",
-            activeColorOverride = electricCyan
-        )
-
-        // 2. Alpha (Orientation)
-        val alphaParam = extrudeEffect.parameters["Alpha"] ?: com.example.studio.model.EffectParameter("Orientation Alpha", 57f, -180f, 180f)
-        PrecisionJogWheel(
-            value = alphaParam.value,
-            onValueChange = { onUpdateEffectParam(extrudeEffect.id, "Alpha", it) },
-            valueRange = alphaParam.rangeMin..alphaParam.rangeMax,
-            label = "Alpha",
-            isInt = true,
-            highFreqKey = "${selectedLayer.id}_extrude_alpha",
-            activeColorOverride = electricCyan
-        )
-
-        // 3. Beta (Orientation)
-        val betaParam = extrudeEffect.parameters["Beta"] ?: com.example.studio.model.EffectParameter("Orientation Beta", 0f, -180f, 180f)
-        PrecisionJogWheel(
-            value = betaParam.value,
-            onValueChange = { onUpdateEffectParam(extrudeEffect.id, "Beta", it) },
-            valueRange = betaParam.rangeMin..betaParam.rangeMax,
-            label = "Beta",
-            isInt = true,
-            highFreqKey = "${selectedLayer.id}_extrude_beta",
-            activeColorOverride = electricCyan
-        )
-
-        // 4. RotX
-        val rotXParam = extrudeEffect.parameters["RotX"] ?: com.example.studio.model.EffectParameter("Rotation X", 0f, -180f, 180f)
-        PrecisionJogWheel(
-            value = rotXParam.value,
-            onValueChange = { onUpdateEffectParam(extrudeEffect.id, "RotX", it) },
-            valueRange = rotXParam.rangeMin..rotXParam.rangeMax,
-            label = "Rot X",
-            isInt = true,
-            highFreqKey = "${selectedLayer.id}_extrude_rot_x",
-            activeColorOverride = electricCyan
-        )
-
-        // 5. RotY
-        val rotYParam = extrudeEffect.parameters["RotY"] ?: com.example.studio.model.EffectParameter("Rotation Y", 39f, -180f, 180f)
-        PrecisionJogWheel(
-            value = rotYParam.value,
-            onValueChange = { onUpdateEffectParam(extrudeEffect.id, "RotY", it) },
-            valueRange = rotYParam.rangeMin..rotYParam.rangeMax,
-            label = "Rot Y",
-            isInt = true,
-            highFreqKey = "${selectedLayer.id}_extrude_rot_y",
-            activeColorOverride = electricCyan
-        )
-
-        // 6. RotZ
-        val rotZParam = extrudeEffect.parameters["RotZ"] ?: com.example.studio.model.EffectParameter("Rotation Z", 0f, -180f, 180f)
-        PrecisionJogWheel(
-            value = rotZParam.value,
-            onValueChange = { onUpdateEffectParam(extrudeEffect.id, "RotZ", it) },
-            valueRange = rotZParam.rangeMin..rotZParam.rangeMax,
-            label = "Rot Z",
-            isInt = true,
-            highFreqKey = "${selectedLayer.id}_extrude_rot_z",
-            activeColorOverride = electricCyan
-        )
+        modes.forEachIndexed { index, modeName ->
+            val isSelected = index == currentIndex
+            Box(
+                modifier = Modifier
+                    .background(
+                        if (isSelected) GreenActive else Color(0xFF1E1E24),
+                        RoundedCornerShape(4.dp)
+                    )
+                    .border(
+                        BorderStroke(0.5.dp, if (isSelected) GreenActive else HighslateOutline),
+                        RoundedCornerShape(4.dp)
+                    )
+                    .clickable { onValueChange(index.toFloat()) }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = modeName,
+                    style = Typography.labelSmall,
+                    fontSize = 9.sp,
+                    color = if (isSelected) Color.Black else TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EffectParamSlider(
+    isDebounced: Boolean = true,
+    effectId: String,
+    paramName: String,
+    value: Float,
+    rangeMin: Float,
+    rangeMax: Float,
+    onUpdateEffectParam: (String, String, Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isColorGradingFilter = paramName == "Preset" || paramName == "Exposure" || paramName == "Contrast" || paramName == "Highlights" || paramName == "Shadows" || paramName == "Whites" || paramName == "Blacks" || paramName == "Temp" || paramName == "Tint" || paramName == "Vibrance" || paramName == "Saturation" || paramName == "Clarity" || paramName == "Dehaze" || paramName == "Brightness" || paramName == "Sat" || paramName == "Bright" || paramName == "Opacity"
+    val activeColor = if (isColorGradingFilter) Color(0xFFA855F7) else IndustrialAmber
+
+    Slider(
+        value = value.coerceIn(rangeMin..rangeMax),
+        onValueChange = { newValue ->
+            val rawQuantized = (newValue * 100f).roundToInt() / 100f
+            SlidersHighFreqState.set("effect_${effectId}_${paramName}", rawQuantized)
+            onUpdateEffectParam(effectId, paramName, rawQuantized)
+        },
+        valueRange = rangeMin..rangeMax,
+        colors = SliderDefaults.colors(
+            activeTrackColor = activeColor,
+            thumbColor = activeColor,
+            inactiveTrackColor = HighslateOutline.copy(alpha = 0.3f)
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 36.dp)
+    )
+}
+
+
+

@@ -183,28 +183,29 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
                 if (!fontsDir.exists()) {
                     fontsDir.mkdirs()
                 }
+
+                val fontEntities = mutableListOf<com.example.studio.database.CustomFontEntity>()
+                val batchSize = 20
+
                 fontsToImport.forEachIndexed { index, discFont ->
                     try {
                         val destFile = java.io.File(fontsDir, discFont.file.name)
-                        // Copy font file to secure filesDir directory
-                        discFont.file.inputStream().use { input ->
-                            destFile.outputStream().use { output ->
-                                input.copyTo(output)
+                        if (!destFile.exists() || destFile.length() != discFont.file.length()) {
+                            discFont.file.inputStream().use { input ->
+                                destFile.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
                             }
                         }
                         val cleanName = discFont.name
-                        val category = if (cleanName.contains("script", ignoreCase = true)) {
-                            "Script"
-                        } else if (cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true)) {
-                            "Handwritten"
-                        } else if (cleanName.contains("mono", ignoreCase = true)) {
-                            "Monospace"
-                        } else if (cleanName.contains("serif", ignoreCase = true)) {
-                            "Serif"
-                        } else {
-                            "Display"
+                        val category = when {
+                            cleanName.contains("script", ignoreCase = true) -> "Script"
+                            cleanName.contains("hand", ignoreCase = true) || cleanName.contains("write", ignoreCase = true) -> "Handwritten"
+                            cleanName.contains("mono", ignoreCase = true) -> "Monospace"
+                            cleanName.contains("serif", ignoreCase = true) -> "Serif"
+                            else -> "Display"
                         }
-                        fontDao.insertCustomFont(
+                        fontEntities.add(
                             com.example.studio.database.CustomFontEntity(
                                 path = destFile.absolutePath,
                                 name = cleanName,
@@ -215,8 +216,19 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
-                    withContext(Dispatchers.Main) {
-                        onProgress(index + 1, fontsToImport.size)
+
+                    if (fontEntities.size >= batchSize || index == fontsToImport.size - 1) {
+                        if (fontEntities.isNotEmpty()) {
+                            try {
+                                fontDao.insertAllCustomFonts(fontEntities)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                            fontEntities.clear()
+                        }
+                        withContext(Dispatchers.Main) {
+                            onProgress(index + 1, fontsToImport.size)
+                        }
                     }
                 }
             }
@@ -269,6 +281,10 @@ class WorkspaceViewModel(application: Application) : AndroidViewModel(applicatio
             repository.saveProject(entity)
             onComplete(actualId)
         }
+    }
+
+    suspend fun getProjectById(id: String): ProjectEntity? {
+        return repository.getProjectById(id)
     }
 
     fun saveWorkspace(

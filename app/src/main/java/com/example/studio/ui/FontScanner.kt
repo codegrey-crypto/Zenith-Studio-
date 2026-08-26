@@ -9,6 +9,8 @@ import kotlinx.coroutines.withContext
 
 object FontScanner {
 
+    private const val MAX_DISCOVERED_FONTS = 500
+
     data class DiscoveredFont(
         val name: String,
         val filePath: String,
@@ -39,7 +41,7 @@ object FontScanner {
                 cursor?.use { c ->
                     val dataIndex = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATA)
                     val nameIndex = c.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
-                    while (c.moveToNext()) {
+                    while (c.moveToNext() && discovered.size < MAX_DISCOVERED_FONTS) {
                         val path = c.getString(dataIndex)
                         val name = c.getString(nameIndex)
                         if (!path.isNullOrEmpty() && !visitedPaths.contains(path)) {
@@ -85,10 +87,38 @@ object FontScanner {
             rootsToScan.add(File("/storage/emulated/0/Fonts"))
         }
 
+        if (foldersToScan.contains("DCIM")) {
+            try {
+                rootsToScan.add(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM))
+            } catch (e: Exception) {}
+            rootsToScan.add(File("/storage/emulated/0/DCIM"))
+        }
+
+        // Process any custom specified folders or subpaths
+        foldersToScan.forEach { folder ->
+            if (folder !in setOf("Download", "Documents", "Fonts", "Root", "MediaStore", "DCIM")) {
+                val directFile = File(folder)
+                if (directFile.exists() && directFile.isDirectory) {
+                    rootsToScan.add(directFile)
+                } else {
+                    val emulatedFile = File("/storage/emulated/0", folder)
+                    if (emulatedFile.exists() && emulatedFile.isDirectory) {
+                        rootsToScan.add(emulatedFile)
+                    } else {
+                        val dlFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), folder)
+                        if (dlFile.exists() && dlFile.isDirectory) {
+                            rootsToScan.add(dlFile)
+                        }
+                    }
+                }
+            }
+        }
+
         val uniqueRoots = rootsToScan.filter { it.exists() && it.isDirectory }.distinct()
 
         for (root in uniqueRoots) {
-            crawlDirectory(root, discovered, visitedPaths, maxDepth = 6)
+            if (discovered.size >= MAX_DISCOVERED_FONTS) break
+            crawlDirectory(root, discovered, visitedPaths, maxDepth = 5)
         }
 
         discovered.sortedBy { it.name }
@@ -101,7 +131,7 @@ object FontScanner {
         currentDepth: Int = 0,
         maxDepth: Int = 5
     ) {
-        if (currentDepth > maxDepth || !dir.exists() || !dir.isDirectory) return
+        if (results.size >= MAX_DISCOVERED_FONTS || currentDepth > maxDepth || !dir.exists() || !dir.isDirectory) return
 
         val files = try {
             dir.listFiles()
@@ -110,6 +140,7 @@ object FontScanner {
         } ?: return
 
         for (f in files) {
+            if (results.size >= MAX_DISCOVERED_FONTS) break
             if (f.isDirectory) {
                 // Skip hidden folders or system caches to keep exploration fast
                 val dName = f.name.lowercase()

@@ -25,6 +25,9 @@ interface CustomFontDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCustomFont(font: CustomFontEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllCustomFonts(fonts: List<CustomFontEntity>)
+
     @Query("DELETE FROM custom_fonts WHERE path = :path")
     suspend fun deleteCustomFont(path: String)
 }

@@ -22,8 +22,9 @@ object GlassShaders {
         uniform float zoomScale;
 
         float2 hash22(float2 p) {
-            p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
-            return frac(sin(p) * 43758.5453123);
+            float2 q = frac(p * float2(443.897, 441.423));
+            q += dot(q, q.yx + 19.19);
+            return frac((q.xx + q.yx) * q.xy);
         }
 
         float2 voronoiCell(float2 p) {
@@ -257,45 +258,47 @@ object GlassShaders {
         uniform float soften;
         uniform float angle;
         uniform float altitude;
+        uniform float direction;
+        uniform float highlightOpacity;
+        uniform float shadowOpacity;
 
         half4 main(float2 coords) {
             half4 color = inputShader.eval(coords);
             if (color.a <= 0.0) return color;
 
-            float d = max(1.0, size * 0.15);
-            float aL = inputShader.eval(coords + float2(-d, 0.0)).a;
-            float aR = inputShader.eval(coords + float2(d, 0.0)).a;
-            float aT = inputShader.eval(coords + float2(0.0, -d)).a;
-            float aB = inputShader.eval(coords + float2(0.0, d)).a;
-
-            float aTL = inputShader.eval(coords + float2(-d * 0.707, -d * 0.707)).a;
-            float aTR = inputShader.eval(coords + float2(d * 0.707, -d * 0.707)).a;
-            float aBL = inputShader.eval(coords + float2(-d * 0.707, d * 0.707)).a;
-            float aBR = inputShader.eval(coords + float2(d * 0.707, d * 0.707)).a;
-
-            float gx = (aTR + 2.0 * aR + aBR) - (aTL + 2.0 * aL + aBL);
-            float gy = (aBL + 2.0 * aB + aBR) - (aTL + 2.0 * aT + aTR);
-
             float radA = angle * 3.14159265 / 180.0;
-            float radH = altitude * 3.14159265 / 180.0;
-            float3 L = float3(cos(radH) * cos(radA), cos(radH) * sin(radA), sin(radH));
+            float dirSign = (direction > 0.5) ? -1.0 : 1.0;
+            float2 lightDir2D = float2(-cos(radA), -sin(radA)) * dirSign;
 
-            float slopeScale = (depth / 100.0) * 8.0;
-            float3 N = normalize(float3(-gx * slopeScale, -gy * slopeScale, 1.0));
+            float gx = 0.0;
+            float gy = 0.0;
+            float maxDist = max(1.0, size);
 
-            float diffuse = dot(N, L);
+            for (int i = 1; i <= 6; i++) {
+                float r = (float(i) / 6.0) * maxDist;
+                float weight = 1.0 - (float(i) / 6.0) * 0.5;
 
-            float3 V = float3(0.0, 0.0, 1.0);
-            float3 H_vec = normalize(L + V);
-            float specular = pow(max(0.0, dot(N, H_vec)), 16.0) * (depth / 100.0);
+                float aL = inputShader.eval(coords + float2(-r, 0.0)).a;
+                float aR = inputShader.eval(coords + float2(r, 0.0)).a;
+                float aT = inputShader.eval(coords + float2(0.0, -r)).a;
+                float aB = inputShader.eval(coords + float2(0.0, r)).a;
+
+                gx += (aR - aL) * weight;
+                gy += (aB - aT) * weight;
+            }
+            gx /= 6.0;
+            gy /= 6.0;
+
+            float slope = (gx * lightDir2D.x + gy * lightDir2D.y) * (depth / 100.0) * 2.5;
 
             half3 rgb = color.rgb;
-            if (diffuse > 0.0) {
-                float hlIntensity = diffuse * 0.4 * (depth / 100.0) + specular * 0.6;
-                rgb = rgb + half3(hlIntensity) - rgb * half3(hlIntensity);
-            } else {
-                float shIntensity = -diffuse * 0.5 * (depth / 100.0);
-                rgb = rgb * (half3(1.0) - half3(shIntensity));
+
+            if (slope > 0.001) {
+                float hl = clamp(slope * highlightOpacity, 0.0, 1.0);
+                rgb = half3(1.0) - (half3(1.0) - rgb) * half3(1.0 - hl * 0.85);
+            } else if (slope < -0.001) {
+                float sh = clamp(-slope * shadowOpacity, 0.0, 1.0);
+                rgb = rgb * half3(1.0 - sh * 0.85);
             }
 
             return half4(clamp(rgb, 0.0, 1.0), color.a);
@@ -315,12 +318,18 @@ object GlassShaders {
             val sf = effect.parameters["Soften"]?.value ?: 0f
             val ang = effect.parameters["Angle"]?.value ?: 120f
             val alt = effect.parameters["Altitude"]?.value ?: 30f
+            val dir = effect.parameters["Direction"]?.value ?: 0f
+            val hlOp = effect.parameters["Highlight Opacity"]?.value ?: 0.75f
+            val shOp = effect.parameters["Shadow Opacity"]?.value ?: 0.75f
 
             shader.setFloatUniform("depth", dp)
             shader.setFloatUniform("size", sz)
             shader.setFloatUniform("soften", sf)
             shader.setFloatUniform("angle", ang)
             shader.setFloatUniform("altitude", alt)
+            shader.setFloatUniform("direction", dir)
+            shader.setFloatUniform("highlightOpacity", hlOp)
+            shader.setFloatUniform("shadowOpacity", shOp)
 
             val shaderEffect = RenderEffect.createRuntimeShaderEffect(shader, "inputShader")
             return if (sf > 0.1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

@@ -13,6 +13,7 @@ class RenderCacheNode {
     var cachedBitmap: Bitmap? = null
     var cachedImageBitmap: ImageBitmap? = null
     var isDirty: Boolean = false
+    var paddingPx: Float = 0f
 
     fun invalidate() {
         isDirty = true
@@ -20,33 +21,94 @@ class RenderCacheNode {
 }
 
 object ParametricLayerCache {
-    private val nodes = ConcurrentHashMap<String, RenderCacheNode>()
-
-    fun getOrCreateNode(layerId: String): RenderCacheNode {
-        return nodes.getOrPut(layerId) { RenderCacheNode() }
+    val nodes = object : java.util.LinkedHashMap<String, RenderCacheNode>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RenderCacheNode>?): Boolean {
+            if (size > 40) {
+                eldest?.value?.cachedBitmap?.recycle()
+                return true
+            }
+            return false
+        }
+    }
+    
+    val exportNodes = object : java.util.LinkedHashMap<String, RenderCacheNode>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RenderCacheNode>?): Boolean {
+            if (size > 20) {
+                eldest?.value?.cachedBitmap?.recycle()
+                return true
+            }
+            return false
+        }
     }
 
+    @Synchronized
+    fun getOrCreateNode(layerId: String, isExporting: Boolean = false): RenderCacheNode {
+        return if (isExporting) {
+            exportNodes.getOrPut(layerId) { RenderCacheNode() }
+        } else {
+            nodes.getOrPut(layerId) { RenderCacheNode() }
+        }
+    }
+
+    @Synchronized
     fun invalidate(layerId: String) {
         nodes[layerId]?.invalidate()
+        exportNodes[layerId]?.invalidate()
     }
 
+    @Synchronized
     fun clear() {
         nodes.values.forEach {
             it.cachedBitmap?.recycle()
         }
         nodes.clear()
+        clearExportCache()
+    }
+
+    @Synchronized
+    fun clearExportCache() {
+        exportNodes.values.forEach {
+            it.cachedBitmap?.recycle()
+        }
+        exportNodes.clear()
+    }
+
+    @Synchronized
+    fun duplicateNode(originalId: String, newId: String) {
+        val origNode = nodes[originalId]
+        if (origNode != null) {
+            val newNode = RenderCacheNode()
+            newNode.paramHash = origNode.paramHash
+            newNode.cachedBitmap = origNode.cachedBitmap
+            newNode.cachedImageBitmap = origNode.cachedImageBitmap
+            newNode.paddingPx = origNode.paddingPx
+            newNode.isDirty = origNode.isDirty
+            nodes[newId] = newNode
+        }
+    }
+
+    @Synchronized
+    fun canRecycleBitmap(bitmap: Bitmap?): Boolean {
+        if (bitmap == null) return true
+        var count = 0
+        nodes.values.forEach { if (it.cachedBitmap === bitmap) count++ }
+        exportNodes.values.forEach { if (it.cachedBitmap === bitmap) count++ }
+        return count <= 1
     }
 
     fun computeParamHash(layer: StudioLayer): Int {
-        var result = layer.id.hashCode()
-        result = 31 * result + layer.type.hashCode()
+        var result = layer.type.hashCode()
         result = 31 * result + layer.width.hashCode()
         result = 31 * result + layer.height.hashCode()
         result = 31 * result + layer.baseColor.hashCode()
         result = 31 * result + (layer.imageUri?.hashCode() ?: 0)
+        result = 31 * result + (layer.threeDStateJson?.hashCode() ?: 0)
         result = 31 * result + (layer.imageResourceId ?: 0)
         result = 31 * result + layer.textContent.hashCode()
+        result = 31 * result + layer.richTextSpansJson.hashCode()
         result = 31 * result + layer.fontSize.hashCode()
+        result = 31 * result + layer.letterSpacing.hashCode()
+        result = 31 * result + layer.lineSpacing.hashCode()
         result = 31 * result + layer.fontFamilyName.hashCode()
         result = 31 * result + layer.fontIsBold.hashCode()
         result = 31 * result + layer.fontIsItalic.hashCode()
@@ -127,6 +189,7 @@ object CanvasEventLoop {
     private val transformChannel = Channel<CanvasEvent.UpdateTransform>(Channel.CONFLATED)
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val activeSliderJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    @Volatile private var isStarted = false
 
     fun emit(event: CanvasEvent) {
         if (event is CanvasEvent.UpdateTransform) {
@@ -136,11 +199,14 @@ object CanvasEventLoop {
         }
     }
 
+    @Synchronized
     fun startProcessing(
         onUpdateTransform: (Float, Float, Float, Float) -> Unit,
         onUpdateSlider: (String, String, String, Float) -> Unit,
         onUpdateLayerProp: (String, String, Float) -> Unit
     ) {
+        if (isStarted) return
+        isStarted = true
         // Collect transformChannel synchronized with hardware display VSYNC via Choreographer to guarantee perfect 120 FPS
         scope.launch(Dispatchers.Main) {
             val callback = object : android.view.Choreographer.FrameCallback {
@@ -171,18 +237,14 @@ object CanvasEventLoop {
                         }
                     }
                     is CanvasEvent.UpdateSlider -> {
-                        val sliderKey = "${event.layerId}_${event.effectId}_${event.paramName}"
-                        activeSliderJobs[sliderKey]?.cancel()
-                        val debouncedJob = scope.launch {
-                            delay(4) // debounce optimized for ultra-smooth 120 FPS / 240Hz screen refresh rates
-                            ParametricLayerCache.invalidate(event.layerId)
-                            withContext(Dispatchers.Main) {
-                                onUpdateSlider(event.layerId, event.effectId, event.paramName, event.value)
-                            }
+                        com.aistudio.zenithstudio.rpxwtq.EffectStackManager.notifySliderInteraction(event.layerId)
+                        ParametricLayerCache.invalidate(event.layerId)
+                        withContext(Dispatchers.Main) {
+                            onUpdateSlider(event.layerId, event.effectId, event.paramName, event.value)
                         }
-                        activeSliderJobs[sliderKey] = debouncedJob
                     }
                     is CanvasEvent.UpdateLayerProp -> {
+                        com.aistudio.zenithstudio.rpxwtq.EffectStackManager.notifySliderInteraction(event.layerId)
                         ParametricLayerCache.invalidate(event.layerId)
                         withContext(Dispatchers.Main) {
                             onUpdateLayerProp(event.layerId, event.propName, event.value)

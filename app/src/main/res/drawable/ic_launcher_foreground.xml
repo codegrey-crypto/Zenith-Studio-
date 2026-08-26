@@ -1,12 +1,16 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
+    android:viewportWidth="1080"
+    android:viewportHeight="1080">
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M 30,45 V 30 H 56 L 30,56 V 71 H 44 L 51,64 H 37 V 56 L 56,37 H 37 V 45 Z" />
+        android:fillColor="#fefefe"
+        android:strokeColor="#fefefe"
+        android:strokeWidth="1"
+        android:pathData="M326 341h276.5l.5 1.5-163 233-5 9.5q-2.7-1.1-2 1.5l-56 80V701h124.5l3.5 2 2.5 4 45.5 42.5-244 .5v-79.5l62-90 7-8 9-15.5q2.7 1.1 2-1.5l34-48 7-12.5q2.7 1.1 2-1.5l71-101V390H377.5q-1 0-.5 4.5l-1 1v34l1 1V444l40.5-1-.5 1.5-32.5 48.5H326z" />
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M 78,63 V 78 H 52 L 78,52 V 37 H 64 L 57,44 H 71 V 52 L 52,71 H 71 V 63 Z" />
+        android:fillColor="#fefefe"
+        android:strokeColor="#fefefe"
+        android:strokeWidth="1"
+        android:pathData="M649.5 341H754v125.5l-1.5 1.5h-48l-1.5-1.5V390h-24.5l-.5 1.5-89 128 163.5.5 1.5 1.5v228l-1.5 1.5h-154l-36-34H561l-2.5-4-44-41H513l-1.5-3-16.5-14.5-1.5-2.5-37.5-35.5 4.5-5.5h66l67.5 62.5 1.5 2.5 27 25H703V569H490.5l-.5-1.5 53-74 102-148zm430 477 .5 3.5h-1zm0 13 .5 3.5h-1zm0 13 .5 3.5h-1zm0 11 .5 3.5h-1zm0 13 .5 3.5h-1zm0 24 .5 3.5h-1zm0 13 .5 3.5h-1zm0 24 .5 3.5h-1zm0 13 .5 3.5h-1zm0 11 .5 3.5h-1zm0 11 .5 5.5h-1zm0 13 .5 5.5h-1zm0 13 .5 3.5h-1zm0 11 .5 5.5h-1zm0 11 .5 5.5h-1zm0 13 .5 5.5h-1zm0 13 .5 5.5h-1zm0 11 .5 5.5h-1zm0 13 .5 5.5h-1z" />
 </vector>

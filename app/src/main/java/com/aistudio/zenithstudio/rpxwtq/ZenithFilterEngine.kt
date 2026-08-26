@@ -93,76 +93,310 @@ data class GPUImageZenithFilter(
 }
 
 private fun applySingleGPUImageFilter(context: Context, source: Bitmap, filter: jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter): Bitmap {
-    val gpuImage = jp.co.cyberagent.android.gpuimage.GPUImage(context)
-    gpuImage.setImage(source)
+    val safeSource = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O && source.config == Bitmap.Config.HARDWARE) {
+        source.copy(Bitmap.Config.ARGB_8888, false)
+    } else {
+        source
+    }
+    val gpuImage = jp.co.cyberagent.android.gpuimage.GPUImage(context).apply {
+        setScaleType(jp.co.cyberagent.android.gpuimage.GPUImage.ScaleType.CENTER_INSIDE)
+    }
     gpuImage.setFilter(filter)
-    return gpuImage.bitmapWithFilterApplied
+    return gpuImage.getBitmapWithFilterApplied(safeSource)
 }
 
 object EffectStackManager {
     val filtersByLayer = androidx.compose.runtime.mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<ZenithFilter>>()
     val texturesByLayer = androidx.compose.runtime.mutableStateMapOf<String, String>() // layerId -> absolute file path of texture
+    val decodedTexturesCache = java.util.concurrent.ConcurrentHashMap<String, Bitmap>()
+    val patternImagesForFilters = androidx.compose.runtime.mutableStateMapOf<String, String>() // filterId -> absolute file path of texture
     
-    var currentLayerId: String? = null
-    var currentLayerImageUri: String? = null
+    val changeCounter = androidx.compose.runtime.mutableStateOf(0)
+    val isDraggingSliderState = androidx.compose.runtime.mutableStateOf(false)
+    var isDraggingSlider: Boolean
+        get() = isDraggingSliderState.value
+        set(value) { isDraggingSliderState.value = value }
+
+    private var resetDragRunnable: Runnable? = null
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    fun notifySliderInteraction(layerId: String? = null) {
+        if (!isDraggingSliderState.value) {
+            isDraggingSliderState.value = true
+        }
+        resetDragRunnable?.let { mainHandler.removeCallbacks(it) }
+        val runnable = Runnable {
+            isDraggingSliderState.value = false
+            if (layerId != null) {
+                com.example.studio.ui.ParametricLayerCache.invalidate(layerId)
+            }
+        }
+        resetDragRunnable = runnable
+        mainHandler.postDelayed(runnable, 150L) // 150ms high-fidelity recalculation debounce
+    }
+
+    // Downscale performance settings
+    val isDownscaleEnabled = androidx.compose.runtime.mutableStateOf(false)
+    val downscaleFactor = androidx.compose.runtime.mutableStateOf(2) // 2=1/2, 3=1/3, etc.
+    val downscaleBilinear = androidx.compose.runtime.mutableStateOf(false) // true=Bilinear, false=Nearest Neighbor
+    val downscaleOnlyOnDrag = androidx.compose.runtime.mutableStateOf(false) // always downscale vs only on interaction
+
+    // Parallel Undo/Redo stack for professional non-destructive effect pipelines
+    private val undoStack = java.util.Stack<Map<String, List<ZenithFilter>>>()
+    private val redoStack = java.util.Stack<Map<String, List<ZenithFilter>>>()
+    
+    private var lastUpdatedParamKey: String? = null
+    private var lastUpdateTime = 0L
+
+    private fun createSnapshot(): Map<String, List<ZenithFilter>> {
+        return filtersByLayer.mapValues { entry ->
+            entry.value.toList()
+        }
+    }
+
+    fun saveUndoState() {
+        undoStack.push(createSnapshot())
+        redoStack.clear()
+    }
+
+    fun canUndo(): Boolean = undoStack.isNotEmpty()
+    fun canRedo(): Boolean = redoStack.isNotEmpty()
+
+    fun performUndo(): Boolean {
+        if (undoStack.isEmpty()) return false
+        val current = createSnapshot()
+        redoStack.push(current)
+        val previous = undoStack.pop()
+        restoreSnapshot(previous)
+        return true
+    }
+
+    fun performRedo(): Boolean {
+        if (redoStack.isEmpty()) return false
+        val current = createSnapshot()
+        undoStack.push(current)
+        val next = redoStack.pop()
+        restoreSnapshot(next)
+        return true
+    }
+
+    private fun restoreSnapshot(snapshot: Map<String, List<ZenithFilter>>) {
+        filtersByLayer.clear()
+        snapshot.forEach { (layerId, list) ->
+            val mutableList = androidx.compose.runtime.mutableStateListOf<ZenithFilter>()
+            mutableList.addAll(list)
+            filtersByLayer[layerId] = mutableList
+        }
+        changeCounter.value++
+    }
     
     fun getFiltersForLayer(layerId: String): androidx.compose.runtime.snapshots.SnapshotStateList<ZenithFilter> {
         return filtersByLayer.getOrPut(layerId) {
             androidx.compose.runtime.mutableStateListOf()
         }
     }
-    
-    val activeFilters: androidx.compose.runtime.snapshots.SnapshotStateList<ZenithFilter>
-        get() = getFiltersForLayer(currentLayerId ?: "")
-    
-    fun addFilter(filter: ZenithFilter) {
-        val list = activeFilters
-        if (!list.any { it.id == filter.id }) {
-            list.add(filter)
+
+    fun duplicateFiltersForLayer(sourceLayerId: String, destLayerId: String) {
+        saveUndoState()
+        val sourceFilters = filtersByLayer[sourceLayerId]
+        if (sourceFilters != null && sourceFilters.isNotEmpty()) {
+            val destList = getFiltersForLayer(destLayerId)
+            destList.clear()
+            sourceFilters.forEach { filter ->
+                val suffix = java.util.UUID.randomUUID().toString().take(6)
+                destList.add(filter.duplicate("${filter.id}_dup_${suffix}"))
+            }
+            changeCounter.value++
         }
     }
     
-    fun removeFilter(id: String) {
-        activeFilters.removeAll { it.id == id }
+    fun addFilter(layerId: String, filter: ZenithFilter) {
+        saveUndoState()
+        val list = getFiltersForLayer(layerId)
+        if (!list.any { it.id == filter.id }) {
+            list.add(filter)
+            changeCounter.value++
+        }
     }
     
-    fun duplicateFilter(id: String) {
-        val list = activeFilters
+    fun removeFilter(layerId: String, id: String) {
+        saveUndoState()
+        if (getFiltersForLayer(layerId).removeAll { it.id == id }) {
+            changeCounter.value++
+        }
+    }
+    
+    fun duplicateFilter(layerId: String, id: String) {
+        saveUndoState()
+        val list = getFiltersForLayer(layerId)
         val index = list.indexOfFirst { it.id == id }
         if (index != -1) {
             val original = list[index]
             val suffix = java.util.UUID.randomUUID().toString().take(6)
             val newId = "${original.id}_copy_${suffix}"
             val duplicated = original.duplicate(newId)
+            
+            // Duplicate pattern image if exists
+            patternImagesForFilters[original.id]?.let { imgPath ->
+                patternImagesForFilters[newId] = imgPath
+            }
+            
             list.add(index + 1, duplicated)
+            changeCounter.value++
         }
     }
     
-    fun toggleFilter(id: String) {
-        val list = activeFilters
+    fun toggleFilter(layerId: String, id: String) {
+        saveUndoState()
+        val list = getFiltersForLayer(layerId)
         val index = list.indexOfFirst { it.id == id }
         if (index != -1) {
             list[index] = list[index].toggleEnabled()
+            changeCounter.value++
         }
     }
     
-    fun updateParameter(filterId: String, paramName: String, newValue: Float) {
-        val list = activeFilters
+    fun updateParameter(layerId: String, filterId: String, paramName: String, newValue: Float) {
+        notifySliderInteraction()
+        val paramKey = "${layerId}_${filterId}_${paramName}"
+        val now = System.currentTimeMillis()
+        if (paramKey != lastUpdatedParamKey || now - lastUpdateTime > 800L) {
+            saveUndoState()
+            lastUpdatedParamKey = paramKey
+        }
+        lastUpdateTime = now
+
+        val list = getFiltersForLayer(layerId)
         val index = list.indexOfFirst { it.id == filterId }
         if (index != -1) {
             list[index] = list[index].copyWithParameter(paramName, newValue)
+            changeCounter.value++
         }
     }
     
-    fun clearAll() {
-        activeFilters.clear()
+    fun clearAll(layerId: String) {
+        saveUndoState()
+        val list = getFiltersForLayer(layerId)
+        if (list.isNotEmpty()) {
+            list.clear()
+            changeCounter.value++
+        }
+    }
+}
+
+object FilterPreviewCache {
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Bitmap>()
+    private var baseSample: Bitmap? = null
+    private var lastBaseBitmapHash: Int = 0
+
+    fun getBaseSample(customBase: Bitmap?): Bitmap {
+        var base = baseSample
+        val baseHash = customBase?.hashCode() ?: 0
+        if (base == null || (customBase != null && baseHash != lastBaseBitmapHash)) {
+            val targetSize = 100
+            if (customBase != null) {
+                lastBaseBitmapHash = baseHash
+                val w = customBase.width
+                val h = customBase.height
+                val scale = targetSize.toFloat() / maxOf(w, h)
+                val nw = (w * scale).toInt().coerceAtLeast(1)
+                val nh = (h * scale).toInt().coerceAtLeast(1)
+                base = Bitmap.createScaledBitmap(customBase, nw, nh, true)
+            } else {
+                base = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(base)
+                val p = Paint(Paint.ANTI_ALIAS_FLAG)
+                
+                // Sunset gradient
+                val lg = LinearGradient(0f, 0f, 0f, 100f, 
+                    Color.parseColor("#FF4E50"), Color.parseColor("#F9D423"), 
+                    Shader.TileMode.CLAMP)
+                p.shader = lg
+                canvas.drawRect(0f, 0f, 100f, 100f, p)
+                p.shader = null
+
+                // Sun
+                p.color = Color.parseColor("#FFFFFF")
+                canvas.drawCircle(70f, 30f, 12f, p)
+
+                // Mountain 1 (dark blue)
+                p.color = Color.parseColor("#1B2A47")
+                val path1 = android.graphics.Path()
+                path1.moveTo(0f, 100f)
+                path1.lineTo(30f, 50f)
+                path1.lineTo(70f, 100f)
+                path1.close()
+                canvas.drawPath(path1, p)
+
+                // Mountain 2 (midnight blue)
+                p.color = Color.parseColor("#0F172A")
+                val path2 = android.graphics.Path()
+                path2.moveTo(40f, 100f)
+                path2.lineTo(75f, 40f)
+                path2.lineTo(100f, 90f)
+                path2.lineTo(100f, 100f)
+                path2.close()
+                canvas.drawPath(path2, p)
+            }
+            baseSample = base
+        }
+        return base
+    }
+
+    fun getOrCreatePreview(filter: ZenithFilter, context: Context, customBase: Bitmap? = null): Bitmap {
+        val baseHash = customBase?.hashCode() ?: 0
+        if (customBase != null && baseHash != lastBaseBitmapHash) {
+            cache.clear()
+        }
+        
+        val base = getBaseSample(customBase)
+        val key = "${filter.id}_preview_v2"
+        val cached = cache[key]
+        if (cached != null) return cached
+
+        val copy = base.copy(Bitmap.Config.ARGB_8888, true)
+        val filtered = try {
+            filter.computeShaderEffect(copy, context)
+        } catch (e: Exception) {
+            copy
+        }
+        cache[key] = filtered
+        return filtered
+    }
+
+    fun clear() {
+        cache.clear()
+        baseSample = null
     }
 }
 
 object ZenithFilterFactory {
+    private val templatesCached: List<ZenithFilter> by lazy { createFilterList() }
+    private val templateMapCached: Map<String, ZenithFilter> by lazy { templatesCached.associateBy { it.id } }
+
+    fun getAllFilters(): List<ZenithFilter> = templatesCached
+
+    fun getFilterTemplate(id: String): ZenithFilter? {
+        return templateMapCached[id]
+    }
+
     fun createFilterList(): List<ZenithFilter> {
-        return listOf(
+        val list = mutableListOf<ZenithFilter>(
+            // ==========================================
             // Category: Color Adjustments
+            // ==========================================
+            createDitheringFilter("image_toolbox_dither", "Dithering", listOf(
+                FilterParameter("Dither Type (FS=0, B4=1, B8=2, Rnd=3)", 0f, 0f, 3f),
+                FilterParameter("Quantization Levels", 4f, 2f, 16f),
+                FilterParameter("Monochrome (No=0, Yes=1)", 1f, 0f, 1f)
+            )),
+            createColorAdjustFilter("image_toolbox_exposure", "Exposure", listOf(FilterParameter("EV Amount", 0.0f, -4.0f, 4.0f))),
+            createColorAdjustFilter("image_toolbox_brightness", "Brightness", listOf(FilterParameter("Level", 0.0f, -100.0f, 100.0f))),
+            createColorAdjustFilter("image_toolbox_contrast", "Contrast", listOf(FilterParameter("Amount", 1.0f, 0.0f, 3.0f))),
+            createColorAdjustFilter("image_toolbox_saturation", "Saturation", listOf(FilterParameter("Factor", 1.0f, 0.0f, 3.0f))),
+            createColorAdjustFilter("image_toolbox_hue", "Hue Shift", listOf(FilterParameter("Shift degrees", 0.0f, -180.0f, 180.0f, "°"))),
+            createColorAdjustFilter("image_toolbox_vignette", "Vignette", listOf(FilterParameter("Radius amount", 0.5f, 0.0f, 1.0f))),
+
             createColorAdjustFilter("color_fast_adjusting", "Fast Adjusting", listOf(
                 FilterParameter("Exposure", 0.0f, -4.0f, 4.0f),
                 FilterParameter("Brightness", 0.0f, -100.0f, 100.0f),
@@ -182,19 +416,32 @@ object ZenithFilterFactory {
                 FilterParameter("Structure", 0.0f, -1.0f, 1.0f)
             )),
             createColorAdjustFilter("color_grayscale", "Grayscale", emptyList()),
-            createColorAdjustFilter("color_sepia", "Sepia Tone", listOf(FilterParameter("Intensity", 0.8f, 0.0f, 1.0f))),
-            createColorAdjustFilter("color_saturation", "Saturation", listOf(FilterParameter("Factor", 1.0f, 0.0f, 3.0f))),
-            createColorAdjustFilter("color_contrast", "Contrast Correction", listOf(FilterParameter("Amount", 1.0f, 0.0f, 3.0f))),
-            createColorAdjustFilter("color_brightness", "Brightness Booster", listOf(FilterParameter("Level", 0.0f, -100.0f, 100.0f))),
-            createColorAdjustFilter("color_exposure", "Exposure Level", listOf(FilterParameter("EV Amount", 0.0f, -4.0f, 4.0f))),
-            createColorAdjustFilter("color_vignette", "Vignette Focus", listOf(FilterParameter("Radius amount", 0.5f, 0.0f, 1.0f))),
-            createColorAdjustFilter("color_hue", "Hue Angle Shift", listOf(FilterParameter("Shift degrees", 0.0f, -180.0f, 180.0f, "°"))),
-            createColorAdjustFilter("color_rgb", "RGB Level Mixer", listOf(FilterParameter("Red", 1.0f, 0.0f, 2.0f), FilterParameter("Green", 1.0f, 0.0f, 2.0f), FilterParameter("Blue", 1.0f, 0.0f, 2.0f))),
-            createColorAdjustFilter("color_highlights", "Highlight levels", listOf(FilterParameter("Level", 0.0f, -1.0f, 1.0f))),
-            createColorAdjustFilter("color_shadows", "Shadow recovery", listOf(FilterParameter("Level", 0.0f, -1.0f, 1.0f))),
-            createColorAdjustFilter("color_temp", "Color Temperature", listOf(FilterParameter("Warmth index", 0.0f, -1.0f, 1.0f))),
+            createColorAdjustFilter("color_sepia", "Sepia Tone 2", listOf(FilterParameter("Intensity", 0.8f, 0.0f, 1.0f))),
+            createColorAdjustFilter("color_saturation", "Saturation 2", listOf(FilterParameter("Factor", 1.0f, 0.0f, 3.0f))),
+            createColorAdjustFilter("color_contrast", "Contrast Correction 2", listOf(FilterParameter("Amount", 1.0f, 0.0f, 3.0f))),
+            createColorAdjustFilter("color_brightness", "Brightness Booster 2", listOf(FilterParameter("Level", 0.0f, -100.0f, 100.0f))),
+            createColorAdjustFilter("color_exposure", "Exposure Level 2", listOf(FilterParameter("EV Amount", 0.0f, -4.0f, 4.0f))),
+            createColorAdjustFilter("color_vignette", "Vignette Focus 2", listOf(FilterParameter("Radius amount", 0.5f, 0.0f, 1.0f))),
+            createColorAdjustFilter("color_hue", "Hue Angle Shift 2", listOf(FilterParameter("Shift degrees", 0.0f, -180.0f, 180.0f, "°"))),
+            createColorAdjustFilter("color_rgb", "RGB Level Mixer 2", listOf(FilterParameter("Red", 1.0f, 0.0f, 2.0f), FilterParameter("Green", 1.0f, 0.0f, 2.0f), FilterParameter("Blue", 1.0f, 0.0f, 2.0f))),
+            createColorAdjustFilter("color_highlights", "Highlight levels 2", listOf(FilterParameter("Level", 0.0f, -1.0f, 1.0f))),
+            createColorAdjustFilter("color_shadows", "Shadow recovery 2", listOf(FilterParameter("Level", 0.0f, -1.0f, 1.0f))),
+            createColorAdjustFilter("color_temp", "Color Temperature 2", listOf(FilterParameter("Warmth index", 0.0f, -1.0f, 1.0f))),
+            createColorAdjustFilter("color_replace_color", "Replace Color 2", listOf(
+                FilterParameter("SourceRed", 1.0f, 0.0f, 1.0f),
+                FilterParameter("SourceGreen", 0.0f, 0.0f, 1.0f),
+                FilterParameter("SourceBlue", 0.0f, 0.0f, 1.0f),
+                FilterParameter("TargetRed", 0.0f, 0.0f, 1.0f),
+                FilterParameter("TargetGreen", 0.0f, 0.0f, 1.0f),
+                FilterParameter("TargetBlue", 1.0f, 0.0f, 1.0f),
+                FilterParameter("Tolerance", 0.15f, 0.0f, 1.0f)
+            )),
 
+            // ==========================================
             // Category 1: ARTISTIC EFFECTS
+            // ==========================================
+            createArtisticFilter("image_toolbox_oil_paint", "Oil Paint", listOf(FilterParameter("Brush Curvature", 12f, 2f, 40f))),
+
             createArtisticFilter("artistic_pencil", "Colored Pencil", listOf(FilterParameter("Scale", 15f, 5f, 40f))),
             createArtisticFilter("artistic_cutout", "Cutout", listOf(FilterParameter("Levels", 4f, 2f, 16f))),
             createArtisticFilter("artistic_drybrush", "Dry Brush", listOf(FilterParameter("Moisture", 3f, 1f, 10f))),
@@ -209,31 +456,39 @@ object ZenithFilterFactory {
             createArtisticFilter("artistic_sponge", "Sponge", listOf(FilterParameter("Porosity", 10f, 2f, 30f))),
             createArtisticFilter("artistic_underpainting", "Underpainting", listOf(FilterParameter("Glaze opacity", 0.6f, 0.1f, 1.0f))),
             createArtisticFilter("artistic_watercolor", "Watercolor Paint", listOf(FilterParameter("Bleeding", 10f, 2f, 30f))),
-            createArtisticFilter("artistic_oil_kuwahara", "Oil Painting Kuwahara", listOf(FilterParameter("Kuwahara Radius", 4f, 1f, 10f))),
+            createArtisticFilter("artistic_oil_kuwahara", "Oil Painting Kuwahara 2", listOf(FilterParameter("Kuwahara Radius", 4f, 1f, 10f))),
             createArtisticFilter("artistic_toon", "Comic Book Toon", listOf(FilterParameter("Quantization Levels", 5f, 2f, 10f))),
             createArtisticFilter("artistic_hologram", "Hologram Scanlines", listOf(FilterParameter("Fringe Intensity", 15f, 2f, 50f))),
 
+            // ==========================================
             // Category 2: BLUR & BLUR GALLERY
-            createBlurFilter("blur_average", "Average", emptyList()),
-            createBlurFilter("blur_gaussian", "Gaussian Blur", listOf(FilterParameter("Radius", 15f, 1f, 100f))),
-            createBlurFilter("blur_box", "Box Blur", listOf(FilterParameter("Radius", 12f, 1f, 100f))),
-            createBlurFilter("blur_lens", "Lens Blur", listOf(FilterParameter("Bokeh Radius", 18f, 1f, 80f))),
-            createBlurFilter("blur_motion", "Motion Blur", listOf(FilterParameter("Distance", 20f, 1f, 100f), FilterParameter("Angle", 45f, 0f, 360f))),
-            createBlurFilter("blur_radial", "Radial Blur", listOf(FilterParameter("Factor", 15f, 1f, 50f))),
-            createBlurFilter("blur_shape", "Shape Blur", listOf(FilterParameter("Scale", 12f, 1f, 40f))),
-            createBlurFilter("blur_smart", "Smart Blur", listOf(FilterParameter("Threshold", 25f, 1f, 100f), FilterParameter("Radius", 8f, 1f, 30f))),
-            createBlurFilter("blur_surface", "Surface Blur", listOf(FilterParameter("Threshold", 20f, 1f, 100f), FilterParameter("Radius", 6f, 1f, 25f))),
-            createBlurFilter("blur_field", "Field Blur", listOf(FilterParameter("Density", 10f, 1f, 50f))),
-            createBlurFilter("blur_iris", "Iris Blur", listOf(FilterParameter("Radius", 30f, 10f, 120f))),
-            createBlurFilter("blur_tiltshift", "Tilt-Shift", listOf(FilterParameter("Width", 50f, 10f, 200f))),
-            createBlurFilter("blur_path", "Path Blur", listOf(FilterParameter("Flow", 15f, 1f, 50f))),
-            createBlurFilter("blur_spin", "Spin Blur", listOf(FilterParameter("Speed", 20f, 1f, 90f))),
-            createBlurFilter("blur_stack", "Fast Stack Blur", listOf(FilterParameter("Blur Radius", 15f, 1f, 80f))),
-            createBlurFilter("blur_zoom", "Radial Zoom Blur", listOf(FilterParameter("Power Strength", 10f, 0f, 50f))),
-            createBlurFilter("blur_bilateral", "Bilateral filter", listOf(FilterParameter("Spatial Delta", 10f, 1f, 40f), FilterParameter("Color Delta", 25f, 5f, 100f))),
-            createBlurFilter("blur_bokeh", "Circle Highlights Bokeh", listOf(FilterParameter("Bokeh Radius", 12f, 1f, 60f), FilterParameter("Brightness Threshold", 180f, 100f, 255f))),
+            // ==========================================
+            createBlurFilter("image_toolbox_gaussian_blur", "Gaussian Blur", listOf(FilterParameter("Radius", 15f, 1f, 100f))),
+            createBlurFilter("image_toolbox_box_blur", "Box Blur", listOf(FilterParameter("Radius", 12f, 1f, 100f))),
+            createBlurFilter("image_toolbox_motion_blur", "Motion Blur", listOf(FilterParameter("Distance", 20f, 1f, 100f), FilterParameter("Angle", 45f, 0f, 360f))),
 
+            createBlurFilter("blur_average", "Average 2", emptyList()),
+            createBlurFilter("blur_gaussian", "Gaussian Blur 2", listOf(FilterParameter("Radius", 15f, 1f, 100f))),
+            createBlurFilter("blur_box", "Box Blur 2", listOf(FilterParameter("Radius", 12f, 1f, 100f))),
+            createBlurFilter("blur_lens", "Lens Blur 2", listOf(FilterParameter("Bokeh Radius", 18f, 1f, 80f))),
+            createBlurFilter("blur_motion", "Motion Blur 2", listOf(FilterParameter("Distance", 20f, 1f, 100f), FilterParameter("Angle", 45f, 0f, 360f))),
+            createBlurFilter("blur_radial", "Radial Blur 2", listOf(FilterParameter("Factor", 15f, 1f, 50f))),
+            createBlurFilter("blur_shape", "Shape Blur 2", listOf(FilterParameter("Scale", 12f, 1f, 40f))),
+            createBlurFilter("blur_smart", "Smart Blur 2", listOf(FilterParameter("Threshold", 25f, 1f, 100f), FilterParameter("Radius", 8f, 1f, 30f))),
+            createBlurFilter("blur_surface", "Surface Blur 2", listOf(FilterParameter("Threshold", 20f, 1f, 100f), FilterParameter("Radius", 6f, 1f, 25f))),
+            createBlurFilter("blur_field", "Field Blur 2", listOf(FilterParameter("Density", 10f, 1f, 50f))),
+            createBlurFilter("blur_iris", "Iris Blur 2", listOf(FilterParameter("Radius", 30f, 10f, 120f))),
+            createBlurFilter("blur_tiltshift", "Tilt-Shift 2", listOf(FilterParameter("Width", 50f, 10f, 200f))),
+            createBlurFilter("blur_path", "Path Blur 2", listOf(FilterParameter("Flow", 15f, 1f, 50f))),
+            createBlurFilter("blur_spin", "Spin Blur 2", listOf(FilterParameter("Speed", 20f, 1f, 90f))),
+            createBlurFilter("blur_stack", "Fast Stack Blur 2", listOf(FilterParameter("Blur Radius", 15f, 1f, 80f))),
+            createBlurFilter("blur_zoom", "Radial Zoom Blur 2", listOf(FilterParameter("Power Strength", 10f, 0f, 50f))),
+            createBlurFilter("blur_bilateral", "Bilateral filter 2", listOf(FilterParameter("Spatial Delta", 10f, 1f, 40f), FilterParameter("Color Delta", 25f, 5f, 100f))),
+            createBlurFilter("blur_bokeh", "Circle Highlights Bokeh 2", listOf(FilterParameter("Bokeh Radius", 12f, 1f, 60f), FilterParameter("Brightness Threshold", 180f, 100f, 255f))),
+
+            // ==========================================
             // Category 3: BRUSH STROKES
+            // ==========================================
             createBrushFilter("brush_accented", "Accented Edges", listOf(FilterParameter("Edge Width", 2f, 1f, 10f))),
             createBrushFilter("brush_angled", "Angled Strokes", listOf(FilterParameter("Angle", 45f, 0f, 180f))),
             createBrushFilter("brush_crosshatch", "Crosshatch", listOf(FilterParameter("Density", 8f, 2f, 20f))),
@@ -243,33 +498,56 @@ object ZenithFilterFactory {
             createBrushFilter("brush_sprayed", "Sprayed Strokes", listOf(FilterParameter("Scattering", 12f, 2f, 30f))),
             createBrushFilter("brush_sumie", "Sumi-e", listOf(FilterParameter("Saturation", 5f, 1f, 20f))),
 
+            // ==========================================
             // Category 4: DISTORT
-            createDistortFilter("distort_displace", "Displace", listOf(FilterParameter("Offset", 10f, 1f, 50f))),
-            createDistortFilter("distort_glass", "Glass", listOf(FilterParameter("Distortion", 12f, 1f, 40f))),
-            createDistortFilter("distort_ocean", "Ocean Ripple", listOf(FilterParameter("Wave Frequency", 15f, 2f, 50f))),
-            createDistortFilter("distort_pinch", "Pinch", listOf(FilterParameter("Amount", 0.5f, -1.0f, 1.0f))),
-            createDistortFilter("distort_polar", "Polar Coordinates", listOf(FilterParameter("Intensity", 1f, 0f, 1f))),
-            createDistortFilter("distort_ripple", "Ripple", listOf(FilterParameter("Amplitude", 12f, 1f, 50f), FilterParameter("Wavelength", 30f, 5f, 100f))),
-            createDistortFilter("distort_shear", "Shear", listOf(FilterParameter("Skew Angle", 20f, -60f, 60f))),
-            createDistortFilter("distort_spherize", "Spherize", listOf(FilterParameter("Curvature", 0.6f, 0.1f, 1.5f))),
-            createDistortFilter("distort_twirl", "Twirl", listOf(FilterParameter("Angle Degrees", 90f, -360f, 360f))),
-            createDistortFilter("distort_wave", "Wave", listOf(FilterParameter("Amplitude", 15f, 1f, 50f), FilterParameter("Wavelength", 40f, 10f, 150f))),
-            createDistortFilter("distort_zigzag", "ZigZag", listOf(FilterParameter("Frequency", 10f, 2f, 40f))),
-            createDistortFilter("distort_swirl", "Swirl Distortion", listOf(FilterParameter("Degrees", 120f, -360f, 360f), FilterParameter("Range", 0.5f, 0.1f, 1.5f))),
-            createDistortFilter("distort_bulge", "Bulge Warp", listOf(FilterParameter("Scale", 0.6f, -1.0f, 2.0f))),
-            createDistortFilter("distort_kaleidoscope", "Kaleidoscope Matrix", listOf(FilterParameter("SlicesCount", 6f, 3f, 24f))),
-            createDistortFilter("distort_glass_refract", "Refractive Waves", listOf(FilterParameter("Scale", 15f, 2f, 60f))),
+            // ==========================================
+            createDistortFilter("image_toolbox_ripple", "Ripple", listOf(FilterParameter("Amplitude", 12f, 1f, 50f), FilterParameter("Wavelength", 30f, 5f, 100f))),
+            createDistortFilter("image_toolbox_pinch", "Pinch", listOf(FilterParameter("Amount", 0.5f, -1.0f, 1.0f))),
+            createDistortFilter("image_toolbox_twirl", "Twirl", listOf(FilterParameter("Angle Degrees", 90f, -360f, 360f))),
+            createDistortFilter("image_toolbox_wave", "Wave", listOf(FilterParameter("Amplitude", 15f, 1f, 50f), FilterParameter("Wavelength", 40f, 10f, 150f))),
+            createDistortFilter("image_toolbox_spherize", "Spherize", listOf(FilterParameter("Curvature", 0.6f, 0.1f, 1.5f))),
+            createDistortFilter("image_toolbox_zigzag", "ZigZag", listOf(FilterParameter("Frequency", 10f, 2f, 40f))),
 
+            createDistortFilter("distort_displace", "Displace 2", listOf(FilterParameter("Offset", 10f, 1f, 50f))),
+            createDistortFilter("distort_glass", "Glass 2", listOf(FilterParameter("Distortion", 12f, 1f, 40f))),
+            createDistortFilter("distort_ocean", "Ocean Ripple 2", listOf(FilterParameter("Wave Frequency", 15f, 2f, 50f))),
+            createDistortFilter("distort_pinch", "Pinch 2", listOf(FilterParameter("Amount", 0.5f, -1.0f, 1.0f))),
+            createDistortFilter("distort_polar", "Polar Coordinates 2", listOf(FilterParameter("Intensity", 1f, 0f, 1f))),
+            createDistortFilter("distort_ripple", "Ripple 2", listOf(FilterParameter("Amplitude", 12f, 1f, 50f), FilterParameter("Wavelength", 30f, 5f, 100f))),
+            createDistortFilter("distort_shear", "Shear 2", listOf(FilterParameter("Skew Angle", 20f, -60f, 60f))),
+            createDistortFilter("distort_spherize", "Spherize 2", listOf(FilterParameter("Curvature", 0.6f, 0.1f, 1.5f))),
+            createDistortFilter("distort_twirl", "Twirl 2", listOf(FilterParameter("Angle Degrees", 90f, -360f, 360f))),
+            createDistortFilter("distort_wave", "Wave 2", listOf(FilterParameter("Amplitude", 15f, 1f, 50f), FilterParameter("Wavelength", 40f, 10f, 150f))),
+            createDistortFilter("distort_zigzag", "ZigZag 2", listOf(FilterParameter("Frequency", 10f, 2f, 40f))),
+            createDistortFilter("distort_swirl", "Swirl Distortion 2", listOf(FilterParameter("Degrees", 120f, -360f, 360f), FilterParameter("Range", 0.5f, 0.1f, 1.5f))),
+            createDistortFilter("distort_bulge", "Bulge Warp 2", listOf(FilterParameter("Scale", 0.6f, -1.0f, 2.0f))),
+            createDistortFilter("distort_kaleidoscope", "Kaleidoscope Matrix 2", listOf(FilterParameter("SlicesCount", 6f, 3f, 24f))),
+            createDistortFilter("distort_glass_refract", "Refractive Waves 2", listOf(FilterParameter("Scale", 15f, 2f, 60f))),
+            createDistortFilter("distort_fractal_glass", "Fractal Glass Effect 2", listOf(
+                FilterParameter("Glass Style", 1f, 0f, 5f),
+                FilterParameter("Glass Scale", 30f, 10f, 100f),
+                FilterParameter("Refraction Index", 15f, 0f, 50f),
+                FilterParameter("Frosting/Grain", 10f, 0f, 40f),
+                FilterParameter("Light Shine", 30f, 0f, 100f),
+                FilterParameter("Angle", 0f, -180f, 180f, "°")
+            )),
+
+            // ==========================================
             // Category 5: PIXELATE
-            createPixelateFilter("pixelate_halftone", "Color Halftone", listOf(FilterParameter("Dot Radius", 6f, 2f, 20f))),
-            createPixelateFilter("pixelate_crystallize", "Crystallize", listOf(FilterParameter("Cell Size", 12f, 4f, 40f))),
-            createPixelateFilter("pixelate_facet", "Facet", listOf(FilterParameter("Clustering", 8f, 2f, 30f))),
-            createPixelateFilter("pixelate_fragment", "Fragment", listOf(FilterParameter("Interleave", 6f, 2f, 20f))),
-            createPixelateFilter("pixelate_mezzotint", "Mezzotint", listOf(FilterParameter("Grain Size", 4f, 1f, 15f))),
-            createPixelateFilter("pixelate_mosaic", "Mosaic", listOf(FilterParameter("Block Size", 16f, 2f, 100f))),
-            createPixelateFilter("pixelate_pointillize", "Pointillize", listOf(FilterParameter("Dot Size", 8f, 2f, 30f))),
+            // ==========================================
+            createPixelateFilter("image_toolbox_mosaic", "Mosaic", listOf(FilterParameter("Block Size", 16f, 2f, 100f))),
 
+            createPixelateFilter("pixelate_halftone", "Color Halftone 2", listOf(FilterParameter("Dot Radius", 6f, 2f, 20f))),
+            createPixelateFilter("pixelate_crystallize", "Crystallize 2", listOf(FilterParameter("Cell Size", 12f, 4f, 40f))),
+            createPixelateFilter("pixelate_facet", "Facet 2", listOf(FilterParameter("Clustering", 8f, 2f, 30f))),
+            createPixelateFilter("pixelate_fragment", "Fragment 2", listOf(FilterParameter("Interleave", 6f, 2f, 20f))),
+            createPixelateFilter("pixelate_mezzotint", "Mezzotint 2", listOf(FilterParameter("Grain Size", 4f, 1f, 15f))),
+            createPixelateFilter("pixelate_mosaic", "Mosaic 2", listOf(FilterParameter("Block Size", 16f, 2f, 100f))),
+            createPixelateFilter("pixelate_pointillize", "Pointillize 2", listOf(FilterParameter("Dot Size", 8f, 2f, 30f))),
+
+            // ==========================================
             // Category 6: NOISE & RENDER
+            // ==========================================
             createNoiseFilter("noise_add", "Add Noise", listOf(FilterParameter("Intensity", 25f, 0f, 100f))),
             createNoiseFilter("noise_despeckle", "Despeckle", listOf(FilterParameter("Threshold", 15f, 1f, 50f))),
             createNoiseFilter("noise_dust", "Dust & Scratches", listOf(FilterParameter("Radius", 3f, 1f, 15f))),
@@ -280,7 +558,9 @@ object ZenithFilterFactory {
             createNoiseFilter("noise_lens", "Lens Flare", listOf(FilterParameter("Brightness", 60f, 10f, 150f))),
             createNoiseFilter("noise_lighting", "Lighting Effects", listOf(FilterParameter("Gloss Intensity", 12f, 1f, 40f))),
 
+            // ==========================================
             // Category 7: SKETCH & TEXTURE
+            // ==========================================
             createSketchFilter("sketch_basrelief", "Bas Relief", listOf(FilterParameter("Detail", 5f, 1f, 15f))),
             createSketchFilter("sketch_chalkcharcoal", "Chalk & Charcoal", listOf(FilterParameter("Charcoal Density", 8f, 1f, 20f))),
             createSketchFilter("sketch_charcoal", "Charcoal", listOf(FilterParameter("Smudge Level", 6f, 1f, 15f))),
@@ -302,72 +582,481 @@ object ZenithFilterFactory {
             createSketchFilter("sketch_stainedglass", "Stained Glass", listOf(FilterParameter("Pane Size", 18f, 5f, 50f))),
             createSketchFilter("sketch_texturizer", "Texturizer", listOf(FilterParameter("Scaling", 12f, 2f, 30f))),
 
+            // ==========================================
             // Category 8: STYLIZE
-            createStylizeFilter("stylize_diffuse", "Diffuse", listOf(FilterParameter("Shuffle Range", 3f, 1f, 15f))),
-            createStylizeFilter("stylize_emboss", "Emboss", listOf(FilterParameter("Height", 3f, 1f, 15f))),
-            createStylizeFilter("stylize_extrude", "Extrude", listOf(FilterParameter("Pyramid Size", 10f, 2f, 40f))),
-            createStylizeFilter("stylize_findedges", "Find Edges", emptyList()),
-            createStylizeFilter("stylize_glowingedges", "Glowing Edges", listOf(FilterParameter("Edge Width", 4f, 1f, 15f))),
-            createStylizeFilter("stylize_solarize", "Solarize", listOf(FilterParameter("Threshold", 128f, 10f, 240f))),
-            createStylizeFilter("stylize_tiles", "Tiles", listOf(FilterParameter("Tile Size", 15f, 4f, 50f))),
-            createStylizeFilter("stylize_trace", "Trace Contour", listOf(FilterParameter("LevelThreshold", 120f, 10f, 240f))),
-            createStylizeFilter("stylize_wind", "Wind", listOf(FilterParameter("Wind Distance", 18f, 2f, 60f))),
-            createStylizeFilter("stylize_oilpaint", "Oil Paint", listOf(FilterParameter("Brush Curvature", 12f, 2f, 40f))),
+            // ==========================================
+            createStylizeFilter("image_toolbox_solarize", "Solarize", listOf(FilterParameter("Threshold", 128f, 10f, 240f))),
+            createStylizeFilter("image_toolbox_find_edges", "Find Edges", emptyList()),
+            createStylizeFilter("image_toolbox_emboss", "Emboss", listOf(FilterParameter("Height", 3f, 1f, 15f))),
 
-            // Category 9: 3D MODULE
-            create3DModuleFilter(),
+            createStylizeFilter("stylize_diffuse", "Diffuse 2", listOf(FilterParameter("Shuffle Range", 3f, 1f, 15f))),
+            createStylizeFilter("stylize_emboss", "Emboss 2", listOf(FilterParameter("Height", 3f, 1f, 15f))),
+            createStylizeFilter("stylize_extrude", "Extrude 2", listOf(FilterParameter("Pyramid Size", 10f, 2f, 40f))),
+            createStylizeFilter("stylize_findedges", "Find Edges 2", emptyList()),
+            createStylizeFilter("stylize_glowingedges", "Glowing Edges 2", listOf(FilterParameter("Edge Width", 4f, 1f, 15f))),
+            createStylizeFilter("stylize_solarize", "Solarize 2", listOf(FilterParameter("Threshold", 128f, 10f, 240f))),
+            createStylizeFilter("stylize_tiles", "Tiles 2", listOf(FilterParameter("Tile Size", 15f, 4f, 50f))),
+            createStylizeFilter("stylize_trace", "Trace Contour 2", listOf(FilterParameter("LevelThreshold", 120f, 10f, 240f))),
+            createStylizeFilter("stylize_wind", "Wind 2", listOf(FilterParameter("Wind Distance", 18f, 2f, 60f))),
+            createStylizeFilter("stylize_oilpaint", "Oil Paint 2", listOf(FilterParameter("Brush Curvature", 12f, 2f, 40f))),
 
-            // Category 10: LIGHT EFFECTS
-            createIbisPaintFilter("ibis_chromatic_aberration", "Chromatic Aberration", listOf(
+            // ==========================================
+            // Category 9: LIGHT EFFECTS
+            // ==========================================
+            createIbisPaintFilter("image_toolbox_chromatic_aberration", "Chromatic Aberration", listOf(
                 FilterParameter("Distance", 16f, 0f, 150f, "px"),
                 FilterParameter("Angle", 136f, 0f, 360f, "°")
             )),
-            createIbisPaintFilter("ibis_glitch", "Glitch Distortion", listOf(
+            createIbisPaintFilter("image_toolbox_glitch", "Glitch", listOf(
                 FilterParameter("Height", 119f, 10f, 500f, "px"),
                 FilterParameter("Strength", 23f, 0f, 150f, "px"),
                 FilterParameter("Color Shift", 8f, 0f, 100f, "px")
             )),
-            createIbisPaintFilter("ibis_bloom", "Bloom Glow", listOf(
+            createIbisPaintFilter("image_toolbox_bloom", "Bloom", listOf(
                 FilterParameter("Area", 100f, 0f, 100f, "%"),
                 FilterParameter("Radius", 45f, 1f, 150f, "px"),
                 FilterParameter("Brightness", 100f, 0f, 300f, "%"),
                 FilterParameter("Balanced Blend", 25f, 0f, 100f, "%")
             )),
-            createIbisPaintFilter("ibis_cross_filter", "Cross Filter", listOf(
+            createIbisPaintFilter("image_toolbox_cross_filter", "Cross Filter", listOf(
                 FilterParameter("Count", 4f, 2f, 8f),
                 FilterParameter("Direction", 45f, 0f, 360f, "°"),
                 FilterParameter("Area", 10f, 0f, 100f, "%"),
                 FilterParameter("Brightness", 50f, 0f, 300f, "%")
             )),
-            createIbisPaintFilter("ibis_inner_glow", "Inner Glow Edge", listOf(
+            createIbisPaintFilter("image_toolbox_inner_glow", "Inner Glow", listOf(
                 FilterParameter("Radius", 104f, 5f, 300f, "px"),
                 FilterParameter("Red", 1.0f, 0f, 1f),
                 FilterParameter("Green", 1.0f, 0f, 1f),
-                FilterParameter("Blue", 1.0f, 0f, 1f)
+                FilterParameter("Blue", 1.0f, 0f, 1f),
+                FilterParameter("Hardness", 0.5f, 0f, 1f),
+                FilterParameter("BlendMode", 2f, 0f, 6f)
             )),
-            createIbisPaintFilter("ibis_bevel", "Bevel (Inner/Outer)", listOf(
+            createIbisPaintFilter("image_toolbox_bevel", "Bevel", listOf(
                 FilterParameter("Height", 20f, 1f, 100f, "px"),
                 FilterParameter("Smoothness", 45f, 0f, 100f, "px"),
                 FilterParameter("Highlight Size", 14f, 0f, 100f, "%")
             )),
-            createIbisPaintFilter("ibis_emboss", "Emboss Pro", listOf(
-                FilterParameter("Gray Scale", 0f, 0f, 1f),
-                FilterParameter("Height", 1f, 1f, 10f, "px"),
-                FilterParameter("Amount", 500f, 10f, 1000f, "%")
-            )),
-            createIbisPaintFilter("ibis_waterdrop", "Waterdrop (Rounded)", listOf(
+            createIbisPaintFilter("image_toolbox_waterdrop", "Waterdrop", listOf(
                 FilterParameter("Distance", 100f, 10f, 200f, "%"),
                 FilterParameter("Flatness", 10f, 0f, 100f, "%"),
                 FilterParameter("Height", 3f, 1f, 15f, "px")
             )),
-            createIbisPaintFilter("ibis_satin", "Satin Contour", listOf(
+            createIbisPaintFilter("image_toolbox_satin", "Satin", listOf(
                 FilterParameter("Distance", 11f, 1f, 100f, "px"),
                 FilterParameter("Opacity", 0.5f, 0f, 1f),
                 FilterParameter("Red", 0f, 0f, 1f),
                 FilterParameter("Green", 0f, 0f, 1f),
                 FilterParameter("Blue", 1f, 0f, 1f)
+            )),
+
+            createIbisPaintFilter("ibis_chromatic_aberration", "Chromatic Aberration 2", listOf(
+                FilterParameter("Distance", 16f, 0f, 150f, "px"),
+                FilterParameter("Angle", 136f, 0f, 360f, "°")
+            )),
+            createIbisPaintFilter("ibis_glitch", "Glitch Distortion 2", listOf(
+                FilterParameter("Height", 119f, 10f, 500f, "px"),
+                FilterParameter("Strength", 23f, 0f, 150f, "px"),
+                FilterParameter("Color Shift", 8f, 0f, 100f, "px")
+            )),
+            createIbisPaintFilter("ibis_bloom", "Bloom Glow 2", listOf(
+                FilterParameter("Area", 100f, 0f, 100f, "%"),
+                FilterParameter("Radius", 45f, 1f, 150f, "px"),
+                FilterParameter("Brightness", 100f, 0f, 300f, "%"),
+                FilterParameter("Balanced Blend", 25f, 0f, 100f, "%")
+            )),
+            createIbisPaintFilter("ibis_cross_filter", "Cross Filter 2", listOf(
+                FilterParameter("Count", 4f, 2f, 8f),
+                FilterParameter("Direction", 45f, 0f, 360f, "°"),
+                FilterParameter("Area", 10f, 0f, 100f, "%"),
+                FilterParameter("Brightness", 50f, 0f, 300f, "%")
+            )),
+            createIbisPaintFilter("ibis_inner_glow", "Inner Glow Edge 2", listOf(
+                FilterParameter("Radius", 104f, 5f, 300f, "px"),
+                FilterParameter("Red", 1.0f, 0f, 1f),
+                FilterParameter("Green", 1.0f, 0f, 1f),
+                FilterParameter("Blue", 1.0f, 0f, 1f),
+                FilterParameter("Hardness", 0.5f, 0f, 1f),
+                FilterParameter("BlendMode", 2f, 0f, 6f)
+            )),
+            createIbisPaintFilter("ibis_bevel", "Bevel (Inner/Outer) 2", listOf(
+                FilterParameter("Height", 20f, 1f, 100f, "px"),
+                FilterParameter("Smoothness", 45f, 0f, 100f, "px"),
+                FilterParameter("Highlight Size", 14f, 0f, 100f, "%")
+            )),
+            createIbisPaintFilter("ibis_emboss", "Emboss Pro 2", listOf(
+                FilterParameter("Gray Scale", 0f, 0f, 1f),
+                FilterParameter("Height", 1f, 1f, 10f, "px"),
+                FilterParameter("Amount", 500f, 10f, 1000f, "%")
+            )),
+            createIbisPaintFilter("ibis_waterdrop", "Waterdrop (Rounded) 2", listOf(
+                FilterParameter("Distance", 100f, 10f, 200f, "%"),
+                FilterParameter("Flatness", 10f, 0f, 100f, "%"),
+                FilterParameter("Height", 3f, 1f, 15f, "px")
+            )),
+            createIbisPaintFilter("ibis_satin", "Satin Contour 2", listOf(
+                FilterParameter("Distance", 11f, 1f, 100f, "px"),
+                FilterParameter("Opacity", 0.5f, 0f, 1f),
+                FilterParameter("Red", 0f, 0f, 1f),
+                FilterParameter("Green", 0f, 0f, 1f),
+                FilterParameter("Blue", 1f, 0f, 1f)
+            )),
+            createIbisPaintFilter("ibis_grids", "Grids Overlay", listOf(
+                FilterParameter("Columns", 8f, 1f, 1000f),
+                FilterParameter("Rows", 8f, 1f, 1000f),
+                FilterParameter("Width", 1.5f, 0.1f, 20f, "px"),
+                FilterParameter("ColorRed", 1.0f, 0.0f, 1.0f),
+                FilterParameter("ColorGreen", 1.0f, 0.0f, 1.0f),
+                FilterParameter("ColorBlue", 1.0f, 0.0f, 1.0f),
+                FilterParameter("ColorAlpha", 1.0f, 0.0f, 1.0f),
+                FilterParameter("OffsetX", 0f, -500f, 500f, "px"),
+                FilterParameter("OffsetY", 0f, -500f, 500f, "px"),
+                FilterParameter("Dashed", 0f, 0f, 1f),
+                FilterParameter("Dash Length", 15f, 2f, 100f, "px"),
+                FilterParameter("Dash Gap", 10f, 2f, 100f, "px")
+            )),
+
+            // ==========================================
+            // Category 10: HALFTONE EFFECTS
+            // ==========================================
+            createHalftoneFilter("image_toolbox_color_halftone", "Color Halftone", listOf(
+                FilterParameter("Dot Size", 8f, 2f, 30f, "px"),
+                FilterParameter("Opacity", 1.0f, 0.0f, 1.0f),
+                FilterParameter("Color Blend", 1f, 0f, 1f)
+            )),
+
+            createHalftoneFilter("halftone_standard", "Standard Halftone Dots 2", listOf(
+                FilterParameter("Dot Size", 8f, 2f, 30f, "px"),
+                FilterParameter("Opacity", 1.0f, 0.0f, 1.0f),
+                FilterParameter("Color Blend", 1f, 0f, 1f)
+            )),
+            createHalftoneFilter("halftone_shaped", "Shaped Halftone 2", listOf(
+                FilterParameter("Dot Size", 8f, 3f, 40f, "px"),
+                FilterParameter("Shape Type", 0f, 0f, 3f),
+                FilterParameter("Contrast", 1.0f, 0.1f, 3.0f),
+                FilterParameter("Angle", 45f, 0f, 180f, "°"),
+                FilterParameter("Background Style", 1f, 0f, 3f)
+            )),
+            createHalftoneFilter("halftone_classic", "Classic Dot Halftone 2", listOf(
+                FilterParameter("Dot Size", 8f, 3f, 40f, "px"),
+                FilterParameter("Contrast", 1.0f, 0.1f, 3.0f),
+                FilterParameter("Angle", 45f, 0f, 180f, "°"),
+                FilterParameter("Background Style", 1f, 0f, 3f)
+            )),
+            createHalftoneFilter("halftone_cmyk", "CMYK Press Halftone 2", listOf(
+                FilterParameter("Screen Frequency", 12f, 4f, 50f, "px"),
+                FilterParameter("Cyan Angle", 15f, 0f, 90f, "°"),
+                FilterParameter("Magenta Angle", 75f, 0f, 90f, "°"),
+                FilterParameter("Yellow Angle", 0f, 0f, 90f, "°"),
+                FilterParameter("Black Angle", 45f, 0f, 90f, "°"),
+                FilterParameter("Dot Scale", 1.0f, 0.2f, 2.0f),
+                FilterParameter("Paper Style", 1f, 0f, 2f)
+            )),
+            createHalftoneFilter("halftone_line_screen", "Linear Line Screen 2", listOf(
+                FilterParameter("Line Spacing", 8f, 3f, 30f, "px"),
+                FilterParameter("Line Angle", 45f, 0f, 180f, "°"),
+                FilterParameter("Contrast", 1.0f, 0.1f, 3.0f),
+                FilterParameter("Line Width", 1.0f, 0.1f, 3.0f),
+                FilterParameter("Line Breaks", 0f, 0f, 1f),
+                FilterParameter("Sine Wave", 0f, 0f, 1f),
+                FilterParameter("Wave Amplitude", 4f, 0f, 20f, "px"),
+                FilterParameter("Background Style", 1f, 0f, 3f)
+            )),
+            createHalftoneFilter("halftone_crosshatch", "Crosshatch Engraving 2", listOf(
+                FilterParameter("Grid Spacing", 10f, 4f, 40f, "px"),
+                FilterParameter("Primary Angle", 45f, 0f, 180f, "°"),
+                FilterParameter("Cross Angle", 90f, 30f, 120f, "°"),
+                FilterParameter("Line Thickness", 1.5f, 0.5f, 3.0f),
+                FilterParameter("Ink Type", 0f, 0f, 3f)
+            )),
+            createHalftoneFilter("halftone_newspaper", "Retro Newspaper Dots 2", listOf(
+                FilterParameter("Dot Frequency", 10f, 3f, 30f, "px"),
+                FilterParameter("Bleed Amount", 0.3f, 0f, 1.0f),
+                FilterParameter("Paper Yellowing", 0.8f, 0f, 1.0f),
+                FilterParameter("Contrast", 1.5f, 0.5f, 4.0f),
+                FilterParameter("Dot Rotation", 45f, 0f, 90f, "°")
+            )),
+            createHalftoneFilter("halftone_radial", "Manga Screen Tone 2", listOf(
+                FilterParameter("Frequency", 12f, 4f, 40f, "px"),
+                FilterParameter("Center X", 0.5f, 0.0f, 1.0f),
+                FilterParameter("Center Y", 0.5f, 0.0f, 1.0f),
+                FilterParameter("Max Dot Size", 8f, 2f, 30f, "px"),
+                FilterParameter("Fade Out", 1.0f, 0.0f, 2.0f)
+            )),
+
+            // ==========================================
+            // Category 11: PATTERN MAKER
+            // ==========================================
+            createPatternMakerFilter("pattern_maker", "Creative Pattern Maker", listOf(
+                FilterParameter("Rows", 4f, 1f, 30f),
+                FilterParameter("Columns", 4f, 1f, 30f),
+                FilterParameter("Angle", 0f, -180f, 180f, "°"),
+                FilterParameter("Scale", 1.0f, 0.1f, 5.0f),
+                FilterParameter("Opacity", 1.0f, 0.0f, 1.0f),
+                FilterParameter("X Offset", 0f, -100f, 100f, "%"),
+                FilterParameter("Y Offset", 0f, -100f, 100f, "%"),
+                FilterParameter("Background Style", 3f, 0f, 3f),
+                FilterParameter("ImageTrigger", 0f, 0f, 1000000000f)
             ))
         )
+
+        // Dynamically add all 57/58 Photoshop Non-Destructive effects!
+        com.example.studio.model.PhotoshopEffectTemplates.ALL_TYPES_BY_CATEGORY.forEach { (cat, types) ->
+            val finalCategoryName = when (cat) {
+                "Filter Gallery" -> "Artistic"
+                "Advanced & AI Engines" -> "Advanced & AI"
+                else -> cat
+            }
+            types.forEach { type ->
+                try {
+                    list.add(createPhotoshopBridgeFilter(type, finalCategoryName))
+                } catch (e: Exception) {
+                    // Ignore gracefully
+                }
+            }
+        }
+
+        return list
+    }
+
+    private fun createPhotoshopBridgeFilter(effectType: String, category: String): ZenithFilter {
+        val studioEffect = try {
+            com.example.studio.model.PhotoshopEffectTemplates.create(effectType = effectType)
+        } catch (e: Exception) {
+            com.example.studio.model.StudioEffect.GaussianBlur()
+        }
+        val name = studioEffect.name
+        val params = studioEffect.parameters.values.map { param ->
+            FilterParameter(param.name, param.value, param.rangeMin, param.rangeMax, param.unit)
+        }
+        val keyMap = studioEffect.parameters.map { it.value.name to it.key }.toMap()
+        return GPUImageZenithFilter(
+            id = "ps_${category.lowercase().replace(" ", "_").replace("(", "").replace(")", "").replace("&", "and")}_${effectType.lowercase()}",
+            name = name,
+            category = category,
+            parameters = params
+        ) { source, context, updatedParams ->
+            var currentEffect = studioEffect
+            updatedParams.forEach { param ->
+                val realKey = keyMap[param.name] ?: param.name
+                currentEffect = currentEffect.updateParameter(realKey, param.currentValue)
+            }
+            val singleEffectList = listOf(currentEffect)
+            com.example.studio.ui.applyGPUImageFilters(context, source, "bridge_layer", singleEffectList)
+        }
+    }
+
+    private fun createPatternMakerFilter(id: String, name: String, params: List<FilterParameter>): ZenithFilter {
+        return CustomZenithFilter(id, name, "Pattern Maker", params) { source, parameters ->
+            val rows = parameters.find { it.name == "Rows" }?.currentValue ?: 4f
+            val cols = parameters.find { it.name == "Columns" }?.currentValue ?: 4f
+            val angle = parameters.find { it.name == "Angle" }?.currentValue ?: 0f
+            val scale = parameters.find { it.name == "Scale" }?.currentValue ?: 1.0f
+            val opacity = parameters.find { it.name == "Opacity" }?.currentValue ?: 1.0f
+            val xOffset = parameters.find { it.name == "X Offset" }?.currentValue ?: 0f
+            val yOffset = parameters.find { it.name == "Y Offset" }?.currentValue ?: 0f
+            val bgStyle = parameters.find { it.name == "Background Style" }?.currentValue ?: 0f // Default 0: Transparent/Pattern Only (hides source mesh shape)
+            
+            // Get pattern image
+            val patternImgPath = EffectStackManager.patternImagesForFilters[id]
+            val patternBmp = if (patternImgPath != null) {
+                EffectStackManager.decodedTexturesCache.getOrPut(patternImgPath) {
+                    try {
+                        BitmapFactory.decodeFile(patternImgPath)
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            } else {
+                null
+            }
+
+            val finalPatternBmp = patternBmp ?: try {
+                Bitmap.createScaledBitmap(source, 150, 150, true)
+            } catch (e: Exception) {
+                source
+            }
+
+            val w = source.width
+            val h = source.height
+            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+
+            when (bgStyle.toInt()) {
+                1 -> canvas.drawColor(Color.WHITE)
+                2 -> canvas.drawColor(Color.BLACK)
+                3 -> canvas.drawBitmap(source, 0f, 0f, null)
+                else -> canvas.drawColor(Color.TRANSPARENT)
+            }
+
+            if (finalPatternBmp != null && finalPatternBmp.width > 0 && finalPatternBmp.height > 0) {
+                canvas.save()
+                val cx = w / 2f
+                val cy = h / 2f
+                canvas.rotate(angle, cx, cy)
+
+                val tileW = (w / cols.coerceAtLeast(1f)) * scale
+                val tileH = (h / rows.coerceAtLeast(1f)) * scale
+
+                if (tileW > 1f && tileH > 1f) {
+                    val diagonal = sqrt((w * w + h * h).toDouble()).toFloat()
+                    val gridExtent = diagonal * 2.0f
+
+                    val startX = cx - gridExtent / 2f + (xOffset / 100f * tileW)
+                    val startY = cy - gridExtent / 2f + (yOffset / 100f * tileH)
+
+                    val endX = cx + gridExtent / 2f
+                    val endY = cy + gridExtent / 2f
+
+                    val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                    paint.alpha = (opacity * 255f).toInt().coerceIn(0, 255)
+
+                    var x = startX
+                    while (x < endX) {
+                        var y = startY
+                        while (y < endY) {
+                            val destRect = RectF(x, y, x + tileW, y + tileH)
+                            canvas.drawBitmap(finalPatternBmp, null, destRect, paint)
+                            y += tileH
+                        }
+                        x += tileW
+                    }
+                }
+                canvas.restore()
+            }
+
+            out
+        }
+    }
+
+    private fun createDitheringFilter(id: String, name: String, params: List<FilterParameter>): ZenithFilter {
+        return CustomZenithFilter(id, name, "Color Adjustments", params) { source, parameters ->
+            val type = (parameters.find { it.name.startsWith("Dither") }?.currentValue ?: 0.0f).toInt()
+            val quantLevels = (parameters.find { it.name.startsWith("Quantization") }?.currentValue ?: 4.0f).toInt().coerceIn(2, 256)
+            val monochrome = (parameters.find { it.name.startsWith("Monochrome") }?.currentValue ?: 1.0f).toInt() == 1
+
+            val w = source.width
+            val h = source.height
+            val pixels = IntArray(w * h)
+            source.getPixels(pixels, 0, w, 0, 0, w, h)
+
+            fun quantizeValue(v: Int, levels: Int): Int {
+                val step = 255 / (levels - 1)
+                val bucket = (v + step / 2) / step
+                return (bucket * step).coerceIn(0, 255)
+            }
+
+            if (type == 0) {
+                val rErr = FloatArray(w * h)
+                val gErr = FloatArray(w * h)
+                val bErr = FloatArray(w * h)
+
+                val rChan = FloatArray(w * h)
+                val gChan = FloatArray(w * h)
+                val bChan = FloatArray(w * h)
+                for (i in pixels.indices) {
+                    val p = pixels[i]
+                    if (monochrome) {
+                        val g = (((p shr 16) and 0xff) * 0.299f + ((p shr 8) and 0xff) * 0.587f + (p and 0xff) * 0.114f)
+                        rChan[i] = g; gChan[i] = g; bChan[i] = g
+                    } else {
+                        rChan[i] = ((p shr 16) and 0xff).toFloat()
+                        gChan[i] = ((p shr 8) and 0xff).toFloat()
+                        bChan[i] = (p and 0xff).toFloat()
+                    }
+                }
+
+                for (y in 0 until h) {
+                    for (x in 0 until w) {
+                        val idx = y * w + x
+                        val oldR = (rChan[idx] + rErr[idx]).coerceIn(0f, 255f).toInt()
+                        val oldG = (gChan[idx] + gErr[idx]).coerceIn(0f, 255f).toInt()
+                        val oldB = (bChan[idx] + bErr[idx]).coerceIn(0f, 255f).toInt()
+
+                        val newR = quantizeValue(oldR, quantLevels)
+                        val newG = quantizeValue(oldG, quantLevels)
+                        val newB = quantizeValue(oldB, quantLevels)
+
+                        pixels[idx] = (pixels[idx] and -0x1000000) or (newR shl 16) or (newG shl 8) or newB
+
+                        val errR = oldR - newR
+                        val errG = oldG - newG
+                        val errB = oldB - newB
+
+                        fun addErr(nx: Int, ny: Int, factor: Float) {
+                            if (nx in 0 until w && ny in 0 until h) {
+                                val nidx = ny * w + nx
+                                rErr[nidx] += errR * factor
+                                gErr[nidx] += errG * factor
+                                bErr[nidx] += errB * factor
+                            }
+                        }
+                        addErr(x + 1, y, 7f / 16f)
+                        addErr(x - 1, y + 1, 3f / 16f)
+                        addErr(x, y + 1, 5f / 16f)
+                        addErr(x + 1, y + 1, 1f / 16f)
+                    }
+                }
+            } else {
+                val bayerMatrix4x4 = arrayOf(
+                    floatArrayOf( 0f,  8f,  2f, 10f),
+                    floatArrayOf(12f,  4f, 14f,  6f),
+                    floatArrayOf( 3f, 11f,  1f,  9f),
+                    floatArrayOf(15f,  7f, 13f,  5f)
+                )
+                val bayerMatrix8x8 = arrayOf(
+                    floatArrayOf( 0f, 48f, 12f, 60f,  3f, 51f, 15f, 63f),
+                    floatArrayOf(32f, 16f, 44f, 28f, 35f, 19f, 47f, 31f),
+                    floatArrayOf( 8f, 56f,  4f, 52f, 11f, 59f,  7f, 55f),
+                    floatArrayOf(40f, 24f, 36f, 20f, 43f, 27f, 39f, 23f),
+                    floatArrayOf( 2f, 50f, 14f, 62f,  1f, 49f, 13f, 61f),
+                    floatArrayOf(34f, 18f, 46f, 30f, 33f, 17f, 45f, 29f),
+                    floatArrayOf(10f, 58f,  6f, 54f,  9f, 57f,  5f, 53f),
+                    floatArrayOf(42f, 26f, 38f, 22f, 41f, 25f, 37f, 21f)
+                )
+
+                for (y in 0 until h) {
+                    for (x in 0 until w) {
+                        val idx = y * w + x
+                        val p = pixels[idx]
+                        
+                        var r = ((p shr 16) and 0xff).toFloat()
+                        var g = ((p shr 8) and 0xff).toFloat()
+                        var b = (p and 0xff).toFloat()
+
+                        if (monochrome) {
+                            val grey = r * 0.299f + g * 0.587f + b * 0.114f
+                            r = grey; g = grey; b = grey
+                        }
+
+                        val threshold = if (type == 1) {
+                            val mx = x % 4
+                            val my = y % 4
+                            (bayerMatrix4x4[my][mx] / 16f) - 0.5f
+                        } else if (type == 2) {
+                            val mx = x % 8
+                            val my = y % 8
+                            (bayerMatrix8x8[my][mx] / 64f) - 0.5f
+                        } else {
+                            (Math.random().toFloat() - 0.5f)
+                        }
+
+                        val step = 255f / (quantLevels - 1)
+                        val noise = threshold * step
+
+                        val newR = quantizeValue((r + noise).coerceIn(0f, 255f).toInt(), quantLevels)
+                        val newG = quantizeValue((g + noise).coerceIn(0f, 255f).toInt(), quantLevels)
+                        val newB = quantizeValue((b + noise).coerceIn(0f, 255f).toInt(), quantLevels)
+
+                        pixels[idx] = (p and -0x1000000) or (newR shl 16) or (newG shl 8) or newB
+                    }
+                }
+            }
+
+            val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            result.setPixels(pixels, 0, w, 0, 0, w, h)
+            result
+        }
     }
 
     private fun createColorAdjustFilter(id: String, name: String, params: List<FilterParameter>): ZenithFilter {
@@ -660,7 +1349,7 @@ object ZenithFilterFactory {
                     result.setPixels(pixels, 0, w, 0, 0, w, h)
                     result
                 }
-                "color_saturation" -> {
+                "color_saturation", "image_toolbox_saturation" -> {
                     val sat = parameters.firstOrNull()?.currentValue ?: 1.0f
                     val w = source.width
                     val h = source.height
@@ -682,7 +1371,7 @@ object ZenithFilterFactory {
                     result.setPixels(pixels, 0, w, 0, 0, w, h)
                     result
                 }
-                "color_contrast" -> {
+                "color_contrast", "image_toolbox_contrast" -> {
                     val contrast = parameters.firstOrNull()?.currentValue ?: 1.0f
                     val w = source.width
                     val h = source.height
@@ -703,7 +1392,7 @@ object ZenithFilterFactory {
                     result.setPixels(pixels, 0, w, 0, 0, w, h)
                     result
                 }
-                "color_brightness" -> {
+                "color_brightness", "image_toolbox_brightness" -> {
                     val level = parameters.firstOrNull()?.currentValue ?: 0.0f
                     val w = source.width
                     val h = source.height
@@ -721,7 +1410,7 @@ object ZenithFilterFactory {
                     result.setPixels(pixels, 0, w, 0, 0, w, h)
                     result
                 }
-                "color_exposure" -> {
+                "color_exposure", "image_toolbox_exposure" -> {
                     val ev = parameters.firstOrNull()?.currentValue ?: 0.0f
                     val factor = 2.0f.pow(ev)
                     val w = source.width
@@ -740,7 +1429,7 @@ object ZenithFilterFactory {
                     result.setPixels(pixels, 0, w, 0, 0, w, h)
                     result
                 }
-                "color_vignette" -> {
+                "color_vignette", "image_toolbox_vignette" -> {
                     val radius = parameters.firstOrNull()?.currentValue ?: 0.5f
                     val w = source.width
                     val h = source.height
@@ -769,7 +1458,7 @@ object ZenithFilterFactory {
                     result.setPixels(pixels, 0, w, 0, 0, w, h)
                     result
                 }
-                "color_hue" -> {
+                "color_hue", "image_toolbox_hue" -> {
                     val shift = parameters.firstOrNull()?.currentValue ?: 0.0f
                     val hsv = FloatArray(3)
                     val w = source.width
@@ -851,6 +1540,88 @@ object ZenithFilterFactory {
                     result.setPixels(pixels, 0, w, 0, 0, w, h)
                     result
                 }
+                "color_replace_color" -> {
+                    val sR = parameters.find { it.name == "SourceRed" }?.currentValue ?: 1.0f
+                    val sG = parameters.find { it.name == "SourceGreen" }?.currentValue ?: 0.0f
+                    val sB = parameters.find { it.name == "SourceBlue" }?.currentValue ?: 0.0f
+                    val tR = parameters.find { it.name == "TargetRed" }?.currentValue ?: 0.0f
+                    val tG = parameters.find { it.name == "TargetGreen" }?.currentValue ?: 0.0f
+                    val tB = parameters.find { it.name == "TargetBlue" }?.currentValue ?: 1.0f
+                    val tolerance = parameters.find { it.name == "Tolerance" }?.currentValue ?: 0.15f
+
+                    val w = source.width
+                    val h = source.height
+                    val pixels = IntArray(w * h)
+                    source.getPixels(pixels, 0, w, 0, 0, w, h)
+
+                    val sourceHsv = FloatArray(3)
+                    android.graphics.Color.RGBToHSV((sR * 255f).toInt(), (sG * 255f).toInt(), (sB * 255f).toInt(), sourceHsv)
+
+                    val targetHsv = FloatArray(3)
+                    android.graphics.Color.RGBToHSV((tR * 255f).toInt(), (tG * 255f).toInt(), (tB * 255f).toInt(), targetHsv)
+
+                    val pixelHsv = FloatArray(3)
+                    val resultHsv = FloatArray(3)
+
+                    // Tolerance translates to Hue angle range (max distance 180 degrees)
+                    val hueToleranceDegrees = tolerance * 180f
+
+                    for (i in pixels.indices) {
+                        val p = pixels[i]
+                        val a = p ushr 24
+                        if (a == 0) continue
+
+                        val r = (p shr 16) and 0xff
+                        val g = (p shr 8) and 0xff
+                        val b = p and 0xff
+
+                        android.graphics.Color.RGBToHSV(r, g, b, pixelHsv)
+
+                        // 1. Shortest angular distance between hues
+                        var diffH = kotlin.math.abs(pixelHsv[0] - sourceHsv[0])
+                        if (diffH > 180f) {
+                            diffH = 360f - diffH
+                        }
+
+                        // 2. Distance in saturation and value to prevent gray/neutral matches
+                        val diffS = kotlin.math.abs(pixelHsv[1] - sourceHsv[1])
+                        val diffV = kotlin.math.abs(pixelHsv[2] - sourceHsv[2])
+
+                        val hDist = if (hueToleranceDegrees > 0f) diffH / hueToleranceDegrees else if (diffH == 0f) 0f else 100f
+                        val sDist = if (tolerance > 0f) diffS / tolerance else if (diffS == 0f) 0f else 100f
+                        
+                        if (hDist <= 1.0f && sDist <= 1.5f) {
+                            val factor = (1.0f - maxOf(hDist, sDist * 0.5f)).coerceIn(0f, 1f)
+
+                            // Replace Hue and Saturation, preserve the pixel's luminosity/brightness (Value)
+                            resultHsv[0] = targetHsv[0]
+                            resultHsv[1] = targetHsv[1]
+                            resultHsv[2] = pixelHsv[2]
+
+                            val interpS = pixelHsv[1] * (1f - factor) + resultHsv[1] * factor
+                            val interpV = pixelHsv[2] * (1f - factor) + resultHsv[2] * factor
+
+                            var interpH = pixelHsv[0]
+                            if (factor > 0f) {
+                                val h0 = pixelHsv[0]
+                                val h1 = resultHsv[0]
+                                var d = h1 - h0
+                                if (d > 180f) {
+                                    d -= 360f
+                                } else if (d < -180f) {
+                                    d += 360f
+                                }
+                                interpH = (h0 + d * factor + 360f) % 360f
+                            }
+
+                            val outHsv = floatArrayOf(interpH, interpS, interpV)
+                            pixels[i] = android.graphics.Color.HSVToColor(a, outHsv)
+                        }
+                    }
+                    val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    result.setPixels(pixels, 0, w, 0, 0, w, h)
+                    result
+                }
                 "color_temp" -> {
                     val warmth = parameters.firstOrNull()?.currentValue ?: 0.0f
                     val w = source.width
@@ -921,7 +1692,7 @@ object ZenithFilterFactory {
                     val bleeding = (parameters.firstOrNull()?.currentValue ?: 10f).toInt()
                     applyBoxBlur(source, bleeding / 2)
                 }
-                "artistic_oil_kuwahara" -> {
+                "artistic_oil_kuwahara", "image_toolbox_oil_paint" -> {
                     val radius = parameters.firstOrNull()?.currentValue?.toInt() ?: 4
                     applyColorQuantizeAndCluster(applyBoxBlur(source, radius), 6)
                 }
@@ -983,7 +1754,7 @@ object ZenithFilterFactory {
     }
 
     private fun createBlurFilter(id: String, name: String, params: List<FilterParameter>): ZenithFilter {
-        return CustomZenithFilter(id, name, "Blur & Blur Gallery", params) { source, parameters ->
+        return GPUImageZenithFilter(id, name, "Blur & Blur Gallery", params) { source, context, parameters ->
             when (id) {
                 "blur_average" -> {
                     val w = source.width
@@ -1009,18 +1780,9 @@ object ZenithFilterFactory {
                     result.eraseColor(avgColor)
                     result
                 }
-                "blur_gaussian", "blur_box" -> {
-                    val r = parameters.firstOrNull()?.currentValue?.toInt() ?: 12
-                    applyBoxBlur(source, r)
-                }
-                "blur_motion" -> {
-                    val distance = (parameters.firstOrNull()?.currentValue ?: 20f).toInt().coerceIn(1, 100)
-                    applyCoordinateDistortion(source) { x, y, _, _ ->
-                        // Sample along directional angle
-                        val stepX = x - distance / 2f
-                        val stepY = y - distance / 2f
-                        Pair(stepX, stepY)
-                    }
+                "blur_gaussian", "blur_box", "image_toolbox_gaussian_blur", "image_toolbox_box_blur" -> {
+                    val r = parameters.firstOrNull()?.currentValue ?: 15f
+                    applyBoxBlur(source, r.toInt().coerceAtLeast(1))
                 }
                 "blur_radial" -> {
                     val factor = parameters.firstOrNull()?.currentValue ?: 15f
@@ -1038,8 +1800,8 @@ object ZenithFilterFactory {
                     }
                 }
                 "blur_stack", "blur_fast" -> {
-                    val radius = (parameters.find { it.name == "Blur Radius" }?.currentValue ?: 15f).toInt()
-                    applyBoxBlur(source, radius)
+                    val radius = parameters.find { it.name == "Blur Radius" }?.currentValue ?: 15f
+                    applyBoxBlur(source, radius.toInt().coerceAtLeast(1))
                 }
                 "blur_zoom" -> {
                     val strength = parameters.find { it.name == "Power Strength" }?.currentValue ?: 10f
@@ -1188,16 +1950,35 @@ object ZenithFilterFactory {
     }
 
     private fun createDistortFilter(id: String, name: String, params: List<FilterParameter>): ZenithFilter {
+        if (id == "distort_fractal_glass") {
+            return GPUImageZenithFilter(id, name, "Distort", params) { source, context, parameters ->
+                val style = parameters.find { it.name == "Glass Style" }?.currentValue ?: 1f
+                val scale = parameters.find { it.name == "Glass Scale" }?.currentValue ?: 30f
+                val refraction = parameters.find { it.name == "Refraction Index" }?.currentValue ?: 15f
+                val frosting = parameters.find { it.name == "Frosting/Grain" }?.currentValue ?: 10f
+                val shine = parameters.find { it.name == "Light Shine" }?.currentValue ?: 30f
+                val angle = parameters.find { it.name == "Angle" }?.currentValue ?: 0f
+
+                applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageFractalGlassFilter(
+                    style = style,
+                    scale = scale,
+                    refraction = refraction,
+                    frosting = frosting,
+                    shine = shine,
+                    angle = angle
+                ))
+            }
+        }
         return CustomZenithFilter(id, name, "Distort", params) { source, parameters ->
             when (id) {
-                "distort_ripple" -> {
+                "distort_ripple", "image_toolbox_ripple" -> {
                     val amp = parameters.find { it.name == "Amplitude" }?.currentValue ?: 12f
                     val wave = parameters.find { it.name == "Wavelength" }?.currentValue ?: 30f
                     applyCoordinateDistortion(source) { x, y, _, _ ->
                         Pair(x + sin(y / wave) * amp, y)
                     }
                 }
-                "distort_twirl" -> {
+                "distort_twirl", "image_toolbox_twirl" -> {
                     val angleDeg = parameters.firstOrNull()?.currentValue ?: 90f
                     val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
                     applyCoordinateDistortion(source) { x, y, width, height ->
@@ -1216,7 +1997,7 @@ object ZenithFilterFactory {
                         }
                     }
                 }
-                "distort_pinch" -> {
+                "distort_pinch", "image_toolbox_pinch" -> {
                     val amount = parameters.firstOrNull()?.currentValue ?: 0.5f
                     applyCoordinateDistortion(source) { x, y, width, height ->
                         val cx = width / 2f
@@ -1237,7 +2018,7 @@ object ZenithFilterFactory {
                         }
                     }
                 }
-                "distort_spherize" -> {
+                "distort_spherize", "image_toolbox_spherize" -> {
                     val curvature = parameters.firstOrNull()?.currentValue ?: 0.6f
                     applyCoordinateDistortion(source) { x, y, width, height ->
                         val cx = width / 2f
@@ -1260,7 +2041,7 @@ object ZenithFilterFactory {
                         Pair(x + (y - height / 2f) * factor, y)
                     }
                 }
-                "distort_wave" -> {
+                "distort_wave", "image_toolbox_wave" -> {
                     val amp = parameters.find { it.name == "Amplitude" }?.currentValue ?: 15f
                     val wave = parameters.find { it.name == "Wavelength" }?.currentValue ?: 40f
                     applyCoordinateDistortion(source) { x, y, _, _ ->
@@ -1327,6 +2108,22 @@ object ZenithFilterFactory {
                         Pair(x + sin(y / 10f) * scale, y + cos(x / 10f) * scale)
                     }
                 }
+                "distort_zigzag", "image_toolbox_zigzag" -> {
+                    val freq = parameters.find { it.name == "Frequency" }?.currentValue ?: 10f
+                    applyCoordinateDistortion(source) { x, y, width, height ->
+                        val cx = width / 2f
+                        val cy = height / 2f
+                        val dx = x - cx
+                        val dy = y - cy
+                        val r = sqrt(dx * dx + dy * dy)
+                        val theta = atan2(dy, dx)
+                        val offset = sin(r / freq) * 10f
+                        Pair(cx + r * cos(theta + offset), cy + r * sin(theta + offset))
+                    }
+                }
+                "distort_fractal_glass" -> {
+                    applyFractalGlass(source, parameters)
+                }
                 else -> {
                     applyCoordinateDistortion(source) { x, y, _, _ ->
                         // Tiny baseline distortion (glass / ocean ripple noise)
@@ -1340,7 +2137,7 @@ object ZenithFilterFactory {
     private fun createPixelateFilter(id: String, name: String, params: List<FilterParameter>): ZenithFilter {
         return CustomZenithFilter(id, name, "Pixelate", params) { source, parameters ->
             when (id) {
-                "pixelate_mosaic" -> {
+                "pixelate_mosaic", "image_toolbox_mosaic" -> {
                     val size = parameters.firstOrNull()?.currentValue?.toInt() ?: 16
                     applyGridTransformer(source, size) { pixels ->
                         if (pixels.isEmpty()) return@applyGridTransformer Color.BLACK
@@ -2049,17 +2846,17 @@ object ZenithFilterFactory {
                     val w = parameters.firstOrNull()?.currentValue ?: 4f
                     applySobel(source, 150f - w * 10f, Color.GREEN, Color.BLACK, drawEdgesOnly = true)
                 }
-                "stylize_findedges" -> {
+                "stylize_findedges", "image_toolbox_find_edges" -> {
                     applySobel(source, 90f, Color.BLUE, Color.WHITE, drawEdgesOnly = true)
                 }
-                "stylize_emboss" -> {
+                "stylize_emboss", "image_toolbox_emboss" -> {
                     val height = parameters.firstOrNull()?.currentValue ?: 3f
                     val edge = applySobel(source, 80f, Color.GRAY, colorQuantize(Color.GRAY, 2), drawEdgesOnly = true)
                     applyCoordinateDistortion(edge) { x, y, _, _ ->
                         Pair(x + height, y + height)
                     }
                 }
-                "stylize_solarize" -> {
+                "stylize_solarize", "image_toolbox_solarize" -> {
                     val thresh = (parameters.firstOrNull()?.currentValue ?: 128f).toInt()
                     val w = source.width
                     val h = source.height
@@ -2132,107 +2929,6 @@ object ZenithFilterFactory {
         }
     }
 
-    private fun create3DModuleFilter(): ZenithFilter {
-        return GPUImageZenithFilter(
-            id = "3d_raster_extrude",
-            name = "3D Raster Extrude",
-            category = "3D Module",
-            parameters = listOf(
-                FilterParameter("Extrusion Depth", 120f, 0f, 300f, "px"),
-                FilterParameter("Rotation X", 45f, 0f, 360f, "°"),
-                FilterParameter("Rotation Y", 30f, 0f, 360f, "°"),
-                FilterParameter("Rotation Z", 0f, 0f, 360f, "°"),
-                FilterParameter("Bevel Radius", 8f, 0f, 50f, "px"),
-                FilterParameter("Bevel Segments", 4f, 1f, 10f),
-                FilterParameter("Specular Intensity", 0.8f, 0f, 1f),
-                FilterParameter("Roughness", 0.2f, 0.01f, 1f),
-                FilterParameter("Ambient Occlusion", 0.5f, 0f, 1f),
-                FilterParameter("Metallic", 0.0f, 0f, 1f),
-                FilterParameter("Light Type", 1f, 0f, 2f), // 0=FLAT, 1=DIRECTIONAL, 2=POINT
-                FilterParameter("Light Azimuth", 135f, 0f, 360f, "°"),
-                FilterParameter("Light Elevation", 45f, -90f, 90f, "°"),
-                FilterParameter("Light Intensity", 1.2f, 0f, 5f),
-                FilterParameter("Light Color R", 255f, 0f, 255f),
-                FilterParameter("Light Color G", 255f, 0f, 255f),
-                FilterParameter("Light Color B", 255f, 0f, 255f),
-                FilterParameter("UV Scale X", 1.0f, 0.1f, 10f),
-                FilterParameter("UV Scale Y", 1.0f, 0.1f, 10f),
-                FilterParameter("UV Offset X", 0.0f, -5f, 5f),
-                FilterParameter("UV Offset Y", 0.0f, -5f, 5f),
-                FilterParameter("Use Texture", 0.0f, 0f, 1f)
-            )
-        ) { source, context, parameters ->
-            val depth = parameters.find { it.name == "Extrusion Depth" }?.currentValue ?: 120f
-            val rx = parameters.find { it.name == "Rotation X" }?.currentValue ?: 45f
-            val ry = parameters.find { it.name == "Rotation Y" }?.currentValue ?: 30f
-            val rz = parameters.find { it.name == "Rotation Z" }?.currentValue ?: 0f
-            val bevelRadius = parameters.find { it.name == "Bevel Radius" }?.currentValue ?: 8f
-            val bevelSegments = parameters.find { it.name == "Bevel Segments" }?.currentValue ?: 4f
-            val specularIntensity = parameters.find { it.name == "Specular Intensity" }?.currentValue ?: 0.8f
-            val roughness = parameters.find { it.name == "Roughness" }?.currentValue ?: 0.2f
-            val ao = parameters.find { it.name == "Ambient Occlusion" }?.currentValue ?: 0.5f
-            val metallic = parameters.find { it.name == "Metallic" }?.currentValue ?: 0.0f
-            val lightType = parameters.find { it.name == "Light Type" }?.currentValue ?: 1f
-            val azimuth = parameters.find { it.name == "Light Azimuth" }?.currentValue ?: 135f
-            val elevation = parameters.find { it.name == "Light Elevation" }?.currentValue ?: 45f
-            val intensity = parameters.find { it.name == "Light Intensity" }?.currentValue ?: 1.2f
-            val lightR = parameters.find { it.name == "Light Color R" }?.currentValue ?: 255f
-            val lightG = parameters.find { it.name == "Light Color G" }?.currentValue ?: 255f
-            val lightB = parameters.find { it.name == "Light Color B" }?.currentValue ?: 255f
-            val scaleX = parameters.find { it.name == "UV Scale X" }?.currentValue ?: 1.0f
-            val scaleY = parameters.find { it.name == "UV Scale Y" }?.currentValue ?: 1.0f
-            val offsetX = parameters.find { it.name == "UV Offset X" }?.currentValue ?: 0.0f
-            val offsetY = parameters.find { it.name == "UV Offset Y" }?.currentValue ?: 0.0f
-            val useTex = parameters.find { it.name == "Use Texture" }?.currentValue ?: 0.0f
-            
-            val normalizer = source.width.toFloat().coerceAtLeast(100f)
-            
-            // Try loading material texture
-            var textureBmp: Bitmap? = null
-            if (useTex > 0.5f) {
-                val layerId = EffectStackManager.currentLayerId
-                val texPath = if (layerId != null) EffectStackManager.texturesByLayer[layerId] else null
-                if (texPath != null) {
-                    try {
-                        textureBmp = BitmapFactory.decodeFile(texPath)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
-
-            applySingleGPUImageFilter(
-                context,
-                source,
-                com.example.studio.ui.GPUImageRasterExtrudeFilter(
-                    rotX = rx,
-                    rotY = ry,
-                    rotZ = rz,
-                    depth = depth / normalizer,
-                    bevelRadius = bevelRadius,
-                    bevelSegments = bevelSegments,
-                    specularIntensity = specularIntensity,
-                    roughness = roughness,
-                    ambientOcclusion = ao,
-                    metallic = metallic,
-                    lightType = lightType,
-                    lightAzimuth = azimuth,
-                    lightElevation = elevation,
-                    lightIntensity = intensity,
-                    lightColorR = lightR,
-                    lightColorG = lightG,
-                    lightColorB = lightB,
-                    useTexture = useTex,
-                    uvScaleX = scaleX,
-                    uvScaleY = scaleY,
-                    uvOffsetX = offsetX,
-                    uvOffsetY = offsetY,
-                    textureBitmap = textureBmp
-                )
-            )
-        }
-    }
-
     private fun createIbisPaintFilter(
         id: String,
         name: String,
@@ -2240,39 +2936,53 @@ object ZenithFilterFactory {
     ): ZenithFilter {
         return GPUImageZenithFilter(id, name, "Light Effects", params) { source, context, parameters ->
             when (id) {
-                "ibis_chromatic_aberration" -> {
+                "ibis_chromatic_aberration", "image_toolbox_chromatic_aberration" -> {
                     val distance = parameters.find { it.name == "Distance" }?.currentValue ?: 16f
                     val angle = parameters.find { it.name == "Angle" }?.currentValue ?: 136f
-                    applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageChromaticAberrationFilter(distance, angle))
+                    try {
+                        applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageChromaticAberrationFilter(distance, angle))
+                    } catch (e: Throwable) {
+                        applyChromaticAberrationCPU(source, distance, angle)
+                    }
                 }
-                "ibis_glitch" -> {
+                "ibis_glitch", "image_toolbox_glitch" -> {
                     val height = parameters.find { it.name == "Height" }?.currentValue ?: 119f
                     val strength = parameters.find { it.name == "Strength" }?.currentValue ?: 23f
                     val colorShift = parameters.find { it.name == "Color Shift" }?.currentValue ?: 8f
-                    applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageGlitchFilter(height, strength, colorShift))
+                    try {
+                        applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageGlitchFilter(height, strength, colorShift))
+                    } catch (e: Throwable) {
+                        applyGlitchCPU(source, height, strength, colorShift)
+                    }
                 }
-                "ibis_bloom" -> {
+                "ibis_bloom", "image_toolbox_bloom" -> {
                     val area = parameters.find { it.name == "Area" }?.currentValue ?: 100f
                     val radius = parameters.find { it.name == "Radius" }?.currentValue ?: 45f
                     val brightness = parameters.find { it.name == "Brightness" }?.currentValue ?: 100f
                     val balanced = parameters.find { it.name == "Balanced Blend" }?.currentValue ?: 25f
-                    applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageBloomFilter(area, radius, brightness, balanced))
+                    try {
+                        applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageBloomFilter(area, radius, brightness, balanced))
+                    } catch (e: Throwable) {
+                        applyBloomCPU(source, area, radius, brightness)
+                    }
                 }
-                "ibis_cross_filter" -> {
+                "ibis_cross_filter", "image_toolbox_cross_filter" -> {
                     val count = parameters.find { it.name == "Count" }?.currentValue ?: 4f
                     val direction = parameters.find { it.name == "Direction" }?.currentValue ?: 45f
                     val area = parameters.find { it.name == "Area" }?.currentValue ?: 10f
                     val brightness = parameters.find { it.name == "Brightness" }?.currentValue ?: 50f
                     applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageCrossFilterFilter(count, direction, area, brightness))
                 }
-                "ibis_inner_glow" -> {
+                "ibis_inner_glow", "image_toolbox_inner_glow" -> {
                     val radius = parameters.find { it.name == "Radius" }?.currentValue ?: 104f
                     val r = parameters.find { it.name == "Red" }?.currentValue ?: 1f
                     val g = parameters.find { it.name == "Green" }?.currentValue ?: 1f
                     val b = parameters.find { it.name == "Blue" }?.currentValue ?: 1f
-                    applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageInnerGlowFilter(radius, r, g, b))
+                    val hardness = parameters.find { it.name == "Hardness" }?.currentValue ?: 0.5f
+                    val blendMode = parameters.find { it.name == "BlendMode" }?.currentValue ?: 2.0f
+                    applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageInnerGlowFilter(radius, r, g, b, hardness, blendMode))
                 }
-                "ibis_bevel" -> {
+                "ibis_bevel", "image_toolbox_bevel" -> {
                     val h = parameters.find { it.name == "Height" }?.currentValue ?: 20f
                     val s = parameters.find { it.name == "Smoothness" }?.currentValue ?: 45f
                     val hs = parameters.find { it.name == "Highlight Size" }?.currentValue ?: 14f
@@ -2284,19 +2994,64 @@ object ZenithFilterFactory {
                     val amt = parameters.find { it.name == "Amount" }?.currentValue ?: 500f
                     applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageEmboss2Filter(gs, h, amt))
                 }
-                "ibis_waterdrop" -> {
+                "ibis_waterdrop", "image_toolbox_waterdrop" -> {
                     val dist = parameters.find { it.name == "Distance" }?.currentValue ?: 100f
                     val flat = parameters.find { it.name == "Flatness" }?.currentValue ?: 10f
                     val h = parameters.find { it.name == "Height" }?.currentValue ?: 3f
                     applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageWaterdropFilter(dist, flat, h))
                 }
-                "ibis_satin" -> {
+                "ibis_satin", "image_toolbox_satin" -> {
                     val dist = parameters.find { it.name == "Distance" }?.currentValue ?: 11f
                     val op = parameters.find { it.name == "Opacity" }?.currentValue ?: 0.5f
                     val r = parameters.find { it.name == "Red" }?.currentValue ?: 0f
                     val g = parameters.find { it.name == "Green" }?.currentValue ?: 0f
                     val b = parameters.find { it.name == "Blue" }?.currentValue ?: 1f
                     applySingleGPUImageFilter(context, source, com.example.studio.ui.GPUImageSatinFilter(dist, op, r, g, b))
+                }
+                "ibis_grids" -> {
+                    val columns = (parameters.find { it.name == "Columns" }?.currentValue ?: 8f).toInt().coerceIn(1, 1000)
+                    val rows = (parameters.find { it.name == "Rows" }?.currentValue ?: 8f).toInt().coerceIn(1, 1000)
+                    val width = parameters.find { it.name == "Width" }?.currentValue ?: 1.5f
+                    val r = parameters.find { it.name == "ColorRed" }?.currentValue ?: 1.0f
+                    val g = parameters.find { it.name == "ColorGreen" }?.currentValue ?: 1.0f
+                    val b = parameters.find { it.name == "ColorBlue" }?.currentValue ?: 1.0f
+                    val a = parameters.find { it.name == "ColorAlpha" }?.currentValue ?: 1.0f
+
+                    val offsetX = parameters.find { it.name == "OffsetX" }?.currentValue ?: 0f
+                    val offsetY = parameters.find { it.name == "OffsetY" }?.currentValue ?: 0f
+                    val dashed = (parameters.find { it.name == "Dashed" }?.currentValue ?: 0f) > 0.5f
+                    val dashLength = parameters.find { it.name == "Dash Length" }?.currentValue ?: 15f
+                    val dashGap = parameters.find { it.name == "Dash Gap" }?.currentValue ?: 10f
+
+                    val mutableBmp = if (source.isMutable) {
+                        source
+                    } else {
+                        source.copy(Bitmap.Config.ARGB_8888, true)
+                    }
+                    val canvas = Canvas(mutableBmp)
+                    val paint = Paint().apply {
+                        color = Color.argb((a * 255).toInt(), (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
+                        style = Paint.Style.STROKE
+                        strokeWidth = width
+                        if (dashed && dashLength > 0f && dashGap > 0f) {
+                            pathEffect = DashPathEffect(floatArrayOf(dashLength, dashGap), 0f)
+                        }
+                    }
+                    val colStep = mutableBmp.width.toFloat() / columns
+                    for (i in 0..columns) {
+                        val x = i * colStep + offsetX
+                        if (x in 0f..mutableBmp.width.toFloat()) {
+                            canvas.drawLine(x, 0f, x, mutableBmp.height.toFloat(), paint)
+                        }
+                    }
+                    val rowStep = mutableBmp.height.toFloat() / rows
+                    for (j in 0..rows) {
+                        val y = j * rowStep + offsetY
+                        if (y in 0f..mutableBmp.height.toFloat()) {
+                            canvas.drawLine(0f, y, mutableBmp.width.toFloat(), y, paint)
+                        }
+                    }
+                    mutableBmp
                 }
                 else -> source
             }
@@ -2563,5 +3318,1198 @@ object ZenithFilterFactory {
         paint.colorFilter = null
         outCanvas.drawBitmap(source, 0f, 0f, paint)
         return out
+    }
+
+    private fun createHalftoneFilter(
+        id: String,
+        name: String,
+        params: List<FilterParameter>
+    ): ZenithFilter {
+        return CustomZenithFilter(id, name, "Halftone Effects", params) { source, parameters ->
+            when (id) {
+                "halftone_standard", "image_toolbox_color_halftone" -> applyStandardHalftone(source, parameters)
+                "halftone_shaped" -> applyShapedHalftone(source, parameters)
+                "halftone_classic" -> applyClassicHalftone(source, parameters)
+                "halftone_cmyk" -> applyCMYKHalftone(source, parameters)
+                "halftone_line_screen" -> applyLineScreenHalftone(source, parameters)
+                "halftone_crosshatch" -> applyCrosshatchHalftone(source, parameters)
+                "halftone_newspaper" -> applyNewspaperHalftone(source, parameters)
+                "halftone_radial" -> applyRadialHalftone(source, parameters)
+                else -> source
+            }
+        }
+    }
+
+    private fun applyStandardHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val dotSize = parameters.find { it.name == "Dot Size" }?.currentValue ?: 8f
+        val opacity = parameters.find { it.name == "Opacity" }?.currentValue ?: 1.0f
+        val colorBlend = parameters.find { it.name == "Color Blend" }?.currentValue ?: 1.0f
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(Color.WHITE)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        val step = dotSize.coerceAtLeast(3f)
+        var finalStep = step
+        while ((w / finalStep) * (h / finalStep) > 30000) {
+            finalStep += 1f
+        }
+
+        val stepI = finalStep.toInt().coerceAtLeast(3)
+        for (cy in 0 until h step stepI) {
+            for (cx in 0 until w step stepI) {
+                val srcX = cx + stepI / 2
+                val srcY = cy + stepI / 2
+                if (srcX in 0 until w && srcY in 0 until h) {
+                    val px = source.getPixel(srcX, srcY)
+                    val r = (px shr 16) and 0xff
+                    val g = (px shr 8) and 0xff
+                    val b = px and 0xff
+                    val a = (px ushr 24) and 0xff
+                    
+                    if (a == 0) continue
+                    
+                    val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                    val normLuma = luma / 255.0f
+                    val dR = (finalStep / 2f) * (1.0f - normLuma)
+                    
+                    if (dR > 0.1f) {
+                        val blendedColor = if (colorBlend >= 1.0f) {
+                            px
+                        } else {
+                            val blendedR = (luma * (1f - colorBlend) + r * colorBlend).toInt().coerceIn(0, 255)
+                            val blendedG = (luma * (1f - colorBlend) + g * colorBlend).toInt().coerceIn(0, 255)
+                            val blendedB = (luma * (1f - colorBlend) + b * colorBlend).toInt().coerceIn(0, 255)
+                            Color.argb((a * opacity).toInt().coerceIn(0, 255), blendedR, blendedG, blendedB)
+                        }
+                        
+                        paint.color = blendedColor
+                        if (opacity < 1.0f) {
+                            paint.alpha = (a * opacity * ((paint.color ushr 24) / 255f)).toInt().coerceIn(0, 255)
+                        }
+                        canvas.drawCircle(cx.toFloat() + finalStep / 2f, cy.toFloat() + finalStep / 2f, dR, paint)
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    private fun applyShapedHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val dotSize = parameters.find { it.name == "Dot Size" }?.currentValue ?: 8f
+        val shapeType = (parameters.find { it.name == "Shape Type" }?.currentValue ?: 0f).toInt()
+        val contrast = parameters.find { it.name == "Contrast" }?.currentValue ?: 1.0f
+        val angleDeg = parameters.find { it.name == "Angle" }?.currentValue ?: 45f
+        val bgStyle = (parameters.find { it.name == "Background Style" }?.currentValue ?: 1f).toInt()
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+
+        when (bgStyle) {
+            1 -> canvas.drawColor(Color.WHITE)
+            2 -> canvas.drawColor(Color.BLACK)
+            3 -> canvas.drawBitmap(source, 0f, 0f, null)
+            else -> { /* transparent */ }
+        }
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        canvas.save()
+        canvas.rotate(angleDeg, w / 2f, h / 2f)
+
+        val center = PointF(w / 2f, h / 2f)
+        val radiusBounding = sqrt((w * w + h * h).toFloat()) / 2f
+
+        val step = dotSize.coerceAtLeast(3f)
+        var finalStep = step
+        while (((radiusBounding * 2) / finalStep) * ((radiusBounding * 2) / finalStep) > 30000) {
+            finalStep += 1f
+        }
+
+        val startX = center.x - radiusBounding
+        val endX = center.x + radiusBounding
+        val startY = center.y - radiusBounding
+        val endY = center.y + radiusBounding
+
+        val matrix = Matrix()
+        matrix.setRotate(-angleDeg, w / 2f, h / 2f)
+
+        val pts = FloatArray(2)
+
+        val stepI = finalStep.toInt().coerceAtLeast(3)
+        for (cy in startY.toInt()..endY.toInt() step stepI) {
+            for (cx in startX.toInt()..endX.toInt() step stepI) {
+                pts[0] = cx.toFloat() + finalStep / 2f
+                pts[1] = cy.toFloat() + finalStep / 2f
+                matrix.mapPoints(pts)
+                val srcX = pts[0].toInt()
+                val srcY = pts[1].toInt()
+                
+                if (srcX in 0 until w && srcY in 0 until h) {
+                    val px = source.getPixel(srcX, srcY)
+                    val r = (px shr 16) and 0xff
+                    val g = (px shr 8) and 0xff
+                    val b = px and 0xff
+                    val a = (px ushr 24) and 0xff
+                    
+                    if (a == 0) continue
+                    
+                    val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                    val normLuma = luma / 255.0f
+                    val adjustedLuma = ((normLuma - 0.5f) * contrast + 0.5f).coerceIn(0f, 1f)
+                    
+                    val dR = (finalStep / 2f) * (1.0f - adjustedLuma)
+                    if (dR > 0.1f) {
+                        paint.color = px
+                        val centerXPos = cx.toFloat() + finalStep / 2f
+                        val centerYPos = cy.toFloat() + finalStep / 2f
+                        when (shapeType) {
+                            0 -> { // Circle
+                                canvas.drawCircle(centerXPos, centerYPos, dR, paint)
+                            }
+                            1 -> { // Square
+                                canvas.drawRect(
+                                    centerXPos - dR,
+                                    centerYPos - dR,
+                                    centerXPos + dR,
+                                    centerYPos + dR,
+                                    paint
+                                )
+                            }
+                            2 -> { // Diamond
+                                val path = Path().apply {
+                                    moveTo(centerXPos, centerYPos - dR)
+                                    lineTo(centerXPos + dR, centerYPos)
+                                    lineTo(centerXPos, centerYPos + dR)
+                                    lineTo(centerXPos - dR, centerYPos)
+                                    close()
+                                }
+                                canvas.drawPath(path, paint)
+                            }
+                            3 -> { // Cross
+                                val wW = dR * 0.35f
+                                canvas.drawRect(centerXPos - dR, centerYPos - wW, centerXPos + dR, centerYPos + wW, paint)
+                                canvas.drawRect(centerXPos - wW, centerYPos - dR, centerXPos + wW, centerYPos + dR, paint)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        canvas.restore()
+        return out
+    }
+
+    private fun applyClassicHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val dotSize = parameters.find { it.name == "Dot Size" }?.currentValue ?: 8f
+        val contrast = parameters.find { it.name == "Contrast" }?.currentValue ?: 1.0f
+        val angleDeg = parameters.find { it.name == "Angle" }?.currentValue ?: 45f
+        val bgStyle = (parameters.find { it.name == "Background Style" }?.currentValue ?: 1f).toInt()
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+
+        when (bgStyle) {
+            1 -> canvas.drawColor(Color.WHITE)
+            2 -> canvas.drawColor(Color.BLACK)
+            3 -> canvas.drawBitmap(source, 0f, 0f, null)
+            else -> { /* transparent */ }
+        }
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        canvas.save()
+        canvas.rotate(angleDeg, w / 2f, h / 2f)
+
+        val center = PointF(w / 2f, h / 2f)
+        val radiusBounding = sqrt((w * w + h * h).toFloat()) / 2f
+
+        val step = dotSize.coerceAtLeast(3f)
+        var finalStep = step
+        val gridWidth = (radiusBounding * 2)
+        val gridHeight = (radiusBounding * 2)
+        while ((gridWidth / finalStep) * (gridHeight / finalStep) > 30000) {
+            finalStep += 1f
+        }
+
+        val startX = center.x - radiusBounding
+        val endX = center.x + radiusBounding
+        val startY = center.y - radiusBounding
+        val endY = center.y + radiusBounding
+
+        val matrix = Matrix()
+        matrix.setRotate(-angleDeg, w / 2f, h / 2f)
+
+        val pts = FloatArray(2)
+
+        val stepI = finalStep.toInt().coerceAtLeast(3)
+        for (cy in startY.toInt()..endY.toInt() step stepI) {
+            for (cx in startX.toInt()..endX.toInt() step stepI) {
+                pts[0] = cx.toFloat() + finalStep / 2f
+                pts[1] = cy.toFloat() + finalStep / 2f
+                matrix.mapPoints(pts)
+                val srcX = pts[0].toInt()
+                val srcY = pts[1].toInt()
+                
+                if (srcX in 0 until w && srcY in 0 until h) {
+                    val px = source.getPixel(srcX, srcY)
+                    val r = (px shr 16) and 0xff
+                    val g = (px shr 8) and 0xff
+                    val b = px and 0xff
+                    val a = (px ushr 24) and 0xff
+                    
+                    if (a == 0) continue
+                    
+                    val luma = 0.299f * r + 0.587f * g + 0.114f * b
+                    val normLuma = luma / 255.0f
+                    val adjustedLuma = ((normLuma - 0.5f) * contrast + 0.5f).coerceIn(0f, 1f)
+                    
+                    val dR = (finalStep / 2f) * (1.0f - adjustedLuma)
+                    if (dR > 0.1f) {
+                        paint.color = px
+                        canvas.drawCircle(cx.toFloat() + finalStep / 2f, cy.toFloat() + finalStep / 2f, dR, paint)
+                    }
+                }
+            }
+        }
+        canvas.restore()
+        return out
+    }
+
+    private fun applyCMYKHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val freq = parameters.find { it.name == "Screen Frequency" }?.currentValue ?: 12f
+        val cAngle = parameters.find { it.name == "Cyan Angle" }?.currentValue ?: 15f
+        val mAngle = parameters.find { it.name == "Magenta Angle" }?.currentValue ?: 75f
+        val yAngle = parameters.find { it.name == "Yellow Angle" }?.currentValue ?: 0f
+        val kAngle = parameters.find { it.name == "Black Angle" }?.currentValue ?: 45f
+        val dotScale = parameters.find { it.name == "Dot Scale" }?.currentValue ?: 1.0f
+        val paperStyle = (parameters.find { it.name == "Paper Style" }?.currentValue ?: 1f).toInt()
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+
+        when (paperStyle) {
+            1 -> canvas.drawColor(Color.WHITE)
+            2 -> canvas.drawColor(Color.argb(255, 252, 245, 225)) // vintage warm
+            else -> { /* transparent */ }
+        }
+
+        val getC = { px: Int ->
+            val r = ((px shr 16) and 0xff) / 255f
+            val g = ((px shr 8) and 0xff) / 255f
+            val b = (px and 0xff) / 255f
+            val k = 1f - maxOf(r, g, b)
+            if (k < 1f) (1f - r - k) / (1f - k) else 0f
+        }
+        val getM = { px: Int ->
+            val r = ((px shr 16) and 0xff) / 255f
+            val g = ((px shr 8) and 0xff) / 255f
+            val b = (px and 0xff) / 255f
+            val k = 1f - maxOf(r, g, b)
+            if (k < 1f) (1f - g - k) / (1f - k) else 0f
+        }
+        val getY = { px: Int ->
+            val r = ((px shr 16) and 0xff) / 255f
+            val g = ((px shr 8) and 0xff) / 255f
+            val b = (px and 0xff) / 255f
+            val k = 1f - maxOf(r, g, b)
+            if (k < 1f) (1f - b - k) / (1f - k) else 0f
+        }
+        val getK = { px: Int ->
+            val r = ((px shr 16) and 0xff) / 255f
+            val g = ((px shr 8) and 0xff) / 255f
+            val b = (px and 0xff) / 255f
+            1f - maxOf(r, g, b)
+        }
+
+        // Draw CMYK passes with Multiply blend mode
+        drawCMYKChannel(canvas, source, yAngle, freq, dotScale, Color.argb(255, 255, 230, 0), getY)
+        drawCMYKChannel(canvas, source, mAngle, freq, dotScale, Color.argb(255, 235, 0, 130), getM)
+        drawCMYKChannel(canvas, source, cAngle, freq, dotScale, Color.argb(255, 0, 175, 230), getC)
+        drawCMYKChannel(canvas, source, kAngle, freq, dotScale, Color.argb(255, 25, 25, 28), getK)
+
+        return out
+    }
+
+    private fun drawCMYKChannel(
+        canvas: Canvas,
+        source: Bitmap,
+        angle: Float,
+        step: Float,
+        dotScale: Float,
+        channelColor: Int,
+        getChannelValue: (Int) -> Float
+    ) {
+        val w = source.width
+        val h = source.height
+        canvas.save()
+        canvas.rotate(angle, w / 2f, h / 2f)
+        val center = PointF(w / 2f, h / 2f)
+        val radiusBounding = sqrt((w * w + h * h).toFloat()) / 2f
+        
+        val startX = center.x - radiusBounding
+        val endX = center.x + radiusBounding
+        val startY = center.y - radiusBounding
+        val endY = center.y + radiusBounding
+
+        val matrix = Matrix()
+        matrix.setRotate(-angle, w / 2f, h / 2f)
+        val pts = FloatArray(2)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = channelColor
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
+        }
+
+        var finalStep = step
+        while (((radiusBounding * 2) / finalStep) * ((radiusBounding * 2) / finalStep) > 12000) {
+            finalStep += 0.5f
+        }
+
+        val stepI = finalStep.toInt().coerceAtLeast(3)
+        for (cy in startY.toInt()..endY.toInt() step stepI) {
+            for (cx in startX.toInt()..endX.toInt() step stepI) {
+                pts[0] = cx.toFloat() + finalStep / 2f
+                pts[1] = cy.toFloat() + finalStep / 2f
+                matrix.mapPoints(pts)
+                val srcX = pts[0].toInt()
+                val srcY = pts[1].toInt()
+                if (srcX in 0 until w && srcY in 0 until h) {
+                    val px = source.getPixel(srcX, srcY)
+                    val cVal = getChannelValue(px)
+                    if (cVal > 0.02f) {
+                        val dR = (finalStep / 2f) * cVal * dotScale
+                        canvas.drawCircle(cx.toFloat() + finalStep / 2f, cy.toFloat() + finalStep / 2f, dR, paint)
+                    }
+                }
+            }
+        }
+        canvas.restore()
+    }
+
+    private fun applyLineScreenHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val lineSpacing = parameters.find { it.name == "Line Spacing" }?.currentValue ?: 8f
+        val lineAngle = parameters.find { it.name == "Line Angle" }?.currentValue ?: 45f
+        val contrast = parameters.find { it.name == "Contrast" }?.currentValue ?: 1.0f
+        val lineWidth = parameters.find { it.name == "Line Width" }?.currentValue ?: 1.0f
+        val lineBreaks = parameters.find { it.name == "Line Breaks" }?.currentValue ?: 0f
+        val sineWave = parameters.find { it.name == "Sine Wave" }?.currentValue ?: 0f
+        val waveAmp = parameters.find { it.name == "Wave Amplitude" }?.currentValue ?: 4f
+        val bgStyle = (parameters.find { it.name == "Background Style" }?.currentValue ?: 1f).toInt()
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+
+        when (bgStyle) {
+            1 -> canvas.drawColor(Color.WHITE)
+            2 -> canvas.drawColor(Color.BLACK)
+            3 -> canvas.drawBitmap(source, 0f, 0f, null)
+            else -> { /* transparent */ }
+        }
+
+        drawSingleLineScreen(
+            canvas = canvas,
+            source = source,
+            angle = lineAngle,
+            spacing = lineSpacing,
+            thicknessScale = 1.0f,
+            inkType = 3, // Source Color
+            sineWave = (sineWave > 0.5f),
+            waveAmp = waveAmp,
+            contrast = contrast,
+            lineWidthScale = lineWidth,
+            lineBreaks = lineBreaks
+        )
+
+        return out
+    }
+
+    private fun drawSingleLineScreen(
+        canvas: Canvas,
+        source: Bitmap,
+        angle: Float,
+        spacing: Float,
+        thicknessScale: Float,
+        inkType: Int,
+        sineWave: Boolean,
+        waveAmp: Float,
+        contrast: Float,
+        lineWidthScale: Float = 1.0f,
+        lineBreaks: Float = 0f
+    ) {
+        val w = source.width
+        val h = source.height
+        canvas.save()
+        canvas.rotate(angle, w / 2f, h / 2f)
+        
+        val center = PointF(w / 2f, h / 2f)
+        val radiusBounding = sqrt((w * w + h * h).toFloat()) / 2f
+        val startX = center.x - radiusBounding
+        val endX = center.x + radiusBounding
+        val startY = center.y - radiusBounding
+        val endY = center.y + radiusBounding
+
+        val matrix = Matrix()
+        matrix.setRotate(-angle, w / 2f, h / 2f)
+        val pts = FloatArray(2)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
+
+        var finalStep = spacing
+        while (((radiusBounding * 2) / finalStep) * ((radiusBounding * 2) / 8f) > 20000) {
+            finalStep += 1f
+        }
+
+        val stepI = finalStep.toInt().coerceAtLeast(3)
+        val segmentLength = 8f
+        for (cx in startX.toInt()..endX.toInt() step stepI) {
+            for (cy in startY.toInt()..endY.toInt() step segmentLength.toInt()) {
+                if (lineBreaks > 0.01f) {
+                    val randVal = ((cx * 1013 + cy * 313) % 1000) / 1000f
+                    if (randVal < lineBreaks) continue
+                }
+
+                pts[0] = cx.toFloat()
+                pts[1] = cy.toFloat()
+                matrix.mapPoints(pts)
+                val srcX = pts[0].toInt()
+                val srcY = pts[1].toInt()
+                if (srcX in 0 until w && srcY in 0 until h) {
+                    val px = source.getPixel(srcX, srcY)
+                    val r = (px shr 16) and 0xff
+                    val g = (px shr 8) and 0xff
+                    val b = px and 0xff
+                    val luma = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+                    val adjustedLuma = ((luma - 0.5f) * contrast + 0.5f).coerceIn(0f, 1f)
+                    val inkDensity = 1.0f - adjustedLuma
+                    
+                    if (inkDensity > 0.05f) {
+                        paint.strokeWidth = finalStep * inkDensity * thicknessScale * lineWidthScale * 0.9f
+                        paint.color = when (inkType) {
+                            1 -> Color.argb(255, 10, 45, 120) // retro blue
+                            2 -> Color.argb(255, 90, 50, 25)  // deep sepia
+                            3 -> px // source color
+                            else -> Color.BLACK
+                        }
+                        
+                        var xOffset = 0f
+                        if (sineWave) {
+                            xOffset = sin(cy.toFloat() * 0.04f) * waveAmp
+                        }
+                        canvas.drawLine(
+                            cx.toFloat() + xOffset,
+                            cy.toFloat(),
+                            cx.toFloat() + xOffset,
+                            cy.toFloat() + segmentLength,
+                            paint
+                        )
+                    }
+                }
+            }
+        }
+        canvas.restore()
+    }
+
+    private fun applyCrosshatchHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val gridSpacing = parameters.find { it.name == "Grid Spacing" }?.currentValue ?: 10f
+        val priAngle = parameters.find { it.name == "Primary Angle" }?.currentValue ?: 45f
+        val crossAngle = parameters.find { it.name == "Cross Angle" }?.currentValue ?: 90f
+        val lineThick = parameters.find { it.name == "Line Thickness" }?.currentValue ?: 1.5f
+        val inkType = (parameters.find { it.name == "Ink Type" }?.currentValue ?: 0f).toInt()
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(Color.WHITE)
+
+        // Pass 1: Primary line screen
+        drawSingleLineScreen(
+            canvas = canvas,
+            source = source,
+            angle = priAngle,
+            spacing = gridSpacing,
+            thicknessScale = lineThick,
+            inkType = inkType,
+            sineWave = false,
+            waveAmp = 0f,
+            contrast = 1.0f
+        )
+
+        // Pass 2: Crossed line screen
+        drawSingleLineScreen(
+            canvas = canvas,
+            source = source,
+            angle = priAngle + crossAngle,
+            spacing = gridSpacing,
+            thicknessScale = lineThick,
+            inkType = inkType,
+            sineWave = false,
+            waveAmp = 0f,
+            contrast = 1.0f
+        )
+
+        return out
+    }
+
+    private fun applyNewspaperHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val freq = parameters.find { it.name == "Dot Frequency" }?.currentValue ?: 10f
+        val bleed = parameters.find { it.name == "Bleed Amount" }?.currentValue ?: 0.3f
+        val yellowing = parameters.find { it.name == "Paper Yellowing" }?.currentValue ?: 0.8f
+        val contrast = parameters.find { it.name == "Contrast" }?.currentValue ?: 1.5f
+        val rotation = parameters.find { it.name == "Dot Rotation" }?.currentValue ?: 45f
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+
+        // Yellowing vintage newspaper base
+        val yFactor = yellowing.coerceIn(0f, 1f)
+        val paperColor = Color.argb(
+            255,
+            (255 - 12 * yFactor).toInt(),
+            (250 - 25 * yFactor).toInt(),
+            (230 - 50 * yFactor).toInt()
+        )
+        canvas.drawColor(paperColor)
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(255, 18, 18, 22) // Newspaper dark ink
+        }
+
+        canvas.save()
+        canvas.rotate(rotation, w / 2f, h / 2f)
+
+        val center = PointF(w / 2f, h / 2f)
+        val radiusBounding = sqrt((w * w + h * h).toFloat()) / 2f
+
+        val step = freq.coerceAtLeast(3f)
+        var finalStep = step
+        while (((radiusBounding * 2) / finalStep) * ((radiusBounding * 2) / finalStep) > 25000) {
+            finalStep += 1f
+        }
+
+        val startX = center.x - radiusBounding
+        val endX = center.x + radiusBounding
+        val startY = center.y - radiusBounding
+        val endY = center.y + radiusBounding
+
+        val matrix = Matrix()
+        matrix.setRotate(-rotation, w / 2f, h / 2f)
+        val pts = FloatArray(2)
+
+        val stepI = finalStep.toInt().coerceAtLeast(3)
+        for (cy in startY.toInt()..endY.toInt() step stepI) {
+            for (cx in startX.toInt()..endX.toInt() step stepI) {
+                pts[0] = cx.toFloat() + finalStep / 2f
+                pts[1] = cy.toFloat() + finalStep / 2f
+                matrix.mapPoints(pts)
+                val srcX = pts[0].toInt()
+                val srcY = pts[1].toInt()
+                
+                if (srcX in 0 until w && srcY in 0 until h) {
+                    val px = source.getPixel(srcX, srcY)
+                    val r = (px shr 16) and 0xff
+                    val g = (px shr 8) and 0xff
+                    val b = px and 0xff
+                    val a = (px ushr 24) and 0xff
+                    if (a == 0) continue
+
+                    val luma = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+                    val adjustedLuma = ((luma - 0.5f) * contrast + 0.5f).coerceIn(0f, 1f)
+                    val dR = (finalStep / 2f) * (1.0f - adjustedLuma)
+
+                    if (dR > 0.1f) {
+                        paint.alpha = 255
+                        canvas.drawCircle(cx.toFloat() + finalStep / 2f, cy.toFloat() + finalStep / 2f, dR, paint)
+                        
+                        if (bleed > 0.02f) {
+                            paint.alpha = (bleed * 110).toInt()
+                            canvas.drawCircle(
+                                cx.toFloat() + finalStep / 2f,
+                                cy.toFloat() + finalStep / 2f,
+                                dR * (1.0f + bleed * 0.6f),
+                                paint
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        canvas.restore()
+        return out
+    }
+
+    private fun applyRadialHalftone(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val freq = parameters.find { it.name == "Frequency" }?.currentValue ?: 12f
+        val cXFrac = parameters.find { it.name == "Center X" }?.currentValue ?: 0.5f
+        val cYFrac = parameters.find { it.name == "Center Y" }?.currentValue ?: 0.5f
+        val maxDot = parameters.find { it.name == "Max Dot Size" }?.currentValue ?: 8f
+        val fadeOut = parameters.find { it.name == "Fade Out" }?.currentValue ?: 1.0f
+
+        val w = source.width
+        val h = source.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(Color.WHITE)
+
+        val centerX = w * cXFrac
+        val centerY = h * cYFrac
+        val maxDist = sqrt(maxOf(centerX, w - centerX) * maxOf(centerX, w - centerX) + maxOf(centerY, h - centerY) * maxOf(centerY, h - centerY))
+
+        val step = freq.coerceAtLeast(4f)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        var rRing = step
+        while (rRing < maxDist) {
+            val circumference = 2f * PI.toFloat() * rRing
+            val numDots = (circumference / step).toInt().coerceAtLeast(1)
+            
+            if (rRing / step > 350) break
+            
+            val dTheta = (2f * PI.toFloat()) / numDots
+            for (i in 0 until numDots) {
+                val theta = i * dTheta
+                val cx = centerX + rRing * cos(theta)
+                val cy = centerY + rRing * sin(theta)
+                
+                val srcX = cx.toInt()
+                val srcY = cy.toInt()
+                if (srcX in 0 until w && srcY in 0 until h) {
+                    val px = source.getPixel(srcX, srcY)
+                    val red = (px shr 16) and 0xff
+                    val g = (px shr 8) and 0xff
+                    val b = px and 0xff
+                    val luma = (0.299f * red + 0.587f * g + 0.114f * b) / 255f
+                    
+                    val distFactor = rRing / maxDist
+                    val fade = distFactor.pow(fadeOut).coerceIn(0f, 1f)
+                    val inkDensity = (1.0f - luma) * (1.0f - fade)
+                    
+                    if (inkDensity > 0.05f) {
+                        val dSize = (maxDot / 2f) * inkDensity
+                        paint.color = px
+                        canvas.drawCircle(cx, cy, dSize, paint)
+                    }
+                }
+            }
+            rRing += step
+        }
+        return out
+    }
+
+    private fun sampleBilinear(pixels: IntArray, w: Int, h: Int, x: Float, y: Float): Int {
+        val xFloor = floor(x)
+        val yFloor = floor(y)
+        
+        val x0 = xFloor.toInt().coerceIn(0, w - 1)
+        val x1 = (x0 + 1).coerceIn(0, w - 1)
+        val y0 = yFloor.toInt().coerceIn(0, h - 1)
+        val y1 = (y0 + 1).coerceIn(0, h - 1)
+
+        val xWeight = x - xFloor
+        val yWeight = y - yFloor
+
+        val p00 = pixels[y0 * w + x0]
+        val p10 = pixels[y0 * w + x1]
+        val p01 = pixels[y1 * w + x0]
+        val p11 = pixels[y1 * w + x1]
+
+        val a00 = (p00 ushr 24) and 0xff
+        val r00 = (p00 ushr 16) and 0xff
+        val g00 = (p00 ushr 8) and 0xff
+        val b00 = p00 and 0xff
+
+        val a10 = (p10 ushr 24) and 0xff
+        val r10 = (p10 ushr 16) and 0xff
+        val g10 = (p10 ushr 8) and 0xff
+        val b10 = p10 and 0xff
+
+        val a01 = (p01 ushr 24) and 0xff
+        val r01 = (p01 ushr 16) and 0xff
+        val g01 = (p01 ushr 8) and 0xff
+        val b01 = p01 and 0xff
+
+        val a11 = (p11 ushr 24) and 0xff
+        val r11 = (p11 ushr 16) and 0xff
+        val g11 = (p11 ushr 8) and 0xff
+        val b11 = p11 and 0xff
+
+        val a0 = a00 + xWeight * (a10 - a00)
+        val a1 = a01 + xWeight * (a11 - a01)
+        val a = (a0 + yWeight * (a1 - a0)).toInt().coerceIn(0, 255)
+
+        val r0 = r00 + xWeight * (r10 - r00)
+        val r1 = r01 + xWeight * (r11 - r01)
+        val r = (r0 + yWeight * (r1 - r0)).toInt().coerceIn(0, 255)
+
+        val g0 = g00 + xWeight * (g10 - g00)
+        val g1 = g01 + xWeight * (g11 - g01)
+        val g = (g0 + yWeight * (g1 - g0)).toInt().coerceIn(0, 255)
+
+        val b0 = b00 + xWeight * (b10 - b00)
+        val b1 = b01 + xWeight * (b11 - b01)
+        val b = (b0 + yWeight * (b1 - b0)).toInt().coerceIn(0, 255)
+
+        return (a shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    private fun applyFractalGlass(source: Bitmap, parameters: List<FilterParameter>): Bitmap {
+        val originalW = source.width
+        val originalH = source.height
+        
+        // Optimize maximum dimension to 2400f for crystal clear professional print quality
+        val maxDimension = 2400f
+        val needsDownscale = originalW > maxDimension || originalH > maxDimension
+        
+        val scaleFactor = if (needsDownscale) {
+            maxDimension / maxOf(originalW, originalH)
+        } else {
+            1.0f
+        }
+        
+        val workingSource = if (needsDownscale) {
+            val dw = (originalW * scaleFactor).toInt().coerceAtLeast(2)
+            val dh = (originalH * scaleFactor).toInt().coerceAtLeast(2)
+            Bitmap.createScaledBitmap(source, dw, dh, true)
+        } else {
+            source
+        }
+
+        val style = parameters.find { it.name == "Glass Style" }?.currentValue ?: 1f
+        val scale = ((parameters.find { it.name == "Glass Scale" }?.currentValue ?: 30f) * scaleFactor).coerceAtLeast(4f)
+        val refraction = (parameters.find { it.name == "Refraction Index" }?.currentValue ?: 15f) * scaleFactor
+        val frosting = (parameters.find { it.name == "Frosting/Grain" }?.currentValue ?: 10f) * scaleFactor
+        val shine = parameters.find { it.name == "Light Shine" }?.currentValue ?: 30f
+        val angle = parameters.find { it.name == "Angle" }?.currentValue ?: 0f
+
+        val w = workingSource.width
+        val h = workingSource.height
+        val out = Bitmap.createBitmap(w, h, workingSource.config ?: Bitmap.Config.ARGB_8888)
+        val inPixels = IntArray(w * h)
+        workingSource.getPixels(inPixels, 0, w, 0, 0, w, h)
+        val outPixels = IntArray(w * h)
+
+        val rad = Math.toRadians(angle.toDouble())
+        val cosA = cos(rad).toFloat()
+        val sinA = sin(rad).toFloat()
+
+        val cx = w / 2f
+        val cy = h / 2f
+
+        val styleInt = style.toInt()
+
+        // Distribute row rendering tasks dynamically across all available CPU cores
+        val numThreads = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        val rowBatch = (h + numThreads - 1) / numThreads
+
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(numThreads)
+        val futures = java.util.ArrayList<java.util.concurrent.Future<*>>()
+
+        for (threadIdx in 0 until numThreads) {
+            futures.add(executor.submit {
+                val startY = threadIdx * rowBatch
+                val endY = minOf(startY + rowBatch, h)
+                for (y in startY until endY) {
+                    val ry = y - cy
+                    val yOffset = y * w
+                    for (x in 0 until w) {
+                        val rx = x - cx
+                        
+                        // 1. Rotate to pattern coordinates (px, py)
+                        val px = rx * cosA - ry * sinA + cx
+                        val py = rx * sinA + ry * cosA + cy
+
+                        var dx = 0f
+                        var dy = 0f
+                        var boundary = 0.0
+
+                        when (styleInt) {
+                            0 -> { // Ribbed / Linear Flutes
+                                val frequency = 2.0 * PI / scale
+                                val angleArg = px * frequency
+                                val wave = sin(angleArg)
+                                val slope = cos(angleArg)
+                                dx = (slope * refraction).toFloat()
+                                dy = 0f
+                                boundary = max(0.0, 1.0 - abs(wave))
+                            }
+                            1 -> { // Hexagonal/Voronoi cells
+                                val s = scale
+                                val cellX = floor((px / s).toDouble()).toInt()
+                                val cellY = floor((py / s).toDouble()).toInt()
+                                var minDist = 1e9
+                                var secondMinDist = 1e9
+                                var closestCellX = 0f
+                                var closestCellY = 0f
+                                for (offsetY in -1..1) {
+                                    for (offsetX in -1..1) {
+                                        val cxCell = cellX + offsetX
+                                        val cyCell = cellY + offsetY
+                                        
+                                        // Super fast LCG integer hashing to avoid sin/cos inside 9x loop
+                                        var h1 = cxCell * 374761393 + cyCell * 668265263
+                                        h1 = (h1 xor (h1 ushr 13)) * 1274126177
+                                        val hash1 = (h1 xor (h1 ushr 16)) and 0xffff
+                                        
+                                        var h2 = cxCell * -1640531527 + cyCell * -2048144777
+                                        h2 = (h2 xor (h2 ushr 13)) * 1274126177
+                                        val hash2 = (h2 xor (h2 ushr 16)) and 0xffff
+                                        
+                                        val rxCell = hash1 / 65535.0f
+                                        val ryCell = hash2 / 65535.0f
+
+                                        val centerX = (cxCell + rxCell) * s
+                                        val centerY = (cyCell + ryCell) * s
+                                        val dxCell = px - centerX
+                                        val dyCell = py - centerY
+                                        val dist = (dxCell * dxCell + dyCell * dyCell).toDouble()
+                                        if (dist < minDist) {
+                                            secondMinDist = minDist
+                                            minDist = dist
+                                            closestCellX = centerX
+                                            closestCellY = centerY
+                                        } else if (dist < secondMinDist) {
+                                            secondMinDist = dist
+                                        }
+                                    }
+                                }
+                                dx = (closestCellX - px) * (refraction / s)
+                                dy = (closestCellY - py) * (refraction / s)
+                                boundary = (1.0 - sqrt(minDist) / s).coerceIn(0.0, 1.0)
+                            }
+                            2 -> { // Wavy/Sinusoidal
+                                val frequency = 2.0 * PI / scale
+                                val waveX = sin(px * frequency)
+                                val waveY = sin(py * frequency)
+                                dx = (cos(py * frequency) * refraction).toFloat()
+                                dy = (cos(px * frequency) * refraction).toFloat()
+                                boundary = (abs(waveX) + abs(waveY)) / 2.0
+                            }
+                            3 -> { // Triangular / Crystallized Facets
+                                val s = scale
+                                val tx = floor((px / s).toDouble()).toInt()
+                                val ty = floor((py / s).toDouble()).toInt()
+                                val fx = (px / s) - tx
+                                val fy = (py / s) - ty
+                                val inUpperTriangle = fx + fy < 1.0f
+                                dx = if (inUpperTriangle) -refraction * fx else refraction * (1.0f - fx)
+                                dy = if (inUpperTriangle) -refraction * fy else refraction * (1.0f - fy)
+                                boundary = abs((fx + fy - 1.0f).toDouble())
+                            }
+                            4 -> { // Frosted glass micro-texture (using ultra-fast integer hash)
+                                var h1 = x * 374761393 + y * 668265263
+                                h1 = (h1 xor (h1 ushr 13)) * 1274126177
+                                val hash1 = (h1 xor (h1 ushr 16)) and 0xffff
+                                
+                                var h2 = x * -1640531527 + y * -2048144777
+                                h2 = (h2 xor (h2 ushr 13)) * 1274126177
+                                val hash2 = (h2 xor (h2 ushr 16)) and 0xffff
+
+                                val rx1 = hash1 / 65535.0f
+                                val ry1 = hash2 / 65535.0f
+
+                                dx = (rx1 - 0.5f) * refraction * 0.4f
+                                dy = (ry1 - 0.5f) * refraction * 0.4f
+                                boundary = 0.0
+                            }
+                            else -> { // Glass bricks
+                                val s = scale
+                                val bx = floor((px / s).toDouble()).toInt()
+                                val by = floor((py / (s * 0.6f)).toDouble()).toInt()
+                                val fx = (px / s) - bx
+                                val fy = (py / (s * 0.6f)) - by
+                                val borderDistX = min(fx, 1.0f - fx)
+                                val borderDistY = min(fy, 1.0f - fy)
+                                val edgeDist = min(borderDistX, borderDistY)
+                                dx = (0.5f - fx) * refraction
+                                dy = (0.5f - fy) * refraction
+                                boundary = (1.0 - (edgeDist / 0.15f)).coerceIn(0.0, 1.0)
+                            }
+                        }
+
+                        // 2. Rotate displacement vector back to image coords
+                        val sdx = dx * cosA + dy * sinA
+                        val sdy = -dx * sinA + dy * cosA
+
+                        var sxFloat = x + sdx
+                        var syFloat = y + sdy
+
+                        // 3. Add Frosting / Grain
+                        if (frosting > 0f) {
+                            var h1 = x * 374761393 + y * 668265263
+                            h1 = (h1 xor (h1 ushr 13)) * 1274126177
+                            val hash1 = (h1 xor (h1 ushr 16)) and 0xffff
+                            
+                            var h2 = x * -1640531527 + y * -2048144777
+                            h2 = (h2 xor (h2 ushr 13)) * 1274126177
+                            val hash2 = (h2 xor (h2 ushr 16)) and 0xffff
+
+                            val rx1 = hash1 / 65535.0f
+                            val ry1 = hash2 / 65535.0f
+
+                            sxFloat += (rx1 - 0.5f) * frosting * 0.35f
+                            syFloat += (ry1 - 0.5f) * frosting * 0.35f
+                        }
+
+                        // 4. Sample using smooth bilinear filtering to preserve high-res boundaries and PNG alpha
+                        val p = sampleBilinear(inPixels, w, h, sxFloat, syFloat)
+
+                        // 5. Apply Light Shine (specular bright edges)
+                        if (shine > 0f && boundary > 0.0) {
+                            val aVal = (p ushr 24) and 0xff
+                            val rVal = (p shr 16) and 0xff
+                            val gVal = (p shr 8) and 0xff
+                            val bVal = p and 0xff
+
+                            val hl = (Math.pow(boundary, 8.0) * (shine / 100.0) * 110.0).toFloat()
+                            val r = (rVal + hl).toInt().coerceIn(0, 255)
+                            val g = (gVal + hl).toInt().coerceIn(0, 255)
+                            val b = (bVal + hl).toInt().coerceIn(0, 255)
+
+                            outPixels[yOffset + x] = (aVal shl 24) or (r shl 16) or (g shl 8) or b
+                        } else {
+                            outPixels[yOffset + x] = p
+                        }
+                    }
+                }
+            })
+        }
+
+        // Wait for all execution chunks to finish
+        for (future in futures) {
+            future.get()
+        }
+        executor.shutdown()
+
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        
+        val finalOut = if (needsDownscale) {
+            val scaledBack = Bitmap.createScaledBitmap(out, originalW, originalH, true)
+            out.recycle()
+            workingSource.recycle()
+            scaledBack
+        } else {
+            out
+        }
+        
+        return finalOut
+    }
+
+    private fun applyChromaticAberrationCPU(source: Bitmap, distance: Float, angleDegrees: Float): Bitmap {
+        val w = source.width
+        val h = source.height
+        val pixels = IntArray(w * h)
+        source.getPixels(pixels, 0, w, 0, 0, w, h)
+        
+        val outPixels = IntArray(w * h)
+        val angleRad = Math.toRadians(angleDegrees.toDouble())
+        val dx = (Math.cos(angleRad) * distance).toInt()
+        val dy = (Math.sin(angleRad) * distance).toInt()
+        
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val idx = y * w + x
+                val p = pixels[idx]
+                val a = (p ushr 24) and 0xff
+                val g = (p shr 8) and 0xff
+                
+                val rx = (x - dx).coerceIn(0, w - 1)
+                val ry = (y - dy).coerceIn(0, h - 1)
+                val rColor = pixels[ry * w + rx]
+                val r = (rColor shr 16) and 0xff
+                
+                val bx = (x + dx).coerceIn(0, w - 1)
+                val by = (y + dy).coerceIn(0, h - 1)
+                val bColor = pixels[by * w + bx]
+                val b = bColor and 0xff
+                
+                outPixels[idx] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    private fun applyGlitchCPU(source: Bitmap, height: Float, strength: Float, colorShift: Float): Bitmap {
+        val w = source.width
+        val h = source.height
+        val pixels = IntArray(w * h)
+        source.getPixels(pixels, 0, w, 0, 0, w, h)
+        val outPixels = pixels.clone()
+        
+        val random = java.util.Random(1337)
+        val numBands = (h / height.coerceAtLeast(5f)).toInt().coerceIn(2, 40)
+        
+        for (i in 0 until numBands) {
+            if (random.nextFloat() < 0.4f) {
+                val bandYStart = random.nextInt(h)
+                val bandHeight = (random.nextFloat() * height).toInt().coerceIn(2, 50)
+                val bandYEnd = (bandYStart + bandHeight).coerceAtMost(h - 1)
+                val shiftX = ((random.nextFloat() - 0.5f) * strength * 2f).toInt()
+                
+                for (y in bandYStart..bandYEnd) {
+                    for (x in 0 until w) {
+                        val targetX = (x + shiftX).coerceIn(0, w - 1)
+                        val srcIdx = y * w + targetX
+                        val destIdx = y * w + x
+                        
+                        val p = pixels[srcIdx]
+                        val a = p and 0xff000000.toInt()
+                        
+                        var r = (p shr 16) and 0xff
+                        val g = (p shr 8) and 0xff
+                        var b = p and 0xff
+                        if (random.nextFloat() < 0.3f) {
+                            r = (r + colorShift.toInt()).coerceIn(0, 255)
+                            b = (b - colorShift.toInt()).coerceIn(0, 255)
+                        }
+                        
+                        outPixels[destIdx] = a or (r shl 16) or (g shl 8) or b
+                    }
+                }
+            }
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    private fun applyBloomCPU(source: Bitmap, threshold: Float, blurRadius: Float, intensity: Float): Bitmap {
+        val w = source.width
+        val h = source.height
+        
+        val brightBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(w * h)
+        source.getPixels(pixels, 0, w, 0, 0, w, h)
+        val brightPixels = IntArray(w * h)
+        
+        val threshInt = (threshold * 2.55f).toInt()
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val r = (p shr 16) and 0xff
+            val g = (p shr 8) and 0xff
+            val b = p and 0xff
+            val lum = (0.2126f * r + 0.7152f * g + 0.0722f * b).toInt()
+            if (lum > threshInt) {
+                brightPixels[i] = p
+            } else {
+                brightPixels[i] = p and 0xff000000.toInt()
+            }
+        }
+        brightBmp.setPixels(brightPixels, 0, w, 0, 0, w, h)
+        
+        val blurredBright = applyBoxBlur(brightBmp, (blurRadius / 2f).toInt().coerceAtLeast(1))
+        
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val blurPixels = IntArray(w * h)
+        blurredBright.getPixels(blurPixels, 0, w, 0, 0, w, h)
+        
+        val outPixels = IntArray(w * h)
+        val blendFactor = (intensity / 100f).coerceIn(0f, 2f)
+        
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val bp = blurPixels[i]
+            
+            val a = (p ushr 24) and 0xff
+            val r = (p shr 16) and 0xff
+            val g = (p shr 8) and 0xff
+            val b = p and 0xff
+            
+            val br = (bp shr 16) and 0xff
+            val bg = (bp shr 8) and 0xff
+            val bb = bp and 0xff
+            
+            val nr = (r + br * blendFactor).toInt().coerceIn(0, 255)
+            val ng = (g + bg * blendFactor).toInt().coerceIn(0, 255)
+            val nb = (b + bb * blendFactor).toInt().coerceIn(0, 255)
+            
+            outPixels[i] = (a shl 24) or (nr shl 16) or (ng shl 8) or nb
+        }
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        return out
+    }
+}
+
+class GPUImageMotionBlurFilter(
+    var distance: Float = 20.0f,
+    var angle: Float = 45.0f,
+    var width: Float = 1000f,
+    var height: Float = 1000f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(
+    """
+    attribute vec4 position;
+    attribute vec4 inputTextureCoordinate;
+    varying vec2 textureCoordinate;
+    void main() {
+        gl_Position = position;
+        textureCoordinate = inputTextureCoordinate.xy;
+    }
+    """.trimIndent(),
+    """
+    precision highp float;
+    varying highp vec2 textureCoordinate;
+    uniform sampler2D inputImageTexture;
+    uniform highp float uDirectionX;
+    uniform highp float uDirectionY;
+    void main() {
+        highp vec4 color = vec4(0.0);
+        highp float totalWeight = 0.0;
+        highp vec2 dir = vec2(uDirectionX, uDirectionY);
+        for (int i = -10; i <= 10; i++) {
+            highp float offset = float(i) / 10.0;
+            color += texture2D(inputImageTexture, textureCoordinate + dir * offset);
+            totalWeight += 1.0;
+        }
+        gl_FragColor = color / totalWeight;
+    }
+    """.trimIndent()
+) {
+    private var uDirectionXLocation: Int = -1
+    private var uDirectionYLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        uDirectionXLocation = android.opengl.GLES20.glGetUniformLocation(program, "uDirectionX")
+        uDirectionYLocation = android.opengl.GLES20.glGetUniformLocation(program, "uDirectionY")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        updateDirection()
+    }
+
+    fun updateParams(newDistance: Float, newAngle: Float, newWidth: Float, newHeight: Float) {
+        distance = newDistance
+        angle = newAngle
+        width = newWidth
+        height = newHeight
+        updateDirection()
+    }
+
+    private fun updateDirection() {
+        val rad = Math.toRadians(angle.toDouble())
+        val dx = (Math.cos(rad) * distance / maxOf(1f, width)).toFloat()
+        val dy = (Math.sin(rad) * distance / maxOf(1f, height)).toFloat()
+        setFloat(uDirectionXLocation, dx)
+        setFloat(uDirectionYLocation, dy)
     }
 }

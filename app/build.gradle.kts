@@ -4,7 +4,6 @@ plugins {
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
-  // alias(libs.plugins.chaquopy) // Uncomment to enable Chaquopy locally
 }
 
 android {
@@ -71,17 +70,6 @@ secrets {
   defaultPropertiesFileName = ".env.example"
 }
 
-/*
-chaquopy {
-  defaultConfig {
-    version = "3.10"
-    pip {
-      install("psd-tools")
-    }
-  }
-}
-*/
-
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
 dependencies {
@@ -96,8 +84,8 @@ dependencies {
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
-  implementation("androidx.compose.material3.adaptive:adaptive:1.0.0")
-  implementation("androidx.compose.material3.adaptive:adaptive-layout:1.0.0")
+  // implementation("androidx.compose.material3.adaptive:adaptive:1.0.0")
+  // implementation("androidx.compose.material3.adaptive:adaptive-layout:1.0.0")
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
@@ -141,28 +129,6 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
-}
-
-val workspaceFile = file("src/main/java/com/example/studio/ui/WorkspaceScreen.kt")
-if (workspaceFile.exists()) {
-    var content = workspaceFile.readText()
-    var modified = false
-    if (content.contains("currentCanvasPanXState.value")) {
-        content = content.replace("currentCanvasPanXState.value", "canvasPanX")
-        content = content.replace("currentCanvasPanYState.value", "canvasPanY")
-        content = content.replace("currentCanvasRotationState.value", "canvasRotation")
-        content = content.replace("currentTotalScaleState.value", "(fitScale * scaleFactor)")
-        content = content.replace("val ts = (fitScale * scaleFactor)", "val totalScale = fitScale * scaleFactor; val ts = totalScale")
-        modified = true
-    }
-    if (content.contains("outlineColor = androidx.compose.ui.graphics.Color(0xFFFF9100)")) {
-        content = content.replace("outlineColor = androidx.compose.ui.graphics.Color(0xFFFF9100)", "outlineColor = com.example.ui.theme.AdjustmentNodeColor")
-        modified = true
-    }
-    if (modified) {
-        workspaceFile.writeText(content)
-        println("OPTIMIZATION: Successfully bypassed high-frequency gestures recompositions and updated selection handles in WorkspaceScreen.kt")
-    }
 }
 
 

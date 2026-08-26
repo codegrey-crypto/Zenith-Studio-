@@ -6,7 +6,7 @@ import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 
-@JsonClass(generateAdapter = true)
+
 data class EffectDto(
     val typeName: String,
     val id: String,
@@ -99,7 +99,7 @@ data class EffectDto(
     }
 }
 
-@JsonClass(generateAdapter = true)
+
 data class LayerDto(
     val id: String,
     val name: String,
@@ -137,14 +137,38 @@ data class LayerDto(
     val pivotX: Float = 0.5f,
     val pivotY: Float = 0.5f,
     val fontSize: Float? = 36f,
+    val letterSpacing: Float? = 0f,
+    val lineSpacing: Float? = 1.0f,
     val fontFamilyName: String? = "Sans-Serif",
     val fontIsBold: Boolean? = false,
     val fontIsItalic: Boolean? = false,
     val fontAlign: String? = "Center",
     val fontPath: String? = null,
+    val richTextSpansJson: String? = "",
     val isAspectLocked: Boolean? = true,
     val parentGroupId: String? = null,
-    val bezierNodeTypes: List<String>? = emptyList()
+    val bezierNodeTypes: List<String>? = emptyList(),
+    val perspWarpPointsStr: String? = "",
+    val meshWarpPointsStr: String? = "",
+    val warpRepeatMode: String? = "Off",
+    val warpRepeatX: Float? = 1.0f,
+    val warpRepeatY: Float? = 1.0f,
+    val warpPhaseX: Float? = 0.0f,
+    val warpPhaseY: Float? = 0.0f,
+    val warpInterpolation: Boolean? = true,
+    val warpTarget: String? = "Layer",
+    val warpMeshDivisionX: Int? = 3,
+    val warpMeshDivisionY: Int? = 3,
+    val cropLeft: Float? = 0f,
+    val cropTop: Float? = 0f,
+    val cropRight: Float? = 1.0f,
+    val cropBottom: Float? = 1.0f,
+    val adjBrightness: Float? = 0f,
+    val adjContrast: Float? = 1f,
+    val adjSaturation: Float? = 1f,
+    val adjColorTintValue: Long? = 0L,
+    val adjTintColorIntensity: Float? = 0f,
+    val threeDStateJson: String? = null
 ) {
     fun toLayer(): StudioLayer {
         val pts = mutableListOf<Offset>()
@@ -179,7 +203,11 @@ data class LayerDto(
             perspWarpWidth = perspWarpWidth,
             perspWarpHeight = perspWarpHeight,
             opacity = opacity,
-            blendMode = try { ZenithBlendMode.valueOf(blendModeName) } catch (e: Exception) { ZenithBlendMode.NORMAL },
+            blendMode = try { 
+                ZenithBlendMode.valueOf(blendModeName.uppercase()) 
+            } catch (e: Exception) { 
+                ZenithBlendMode.values().firstOrNull { it.displayName.equals(blendModeName, ignoreCase = true) } ?: ZenithBlendMode.NORMAL 
+            },
             isVisible = isVisible,
             isAlphaLocked = isAlphaLocked,
             isClippingMask = isClippingMask,
@@ -197,13 +225,37 @@ data class LayerDto(
             pivotX = pivotX,
             pivotY = pivotY,
             fontSize = fontSize ?: 36f,
+            letterSpacing = letterSpacing ?: 0f,
+            lineSpacing = lineSpacing ?: 1.0f,
             fontFamilyName = fontFamilyName ?: "Sans-Serif",
             fontIsBold = fontIsBold ?: false,
             fontIsItalic = fontIsItalic ?: false,
             fontAlign = fontAlign ?: "Center",
             fontPath = fontPath,
+            richTextSpansJson = richTextSpansJson ?: "",
             parentGroupId = parentGroupId,
-            bezierNodeTypes = bezierNodeTypes ?: emptyList()
+            bezierNodeTypes = bezierNodeTypes ?: emptyList(),
+            perspWarpPointsStr = perspWarpPointsStr ?: "",
+            meshWarpPointsStr = meshWarpPointsStr ?: "",
+            warpRepeatMode = warpRepeatMode ?: "Off",
+            warpRepeatX = warpRepeatX ?: 1.0f,
+            warpRepeatY = warpRepeatY ?: 1.0f,
+            warpPhaseX = warpPhaseX ?: 0.0f,
+            warpPhaseY = warpPhaseY ?: 0.0f,
+            warpInterpolation = warpInterpolation ?: true,
+            warpTarget = warpTarget ?: "Layer",
+            warpMeshDivisionX = warpMeshDivisionX ?: 3,
+            warpMeshDivisionY = warpMeshDivisionY ?: 3,
+            cropLeft = cropLeft ?: 0f,
+            cropTop = cropTop ?: 0f,
+            cropRight = cropRight ?: 1.0f,
+            cropBottom = cropBottom ?: 1.0f,
+            adjBrightness = adjBrightness ?: 0f,
+            adjContrast = adjContrast ?: 1f,
+            adjSaturation = adjSaturation ?: 1f,
+            adjColorTint = androidx.compose.ui.graphics.Color((adjColorTintValue ?: 0L).toULong()),
+            adjTintColorIntensity = adjTintColorIntensity ?: 0f,
+            threeDStateJson = threeDStateJson
         )
     }
 
@@ -258,20 +310,44 @@ data class LayerDto(
                 pivotX = layer.pivotX.sanitize(0.5f),
                 pivotY = layer.pivotY.sanitize(0.5f),
                 fontSize = layer.fontSize.sanitize(36f),
+                letterSpacing = layer.letterSpacing.sanitize(0f),
+                lineSpacing = layer.lineSpacing.sanitize(1.0f),
                 fontFamilyName = layer.fontFamilyName,
                 fontIsBold = layer.fontIsBold,
                 fontIsItalic = layer.fontIsItalic,
                 fontAlign = layer.fontAlign,
                 fontPath = layer.fontPath,
+                richTextSpansJson = layer.richTextSpansJson,
                 isAspectLocked = layer.isAspectLocked,
                 parentGroupId = layer.parentGroupId,
-                bezierNodeTypes = layer.bezierNodeTypes
+                bezierNodeTypes = layer.bezierNodeTypes,
+                perspWarpPointsStr = layer.perspWarpPointsStr,
+                meshWarpPointsStr = layer.meshWarpPointsStr,
+                warpRepeatMode = layer.warpRepeatMode,
+                warpRepeatX = layer.warpRepeatX.sanitize(1.0f),
+                warpRepeatY = layer.warpRepeatY.sanitize(1.0f),
+                warpPhaseX = layer.warpPhaseX.sanitize(),
+                warpPhaseY = layer.warpPhaseY.sanitize(),
+                warpInterpolation = layer.warpInterpolation,
+                warpTarget = layer.warpTarget,
+                warpMeshDivisionX = layer.warpMeshDivisionX,
+                warpMeshDivisionY = layer.warpMeshDivisionY,
+                cropLeft = layer.cropLeft.sanitize(0f),
+                cropTop = layer.cropTop.sanitize(0f),
+                cropRight = layer.cropRight.sanitize(1.0f),
+                cropBottom = layer.cropBottom.sanitize(1.0f),
+                adjBrightness = layer.adjBrightness.sanitize(0f),
+                adjContrast = layer.adjContrast.sanitize(1f),
+                adjSaturation = layer.adjSaturation.sanitize(1f),
+                adjColorTintValue = layer.adjColorTint.value.toLong(),
+                adjTintColorIntensity = layer.adjTintColorIntensity.sanitize(0f),
+                threeDStateJson = layer.threeDStateJson
             )
         }
     }
 }
 
-@JsonClass(generateAdapter = true)
+
 data class ArtboardDto(
     val id: String,
     val name: String,
@@ -282,14 +358,16 @@ data class ArtboardDto(
     val layers: List<LayerDto>
 )
 
-@JsonClass(generateAdapter = true)
+
 data class WorkspaceStateDto(
     val artboards: List<ArtboardDto>,
-    val selectedArtboardId: String
+    val selectedArtboardId: String,
+    val zenithFilters: Map<String, List<EffectDto>>? = null
+    
 )
 
 object LayerSerializer {
-    private val moshi: Moshi = Moshi.Builder().build()
+    private val moshi: Moshi = Moshi.Builder().add(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory()).build()
     private val listType = Types.newParameterizedType(List::class.java, LayerDto::class.java)
     private val adapter = moshi.adapter<List<LayerDto>>(listType)
     private val workspaceStateAdapter = moshi.adapter(WorkspaceStateDto::class.java)
@@ -322,9 +400,25 @@ object LayerSerializer {
                 layers = art.layers.map { LayerDto.fromLayer(it) }
             )
         }
+        val zenithMap = mutableMapOf<String, List<EffectDto>>()
+        com.aistudio.zenithstudio.rpxwtq.EffectStackManager.filtersByLayer.forEach { (layerId, filters) ->
+            val serializedFilters = filters.map { filter ->
+                val baseTemplateId = filter.id.substringBefore("_copy_").substringBefore("_dup_")
+                EffectDto(
+                    typeName = "Zenith_$baseTemplateId",
+                    id = filter.id,
+                    name = filter.name,
+                    paramsMap = filter.parameters.associate { it.name to it.currentValue },
+                    isEnabled = filter.isEnabled
+                )
+            }
+            zenithMap[layerId] = serializedFilters
+        }
         val workspace = WorkspaceStateDto(
             artboards = dtos,
-            selectedArtboardId = selectedId
+            selectedArtboardId = selectedId,
+            zenithFilters = zenithMap
+            
         )
         return workspaceStateAdapter.toJson(workspace) ?: "{}"
     }
@@ -349,6 +443,27 @@ object LayerSerializer {
             if (trimmed.startsWith("{")) {
                 val workspace = workspaceStateAdapter.fromJson(json)
                 if (workspace != null && workspace.artboards.isNotEmpty()) {
+com.aistudio.zenithstudio.rpxwtq.EffectStackManager.filtersByLayer.clear()
+workspace.zenithFilters?.forEach { (layerId, dtos) ->
+val list = androidx.compose.runtime.mutableStateListOf<com.aistudio.zenithstudio.rpxwtq.ZenithFilter>()
+dtos.forEach { dto ->
+val baseTemplateId = dto.typeName.removePrefix("Zenith_")
+val template = com.aistudio.zenithstudio.rpxwtq.ZenithFilterFactory.getFilterTemplate(baseTemplateId)
+if (template != null) {
+var filter = template.duplicate(dto.id)
+if (dto.isEnabled == false) {
+filter = filter.toggleEnabled()
+}
+dto.paramsMap.forEach { (pName, pValue) ->
+filter = filter.copyWithParameter(pName, pValue)
+}
+list.add(filter)
+}
+}
+com.aistudio.zenithstudio.rpxwtq.EffectStackManager.filtersByLayer[layerId] = list
+}
+com.aistudio.zenithstudio.rpxwtq.EffectStackManager.changeCounter.value++
+
                     val arts = workspace.artboards.map { dto ->
                         com.example.studio.ui.ArtboardData(
                             id = dto.id,

@@ -67,7 +67,8 @@ fun OnlineFontEngineDialog(
     selectedFoldersToScan: MutableMap<String, Boolean>,
     requestOrPromptStoragePermission: () -> Unit,
     onFontPickerLaunch: () -> Unit,
-    onStartBatchImport: (List<com.example.studio.ui.FontScanner.DiscoveredFont>) -> Unit
+    onStartBatchImport: (List<com.example.studio.ui.FontScanner.DiscoveredFont>) -> Unit,
+    onPickFolder: (() -> Unit)? = null
 ) {
     if (!showDialog) return
 
@@ -227,7 +228,7 @@ fun OnlineFontEngineDialog(
                             // Dynamically build native font family from ttf binary
                             val previewFontFamily = if (alreadyExists) {
                                 try {
-                                    androidx.compose.ui.text.font.FontFamily(android.graphics.Typeface.createFromFile(localFontFile))
+                                    androidx.compose.ui.text.font.FontFamily(TypefaceCache.get(localFontFile.absolutePath, null, false, false))
                                 } catch (e: Exception) {
                                     androidx.compose.ui.text.font.FontFamily.Default
                                 }
@@ -618,47 +619,189 @@ fun OnlineFontEngineDialog(
                     }
 
                     Text(
-                        text = "Zenith Studio will dynamically scan device storage volumes (Download, Documents) for custom TTF and OTF design files.",
+                        text = "Choose exact target folders to scan for TTF and OTF design fonts on your device.",
                         style = Typography.bodySmall,
                         color = TextSecondary
                     )
 
-                    // Folder selection
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = "Specific Folders to scan:",
-                            style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = IndustrialAmber
-                        )
+                    var showCustomPathDialog by remember { mutableStateOf(false) }
+                    var customPathInput by remember { mutableStateOf("") }
+
+                    // Folder selection & picker
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            listOf("Download", "Fonts", "Documents").forEach { folder ->
-                                val isSelected = selectedFoldersToScan[folder] ?: false
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .background(MidSlate.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
-                                        .clickable { selectedFoldersToScan[folder] = !isSelected }
-                                        .padding(end = 4.dp)
+                            Text(
+                                text = "Folders to Scan:",
+                                style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = IndustrialAmber
+                            )
+                            
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                if (onPickFolder != null) {
+                                    OutlinedButton(
+                                        onClick = { onPickFolder() },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        shape = RoundedCornerShape(4.dp),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = IndustrialAmber),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Icon(imageVector = Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(12.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("System Browser", style = Typography.labelSmall.copy(fontSize = 10.sp))
+                                    }
+                                }
+
+                                OutlinedButton(
+                                    onClick = { showCustomPathDialog = true },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(4.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                                    modifier = Modifier.height(26.dp)
                                 ) {
-                                    Checkbox(
-                                        checked = isSelected,
-                                        onCheckedChange = { selectedFoldersToScan[folder] = it },
-                                        colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber),
-                                        modifier = Modifier.scale(0.75f)
-                                    )
-                                    Text(
-                                        text = folder,
-                                        style = Typography.labelSmall.copy(fontSize = 10.sp),
-                                        color = if (isSelected) TextPrimary else TextSecondary,
-                                        maxLines = 1
-                                    )
+                                    Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(12.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Custom Path", style = Typography.labelSmall.copy(fontSize = 10.sp))
                                 }
                             }
                         }
+
+                        // Presets bar
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val presetFolders = listOf("Download", "Fonts", "Documents", "DCIM", "Telegram", "WhatsApp", "MediaStore", "Root")
+                            presetFolders.forEach { folder ->
+                                val isSelected = selectedFoldersToScan[folder] ?: false
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { selectedFoldersToScan[folder] = !isSelected },
+                                    label = { Text(folder, style = Typography.labelSmall.copy(fontSize = 10.sp)) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = IndustrialAmber,
+                                        selectedLabelColor = Color.Black
+                                    ),
+                                    modifier = Modifier.height(26.dp)
+                                )
+                            }
+                        }
+
+                        // Custom / Active folder list
+                        val allFolders = selectedFoldersToScan.keys.toList()
+                        if (allFolders.isNotEmpty()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MidSlate.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                    .padding(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                allFolders.forEach { folder ->
+                                    val isSelected = selectedFoldersToScan[folder] ?: false
+                                    val isStandard = folder in listOf("Download", "Fonts", "Documents", "DCIM", "Telegram", "WhatsApp", "MediaStore", "Root")
+                                    
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(if (isSelected) MidSlate.copy(alpha = 0.6f) else Color.Transparent, RoundedCornerShape(4.dp))
+                                            .clickable { selectedFoldersToScan[folder] = !isSelected }
+                                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Checkbox(
+                                                checked = isSelected,
+                                                onCheckedChange = { selectedFoldersToScan[folder] = it },
+                                                colors = CheckboxDefaults.colors(checkedColor = IndustrialAmber),
+                                                modifier = Modifier.scale(0.75f)
+                                            )
+                                            Icon(
+                                                imageVector = Icons.Default.Folder,
+                                                contentDescription = null,
+                                                tint = if (isSelected) IndustrialAmber else TextSecondary,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = folder,
+                                                style = Typography.labelSmall.copy(fontSize = 11.sp),
+                                                color = if (isSelected) TextPrimary else TextSecondary,
+                                                maxLines = 1
+                                            )
+                                        }
+
+                                        if (!isStandard) {
+                                            IconButton(
+                                                onClick = { selectedFoldersToScan.remove(folder) },
+                                                modifier = Modifier.size(20.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Remove Folder",
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showCustomPathDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showCustomPathDialog = false },
+                            title = { Text("Add Custom Folder Path", style = Typography.titleMedium, color = TextPrimary) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        "Enter a folder name (e.g. Download/Fonts, Canva, Telegram) or absolute path:",
+                                        style = Typography.bodySmall,
+                                        color = TextSecondary
+                                    )
+                                    OutlinedTextField(
+                                        value = customPathInput,
+                                        onValueChange = { customPathInput = it },
+                                        placeholder = { Text("e.g. Download/MyFonts or /storage/emulated/0/Fonts") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        val trimmed = customPathInput.trim()
+                                        if (trimmed.isNotEmpty()) {
+                                            selectedFoldersToScan[trimmed] = true
+                                            customPathInput = ""
+                                            showCustomPathDialog = false
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber)
+                                ) {
+                                    Text("Add Folder", color = Color.Black)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showCustomPathDialog = false }) {
+                                    Text("Cancel", color = TextSecondary)
+                                }
+                            },
+                            containerColor = MidSlate
+                        )
                     }
 
                     // Progress
@@ -720,13 +863,13 @@ fun OnlineFontEngineDialog(
 
                         if (discoveredFonts.isNotEmpty()) {
                             Spacer(modifier = Modifier.weight(1f))
-                            val currentSelectedCount = selectedFontIndexes.filter { it.value }.size
+                            val unselectedCount = selectedFontIndexes.filter { !it.value }.size
+                            val currentSelectedCount = discoveredFonts.size - unselectedCount
                             val allSelected = currentSelectedCount == discoveredFonts.size
                             TextButton(
                                 onClick = {
-                                    val nextSel = !allSelected
-                                    if (nextSel) {
-                                        discoveredFonts.indices.forEach { selectedFontIndexes[it] = true }
+                                    if (allSelected) {
+                                        discoveredFonts.indices.forEach { selectedFontIndexes[it] = false }
                                     } else {
                                         selectedFontIndexes.clear()
                                     }
@@ -765,7 +908,7 @@ fun OnlineFontEngineDialog(
                         ) {
                             items(discoveredFonts.size) { index ->
                                 val fontItem = discoveredFonts[index]
-                                val isChecked = selectedFontIndexes[index] ?: false
+                                val isChecked = selectedFontIndexes[index] ?: true
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -800,10 +943,10 @@ fun OnlineFontEngineDialog(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (fontEngineTab == 2 && discoveredFonts.isNotEmpty()) {
-                    val count = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] == true }.size
+                    val count = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] ?: true }.size
                     Button(
                         onClick = {
-                            val selectedToImport = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] == true }
+                            val selectedToImport = discoveredFonts.filterIndexed { idx, _ -> selectedFontIndexes[idx] ?: true }
                             onStartBatchImport(selectedToImport)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = IndustrialAmber),

@@ -1,0 +1,1 @@
+echo "Compilation was successful!"

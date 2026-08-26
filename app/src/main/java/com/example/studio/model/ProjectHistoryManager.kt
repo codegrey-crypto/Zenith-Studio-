@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-@JsonClass(generateAdapter = true)
+
 data class ProjectHistoryFrameDto(
     val artboards: List<ArtboardDto>,
     val selectedArtboardId: String,
@@ -22,10 +22,12 @@ data class ProjectHistoryFrameDto(
     val projectName: String,
     val canvasWidth: Float,
     val canvasHeight: Float,
-    val projectDpi: Int
+    val projectDpi: Int,
+    val zenithFilters: Map<String, List<EffectDto>>? = null
+    
 )
 
-@JsonClass(generateAdapter = true)
+
 data class ProjectHistoryTreeDto(
     val undoStack: List<ProjectHistoryFrameDto>,
     val current: ProjectHistoryFrameDto?,
@@ -39,9 +41,24 @@ data class ProjectMemento(
     val projectName: String,
     val canvasWidth: Float,
     val canvasHeight: Float,
-    val projectDpi: Int
+    val projectDpi: Int,
+    val zenithFilters: Map<String, List<EffectDto>>? = null
 ) {
     fun toDto(): ProjectHistoryFrameDto {
+        val zenithMap = mutableMapOf<String, List<EffectDto>>()
+        com.aistudio.zenithstudio.rpxwtq.EffectStackManager.filtersByLayer.forEach { (layerId, filters) ->
+            val serializedFilters = filters.map { filter ->
+                val baseTemplateId = filter.id.substringBefore("_copy_").substringBefore("_dup_")
+                EffectDto(
+                    typeName = "Zenith_$baseTemplateId",
+                    id = filter.id,
+                    name = filter.name,
+                    paramsMap = filter.parameters.associate { it.name to it.currentValue },
+                    isEnabled = filter.isEnabled
+                )
+            }
+            zenithMap[layerId] = serializedFilters
+        }
         return ProjectHistoryFrameDto(
             artboards = artboards.map { art ->
                 ArtboardDto(
@@ -59,12 +76,35 @@ data class ProjectMemento(
             projectName = projectName,
             canvasWidth = canvasWidth,
             canvasHeight = canvasHeight,
-            projectDpi = projectDpi
+            projectDpi = projectDpi,
+            zenithFilters = zenithMap
+            
         )
     }
 
     companion object {
         fun fromDto(dto: ProjectHistoryFrameDto): ProjectMemento {
+            com.aistudio.zenithstudio.rpxwtq.EffectStackManager.filtersByLayer.clear()
+dto.zenithFilters?.forEach { (layerId, dtos) ->
+val list = androidx.compose.runtime.mutableStateListOf<com.aistudio.zenithstudio.rpxwtq.ZenithFilter>()
+dtos.forEach { dto ->
+val baseTemplateId = dto.typeName.removePrefix("Zenith_")
+val template = com.aistudio.zenithstudio.rpxwtq.ZenithFilterFactory.getFilterTemplate(baseTemplateId)
+if (template != null) {
+var filter = template.duplicate(dto.id)
+if (dto.isEnabled == false) {
+filter = filter.toggleEnabled()
+}
+dto.paramsMap.forEach { (pName, pValue) ->
+filter = filter.copyWithParameter(pName, pValue)
+}
+list.add(filter)
+}
+}
+com.aistudio.zenithstudio.rpxwtq.EffectStackManager.filtersByLayer[layerId] = list
+}
+            com.aistudio.zenithstudio.rpxwtq.EffectStackManager.changeCounter.value++
+
             return ProjectMemento(
                 artboards = dto.artboards.map { artDto ->
                     ArtboardData(
@@ -89,7 +129,7 @@ data class ProjectMemento(
 }
 
 object ProjectHistoryPersistence {
-    private val moshi: Moshi = Moshi.Builder().build()
+    private val moshi: Moshi = Moshi.Builder().add(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory()).build()
     private val adapter = moshi.adapter(ProjectHistoryTreeDto::class.java)
 
     suspend fun saveHistoryTree(
@@ -164,7 +204,7 @@ object ProjectHistoryPersistence {
 class ProjectHistoryManager(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val maxLimit: Int = 40
+    private val maxLimit: Int = 5
 ) {
     val undoStack = mutableStateListOf<ProjectMemento>()
     val redoStack = mutableStateListOf<ProjectMemento>()
@@ -183,7 +223,8 @@ class ProjectHistoryManager(
             return
         }
         undoStack.add(memento)
-        while (undoStack.size > maxLimit) {
+        val dynamicLimit = DevicePerformanceManager.getMaxUndoLimit().coerceAtMost(maxLimit)
+        while (undoStack.size > dynamicLimit) {
             undoStack.removeAt(0)
         }
         redoStack.clear()

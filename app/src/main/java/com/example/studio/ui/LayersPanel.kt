@@ -1,8 +1,9 @@
 package com.example.studio.ui
-
+import kotlinx.coroutines.launch
 import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -16,17 +17,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.studio.model.LayerType
 import com.example.studio.model.StudioLayer
 import com.example.studio.model.ZenithBlendMode
 import com.example.ui.theme.*
 import java.util.UUID
-
 @Composable
 fun RightsideLayerDrawer(
     layers: List<StudioLayer>,
@@ -37,6 +39,7 @@ fun RightsideLayerDrawer(
     onChangeClippingMask: (String) -> Unit,
     onLayerReorderUp: (Int) -> Unit,
     onLayerReorderDown: (Int) -> Unit,
+    onLayerMove: (Int, Int) -> Unit = { _, _ -> },
     onAddLayer: () -> Unit,
     onDuplicateLayer: (String) -> Unit,
     onDeleteLayer: (String) -> Unit,
@@ -56,15 +59,23 @@ fun RightsideLayerDrawer(
     onToggleGroupCollapse: (String) -> Unit = {},
     activeClipboard: StudioLayer? = null,
     onCopyLayer: (StudioLayer) -> Unit = {},
-    onPasteLayer: () -> Unit = {}
+    onPasteLayer: () -> Unit = {},
+    onFlipHorizontal: (String) -> Unit = {},
+    onFlipVertical: (String) -> Unit = {},
+    onRasterizeLayer: (String) -> Unit = {}
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
     var expandedBlendList by remember { mutableStateOf(false) }
     val selLayer = layers.find { it.id == selectedLayerId }
-
     var panelWidth by remember { mutableStateOf(275.dp) }
     var panelHeight by remember { mutableStateOf(530.dp) }
     val currentDensity = androidx.compose.ui.platform.LocalDensity.current
-
+    var draggedItemId by remember { mutableStateOf<String?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    val totalSlotHeightPx = with(currentDensity) { 62.dp.toPx() }
+    val currentLayers by rememberUpdatedState(layers)
+    val currentOnLayerMove by rememberUpdatedState(onLayerMove)
     Box(
         modifier = Modifier
             .size(panelWidth, panelHeight)
@@ -84,7 +95,6 @@ fun RightsideLayerDrawer(
                     }
                 }
         )
-
         // Drag handle on the BOTTOM edge (horizontal track)
         Box(
             modifier = Modifier
@@ -99,7 +109,6 @@ fun RightsideLayerDrawer(
                     }
                 }
         )
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -148,7 +157,6 @@ fun RightsideLayerDrawer(
                             Text("Paste", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
                     }
-
                     // Multi Select Mode Toggle Button
                     IconButton(onClick = onToggleMultiSelect, modifier = Modifier.size(24.dp)) {
                         Icon(
@@ -158,7 +166,6 @@ fun RightsideLayerDrawer(
                             modifier = Modifier.size(14.dp)
                         )
                     }
-
                     // Select All / Deselect All Button
                     if (isMultiSelectMode) {
                         val allSelected = selectedLayersSet.size == layers.size
@@ -174,14 +181,12 @@ fun RightsideLayerDrawer(
                             )
                         }
                     }
-
                     // Group Selected Layers Action
                     if (isMultiSelectMode && selectedLayersSet.size >= 2) {
                         IconButton(onClick = onGroupSelected, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.CreateNewFolder, "Group Selected", tint = EnergeticYellow, modifier = Modifier.size(14.dp))
                         }
                     }
-
                     // Merge Down Action
                     if (!isMultiSelectMode && selLayer != null) {
                         val activeIndex = layers.indexOfFirst { it.id == selLayer.id }
@@ -191,14 +196,10 @@ fun RightsideLayerDrawer(
                             }
                         }
                     }
-
                     IconButton(onClick = onAddLayer, modifier = Modifier.size(24.dp)) {
                         Icon(Icons.Default.Add, "Add Layer", tint = TextPrimary, modifier = Modifier.size(16.dp))
                     }
-                    if (selLayer != null && !isMultiSelectMode) {
-                        IconButton(onClick = { onDuplicateLayer(selLayer.id) }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.ContentCopy, "Duplicate", tint = TextPrimary, modifier = Modifier.size(14.dp))
-                        }
+                    if (selLayer != null && !isMultiSelectMode && !(selLayer.type == LayerType.FREEHAND_DRAWING && selLayer.brushPoints.isEmpty())) {
                         IconButton(onClick = { onDeleteLayer(selLayer.id) }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.Delete, "Delete", tint = Color.Red, modifier = Modifier.size(14.dp))
                         }
@@ -208,7 +209,6 @@ fun RightsideLayerDrawer(
                     }
                 }
             }
-
             // Expanded Layer Settings: Opacity and Blending modes
             if (selLayer != null) {
                 Column(
@@ -233,7 +233,6 @@ fun RightsideLayerDrawer(
                         ),
                         modifier = Modifier.height(24.dp)
                     )
-
                     // Blend Modes Dropdown
                     Spacer(Modifier.height(4.dp))
                     Box(modifier = Modifier.fillMaxWidth()) {
@@ -265,9 +264,7 @@ fun RightsideLayerDrawer(
                             }
                         }
                     }
-
                     Spacer(Modifier.height(6.dp))
-
                     // Alpha Lock & Clipping Mask quick toggles
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -304,7 +301,6 @@ fun RightsideLayerDrawer(
                                 modifier = Modifier.scale(0.6f).height(16.dp)
                             )
                         }
-
                         // Clipping Mask Toggle Row
                         Row(
                             modifier = Modifier
@@ -339,9 +335,7 @@ fun RightsideLayerDrawer(
                     }
                 }
             }
-
             Spacer(Modifier.height(8.dp))
-
             // Filter out layers whose parent group is collapsed
             val displayedLayers = layers.filter { item ->
                 val pId = item.parentGroupId
@@ -351,7 +345,7 @@ fun RightsideLayerDrawer(
                     true
                 }
             }
-
+            val currentDisplayedLayers by rememberUpdatedState(displayedLayers)
             // Layers Scrollable Core Stack (Reversing direction for canvas-compliant top-layer priority)
             LazyColumn(
                 modifier = Modifier.weight(1f, fill = false),
@@ -360,11 +354,68 @@ fun RightsideLayerDrawer(
                 itemsIndexed(items = displayedLayers, key = { _, item -> item.id }) { index, item ->
                     val isSelected = if (isMultiSelectMode) selectedLayersSet.contains(item.id) else item.id == selectedLayerId
                     var showContextMenu by remember { mutableStateOf(false) }
-
+                    val isDraggingThis = draggedItemId == item.id
+                    val itemOffsetY = if (isDraggingThis) dragOffsetY else 0f
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(bottom = if (isSelected) 4.dp else 0.dp)
+                            .zIndex(if (isDraggingThis) 10f else 1f)
+                            .graphicsLayer {
+                                translationY = itemOffsetY
+                            }
+                            .pointerInput(item.id) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { offset ->
+                                        val isEmptyLayer = item.type == LayerType.FREEHAND_DRAWING && item.brushPoints.isEmpty()
+                                        if (!isEmptyLayer) {
+                                            draggedItemId = item.id
+                                            dragOffsetY = 0f
+                                        }
+                                    },
+                                    onDrag = onDragLabel@ { change, dragAmount ->
+                                        if (draggedItemId != item.id) return@onDragLabel
+                                        change.consume()
+                                        dragOffsetY += dragAmount.y
+                                        
+                                        val activeList = currentDisplayedLayers
+                                        val masterList = currentLayers
+                                        val currentIndex = activeList.indexOfFirst { it.id == item.id }
+                                        if (currentIndex != -1) {
+                                            val threshold = totalSlotHeightPx * 0.5f
+                                            if (dragOffsetY > threshold) {
+                                                if (currentIndex < activeList.size - 1) {
+                                                    val nextItem = activeList[currentIndex + 1]
+                                                    val masterCurr = masterList.indexOfFirst { it.id == item.id }
+                                                    val masterNext = masterList.indexOfFirst { it.id == nextItem.id }
+                                                    if (masterCurr != -1 && masterNext != -1) {
+                                                        currentOnLayerMove(masterCurr, masterNext)
+                                                        dragOffsetY -= totalSlotHeightPx
+                                                    }
+                                                }
+                                            } else if (dragOffsetY < -threshold) {
+                                                if (currentIndex > 0) {
+                                                    val prevItem = activeList[currentIndex - 1]
+                                                    val masterCurr = masterList.indexOfFirst { it.id == item.id }
+                                                    val masterPrev = masterList.indexOfFirst { it.id == prevItem.id }
+                                                    if (masterCurr != -1 && masterPrev != -1) {
+                                                        currentOnLayerMove(masterCurr, masterPrev)
+                                                        dragOffsetY += totalSlotHeightPx
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        draggedItemId = null
+                                        dragOffsetY = 0f
+                                    },
+                                    onDragCancel = {
+                                        draggedItemId = null
+                                        dragOffsetY = 0f
+                                    }
+                                )
+                            }
                     ) {
                         if (isSelected) {
                             // Offset stacked background shadow card for physical stacking visual elevation!
@@ -379,6 +430,7 @@ fun RightsideLayerDrawer(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .height(56.dp)
                                 .padding(start = if (item.parentGroupId != null && item.isClippingMask) 24.dp else if (item.parentGroupId != null) 12.dp else if (item.isClippingMask) 14.dp else 0.dp)
                                 .offset(x = if (isSelected) (-3).dp else 0.dp, y = if (isSelected) (-3).dp else 0.dp)
                                 .clip(RoundedCornerShape(8.dp))
@@ -391,7 +443,7 @@ fun RightsideLayerDrawer(
                                         onSelectLayer(item.id)
                                     }
                                 }
-                                .padding(8.dp),
+                                .padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             // Checkbox for Multi-Select mode
@@ -409,7 +461,6 @@ fun RightsideLayerDrawer(
                                     )
                                 }
                             }
-
                             // Group collapse/expand caret button
                             if (item.type == LayerType.GROUP) {
                                 val isCollapsed = collapsedGroupIds.contains(item.id)
@@ -425,7 +476,6 @@ fun RightsideLayerDrawer(
                                     )
                                 }
                             }
-
                             if (item.isClippingMask) {
                                 Text(
                                     text = "↳",
@@ -435,70 +485,9 @@ fun RightsideLayerDrawer(
                                     modifier = Modifier.padding(end = 4.dp)
                                 )
                             }
-
-                            // Styled preview thumbnail representing layer color characteristics beautifully
-                            Box(
-                                modifier = Modifier
-                                    .size(26.dp)
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(item.baseColor.copy(alpha = 0.85f))
-                                    .border(0.5.dp, HighslateOutline, RoundedCornerShape(4.dp)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                val glyph = when (item.type) {
-                                    LayerType.VECTOR_CIRCLE -> "○"
-                                    LayerType.VECTOR_RECT -> "□"
-                                    LayerType.VECTOR_STAR -> "★"
-                                    LayerType.VECTOR_TRIANGLE -> "△"
-                                    LayerType.VECTOR_PENTAGON -> "⬠"
-                                    LayerType.VECTOR_HEXAGON -> "⬡"
-                                    LayerType.VECTOR_OVAL -> "⬭"
-                                    LayerType.VECTOR_LINE -> "╱"
-                                    LayerType.VECTOR_BEZIER -> "∿"
-                                    LayerType.TEXT -> "T"
-                                    LayerType.FREEHAND_DRAWING -> "✎"
-                                    LayerType.IMAGE_CARD -> "▨"
-                                    LayerType.GROUP -> ""
-                                    LayerType.ADJUSTMENT_LAYER -> "🎚"
-                                    LayerType.VECTOR_HEART -> "♥"
-                                    LayerType.VECTOR_CROSS -> "✚"
-                                    LayerType.VECTOR_SHIELD -> "🛡"
-                                    LayerType.VECTOR_RING -> "◎"
-                                    LayerType.VECTOR_CRESCENT -> "🌙"
-                                    LayerType.VECTOR_CLOVER -> "🍀"
-                                    LayerType.VECTOR_GEAR -> "⚙"
-                                    LayerType.VECTOR_DIAMOND -> "♦"
-                                    LayerType.VECTOR_TILTED_RECT -> "▰"
-                                    LayerType.VECTOR_TRAPEZOID -> "⏢"
-                                    LayerType.VECTOR_ROUNDED_RECT -> "▢"
-                                    LayerType.VECTOR_PIE_SLICE -> "🍕"
-                                    LayerType.VECTOR_ARROW -> "➔"
-                                    LayerType.VECTOR_SPEECH_BUBBLE -> "💬"
-                                    LayerType.VECTOR_BRACKETS -> "❴"
-                                    LayerType.VECTOR_DOUBLE_ARROW -> "↔"
-                                    LayerType.VECTOR_CROSSHAIR -> "⌖"
-                                    LayerType.VECTOR_SPIRAL -> "🌀"
-                                    LayerType.VECTOR_WAVE -> "〰"
-                                    LayerType.VECTOR_POLYGON -> "⬡"
-                                    LayerType.VECTOR_BLOB -> "🫧"
-                                    LayerType.VECTOR_CONTAINER -> "🗏"
-                                    LayerType.VECTOR_FLOW_CONNECTOR -> "☇"
-                                    LayerType.VECTOR_NODE -> "🔗"
-                                    LayerType.VECTOR_TIMELINE_MARKER -> "📍"
-                                    LayerType.VECTOR_ROUNDED_TRIANGLE -> "▲"
-                                    LayerType.VECTOR_CUT_CORNER_SQUARE -> "❖"
-                                    LayerType.VECTOR_RING_SEGMENT -> "🍩"
-                                }
-                                Text(
-                                    text = glyph,
-                                    color = if (item.baseColor == Color.White) Color.Black else Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-
+                            // Mini layer icon effect thumbnail displaying exact layer content & effects
+                            LayerMiniIconThumbnail(item)
                             Spacer(Modifier.width(8.dp))
-
                             // Title info & Opacity
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -526,7 +515,6 @@ fun RightsideLayerDrawer(
                                     }
                                 }
                             }
-
                             // Interactive utilities directly inside the Layer Item
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -537,14 +525,14 @@ fun RightsideLayerDrawer(
                                     IconButton(
                                         onClick = { showContextMenu = true },
                                         modifier = Modifier
-                                            .size(20.dp)
+                                            .size(44.dp)
                                             .testTag("layer_context_menu_button_${item.id}")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.MoreVert,
                                             contentDescription = "Expandable Context Menu",
                                             tint = TextSecondary,
-                                            modifier = Modifier.size(12.dp)
+                                            modifier = Modifier.size(24.dp)
                                         )
                                     }
                                     DropdownMenu(
@@ -573,6 +561,30 @@ fun RightsideLayerDrawer(
                                                 showContextMenu = false
                                             },
                                             modifier = Modifier.testTag("copy_layer_menu_item_${item.id}")
+                                        )
+                                        DropdownMenuItem(
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Extension,
+                                                    contentDescription = "Save to Elements",
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            },
+                                            text = {
+                                                Text(
+                                                    text = "Save to Elements",
+                                                    color = TextPrimary,
+                                                    style = MaterialTheme.typography.bodyMedium
+                                                )
+                                            },
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    com.example.studio.model.ElementsManager.saveElement(context, item.copy(id = java.util.UUID.randomUUID().toString()))
+                                                    android.widget.Toast.makeText(context, "Saved to Elements", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                                showContextMenu = false
+                                            }
                                         )
                                         DropdownMenuItem(
                                             leadingIcon = {
@@ -619,7 +631,71 @@ fun RightsideLayerDrawer(
                                         DropdownMenuItem(
                                             leadingIcon = {
                                                 Icon(
-                                                    imageVector = Icons.Default.Delete,
+                                                    imageVector = Icons.Default.SwapHoriz,
+                                                    contentDescription = "Flip Horizontal Icon",
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier.size(16.dp)
+                                                 )
+                                             },
+                                             text = {
+                                                 Text(
+                                                     text = "Flip Horizontally",
+                                                     color = TextPrimary,
+                                                     style = MaterialTheme.typography.bodyMedium
+                                                 )
+                                             },
+                                             onClick = {
+                                                 onFlipHorizontal(item.id)
+                                                 showContextMenu = false
+                                             }
+                                         )
+                                         DropdownMenuItem(
+                                             leadingIcon = {
+                                                 Icon(
+                                                     imageVector = Icons.Default.SwapVert,
+                                                     contentDescription = "Flip Vertical Icon",
+                                                     tint = TextSecondary,
+                                                     modifier = Modifier.size(16.dp)
+                                                 )
+                                             },
+                                             text = {
+                                                 Text(
+                                                     text = "Flip Vertically",
+                                                     color = TextPrimary,
+                                                     style = MaterialTheme.typography.bodyMedium
+                                                 )
+                                             },
+                                             onClick = {
+                                                 onFlipVertical(item.id)
+                                                 showContextMenu = false
+                                             }
+                                         )
+                                         DropdownMenuItem(
+                                             leadingIcon = {
+                                                 Icon(
+                                                     imageVector = Icons.Default.Layers,
+                                                     contentDescription = "Rasterize Icon",
+                                                     tint = TextSecondary,
+                                                     modifier = Modifier.size(16.dp)
+                                                 )
+                                             },
+                                             text = {
+                                                 Text(
+                                                     text = "Rasterize Layer",
+                                                     color = TextPrimary,
+                                                     style = MaterialTheme.typography.bodyMedium
+                                                 )
+                                             },
+                                             onClick = {
+                                                 onRasterizeLayer(item.id)
+                                                 showContextMenu = false
+                                             }
+                                         )
+                                         DropdownMenuItem(
+                                             enabled = !(item.type == LayerType.FREEHAND_DRAWING && item.brushPoints.isEmpty()),
+                                             leadingIcon = {
+                                                 Icon(
+                                                     imageVector = Icons.Default.Delete,
                                                     contentDescription = "Delete Icon",
                                                     tint = Color.Red,
                                                     modifier = Modifier.size(16.dp)
@@ -633,64 +709,223 @@ fun RightsideLayerDrawer(
                                                 )
                                             },
                                             onClick = {
-                                                onDeleteLayer(item.id)
+                                                val isItemEmptyLayer = item.type == LayerType.FREEHAND_DRAWING && item.brushPoints.isEmpty()
+                                                if (!isItemEmptyLayer) {
+                                                    onDeleteLayer(item.id)
+                                                }
                                                 showContextMenu = false
                                             }
                                         )
                                     }
                                 }
-
-                                // Reorder buttons
-                                IconButton(onClick = { onLayerReorderUp(index) }, modifier = Modifier.size(20.dp)) {
-                                    Icon(Icons.Default.ArrowDropUp, "Up", tint = TextPrimary, modifier = Modifier.size(15.dp))
-                                }
-                                IconButton(onClick = { onLayerReorderDown(index) }, modifier = Modifier.size(20.dp)) {
-                                    Icon(Icons.Default.ArrowDropDown, "Down", tint = TextPrimary, modifier = Modifier.size(15.dp))
-                                }
-
-                                // Alpha-Lock selector action padlock
-                                IconButton(
-                                    onClick = { onChangeAlphaLock(item.id) },
-                                    modifier = Modifier.size(20.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (item.isAlphaLocked) Icons.Default.Lock else Icons.Default.LockOpen,
-                                        contentDescription = "Alpha Lock Toggle",
-                                        tint = if (item.isAlphaLocked) EnergeticYellow else TextSecondary,
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                }
-
-                                // Clipping Mask toggle action
-                                IconButton(
-                                    onClick = { onChangeClippingMask(item.id) },
-                                    modifier = Modifier.size(20.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.FlipToBack,
-                                        contentDescription = "Clipping Mask Toggle",
-                                        tint = if (item.isClippingMask) IndustrialAmber else TextSecondary,
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                }
-
                                 // Visibility Toggle eye
                                 IconButton(
                                     onClick = { onChangeVisibility(item.id) },
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
                                         imageVector = if (item.isVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                         contentDescription = "Toggle visibility",
                                         tint = if (item.isVisible) TextPrimary else TextSecondary,
-                                        modifier = Modifier.size(11.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
+                                // Drag Handle icon for touch reorder
+                                Icon(
+                                    imageVector = Icons.Default.DragHandle,
+                                    contentDescription = "Drag to reorder layer",
+                                    tint = if (isDraggingThis) IndustrialAmber else TextSecondary,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .padding(4.dp)
+                                        .pointerInput(item.id) {
+                                            detectDragGestures(
+                                                onDragStart = {
+                                                    val isEmptyLayer = item.type == LayerType.FREEHAND_DRAWING && item.brushPoints.isEmpty()
+                                                    if (!isEmptyLayer) {
+                                                        draggedItemId = item.id
+                                                        dragOffsetY = 0f
+                                                    }
+                                                },
+                                                onDrag = { change, dragAmount ->
+                                                    if (draggedItemId != item.id) return@detectDragGestures
+                                                    change.consume()
+                                                    dragOffsetY += dragAmount.y
+                                                    
+                                                    val activeList = currentDisplayedLayers
+                                                    val masterList = currentLayers
+                                                    val currentIndex = activeList.indexOfFirst { it.id == item.id }
+                                                    if (currentIndex != -1) {
+                                                        val threshold = totalSlotHeightPx * 0.5f
+                                                        if (dragOffsetY > threshold) {
+                                                            if (currentIndex < activeList.size - 1) {
+                                                                val nextItem = activeList[currentIndex + 1]
+                                                                val masterCurr = masterList.indexOfFirst { it.id == item.id }
+                                                                val masterNext = masterList.indexOfFirst { it.id == nextItem.id }
+                                                                if (masterCurr != -1 && masterNext != -1) {
+                                                                    currentOnLayerMove(masterCurr, masterNext)
+                                                                    dragOffsetY -= totalSlotHeightPx
+                                                                }
+                                                            }
+                                                        } else if (dragOffsetY < -threshold) {
+                                                            if (currentIndex > 0) {
+                                                                val prevItem = activeList[currentIndex - 1]
+                                                                val masterCurr = masterList.indexOfFirst { it.id == item.id }
+                                                                val masterPrev = masterList.indexOfFirst { it.id == prevItem.id }
+                                                                if (masterCurr != -1 && masterPrev != -1) {
+                                                                    currentOnLayerMove(masterCurr, masterPrev)
+                                                                    dragOffsetY += totalSlotHeightPx
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                onDragEnd = {
+                                                    draggedItemId = null
+                                                    dragOffsetY = 0f
+                                                },
+                                                onDragCancel = {
+                                                    draggedItemId = null
+                                                    dragOffsetY = 0f
+                                                }
+                                            )
+                                        }
+                                )
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+@Composable
+fun LayerMiniIconThumbnail(
+    layer: StudioLayer,
+    modifier: Modifier = Modifier
+) {
+    // Check if layer has active SolidColor / ColorOverlay effect
+    val activeSolidEffect = layer.effects.find { 
+        it.isEnabled && it is com.example.studio.model.StudioEffect.PhotoshopEffect && 
+        (it.effectType == "SolidColor" || it.effectType == "ColorOverlay") 
+    } as? com.example.studio.model.StudioEffect.PhotoshopEffect
+    val effectiveColor = if (activeSolidEffect != null) {
+        val r = activeSolidEffect.parameters["Red"]?.value ?: activeSolidEffect.parameters["ColorRed"]?.value ?: 0f
+        val g = activeSolidEffect.parameters["Green"]?.value ?: activeSolidEffect.parameters["ColorGreen"]?.value ?: 0.9f
+        val b = activeSolidEffect.parameters["Blue"]?.value ?: activeSolidEffect.parameters["ColorBlue"]?.value ?: 1.0f
+        val op = activeSolidEffect.parameters["Opacity"]?.value ?: 1.0f
+        Color(r, g, b, op)
+    } else {
+        layer.baseColor
+    }
+    val displayColor = if (effectiveColor == Color.Transparent || effectiveColor.alpha < 0.05f) {
+        Color.White
+    } else {
+        effectiveColor
+    }
+    val hasActiveFx = layer.effects.any { it.isEnabled }
+    Box(
+        modifier = modifier
+            .size(32.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF1B1E24))
+            .border(0.8.dp, if (hasActiveFx) IndustrialAmber else HighslateOutline, RoundedCornerShape(6.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(24.dp)) {
+            val w = size.width
+            val h = size.height
+            // Render checkerboard pattern for transparent/alpha representation
+            val checkSize = 4f
+            for (cx in 0 until (w / checkSize).toInt()) {
+                for (cy in 0 until (h / checkSize).toInt()) {
+                    if ((cx + cy) % 2 == 0) {
+                        drawRect(
+                            color = Color(0xFF2A2E37),
+                            topLeft = androidx.compose.ui.geometry.Offset(cx * checkSize, cy * checkSize),
+                            size = androidx.compose.ui.geometry.Size(checkSize, checkSize)
+                        )
+                    }
+                }
+            }
+            // Draw miniature shape or stroke content based on layer type
+            when (layer.type) {
+                LayerType.VECTOR_CIRCLE, LayerType.VECTOR_OVAL, LayerType.VECTOR_RING -> {
+                    drawCircle(color = displayColor, radius = w * 0.38f)
+                }
+                LayerType.VECTOR_RECT, LayerType.VECTOR_ROUNDED_RECT -> {
+                    drawRect(color = displayColor, topLeft = androidx.compose.ui.geometry.Offset(w * 0.15f, h * 0.15f), size = androidx.compose.ui.geometry.Size(w * 0.7f, h * 0.7f))
+                }
+                LayerType.VECTOR_STAR -> {
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(w * 0.5f, h * 0.1f)
+                        lineTo(w * 0.62f, h * 0.38f)
+                        lineTo(w * 0.9f, h * 0.38f)
+                        lineTo(w * 0.68f, h * 0.58f)
+                        lineTo(w * 0.78f, h * 0.88f)
+                        lineTo(w * 0.5f, h * 0.7f)
+                        lineTo(w * 0.22f, h * 0.88f)
+                        lineTo(w * 0.32f, h * 0.58f)
+                        lineTo(w * 0.1f, h * 0.38f)
+                        lineTo(w * 0.38f, h * 0.38f)
+                        close()
+                    }
+                    drawPath(path, displayColor)
+                }
+                LayerType.VECTOR_TRIANGLE, LayerType.VECTOR_ROUNDED_TRIANGLE -> {
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(w * 0.5f, h * 0.15f)
+                        lineTo(w * 0.85f, h * 0.85f)
+                        lineTo(w * 0.15f, h * 0.85f)
+                        close()
+                    }
+                    drawPath(path, displayColor)
+                }
+                LayerType.FREEHAND_DRAWING -> {
+                    if (layer.brushPoints.isNotEmpty()) {
+                        val path = androidx.compose.ui.graphics.Path()
+                        val pts = layer.brushPoints
+                        if (pts.isNotEmpty()) {
+                            val minX = pts.minOf { it.x }
+                            val maxX = pts.maxOf { it.x }.coerceAtLeast(minX + 1f)
+                            val minY = pts.minOf { it.y }
+                            val maxY = pts.maxOf { it.y }.coerceAtLeast(minY + 1f)
+                            
+                            val scaleX = (w * 0.7f) / (maxX - minX)
+                            val scaleY = (h * 0.7f) / (maxY - minY)
+                            val s = minOf(scaleX, scaleY)
+                            
+                            path.moveTo(w * 0.15f + (pts[0].x - minX) * s, h * 0.15f + (pts[0].y - minY) * s)
+                            for (i in 1 until pts.size step 2) {
+                                path.lineTo(w * 0.15f + (pts[i].x - minX) * s, h * 0.15f + (pts[i].y - minY) * s)
+                            }
+                        }
+                        drawPath(
+                            path = path,
+                            color = displayColor,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                        )
+                    } else {
+                        drawLine(color = displayColor, start = androidx.compose.ui.geometry.Offset(w * 0.2f, h * 0.8f), end = androidx.compose.ui.geometry.Offset(w * 0.8f, h * 0.2f), strokeWidth = 3f)
+                    }
+                }
+                LayerType.IMAGE_CARD -> {
+                    drawRect(color = displayColor.copy(alpha = 0.5f), topLeft = androidx.compose.ui.geometry.Offset(w * 0.1f, h * 0.1f), size = androidx.compose.ui.geometry.Size(w * 0.8f, h * 0.8f))
+                    drawCircle(color = displayColor, center = androidx.compose.ui.geometry.Offset(w * 0.35f, h * 0.35f), radius = w * 0.12f)
+                }
+                else -> {
+                    drawCircle(color = displayColor, radius = w * 0.32f)
+                }
+            }
+        }
+        if (hasActiveFx) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 2.dp, y = (-2).dp)
+                    .size(8.dp)
+                    .background(IndustrialAmber, androidx.compose.foundation.shape.CircleShape)
+            )
         }
     }
 }

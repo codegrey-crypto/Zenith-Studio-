@@ -29,6 +29,7 @@ enum class LayerType {
     VECTOR_PIE_SLICE,
     VECTOR_ARROW,
     VECTOR_SPEECH_BUBBLE,
+    VECTOR_CHAT_BUBBLE,
     VECTOR_BRACKETS,
     VECTOR_DOUBLE_ARROW,
     VECTOR_CROSSHAIR,
@@ -43,6 +44,12 @@ enum class LayerType {
     VECTOR_ROUNDED_TRIANGLE,
     VECTOR_CUT_CORNER_SQUARE,
     VECTOR_RING_SEGMENT,
+    VECTOR_HUD_FRAME_1,
+    VECTOR_HUD_FRAME_2,
+    VECTOR_HUD_FRAME_3,
+    VECTOR_HUD_FRAME_4,
+    VECTOR_HUD_FRAME_5,
+    VECTOR_HUD_FRAME_6,
     TEXT,
     FREEHAND_DRAWING,
     IMAGE_CARD,
@@ -56,6 +63,8 @@ enum class ZenithBlendMode(val displayName: String) {
     MULTIPLY("Multiply"),
     SCREEN("Screen"),
     OVERLAY("Overlay"),
+    SOFT_LIGHT("Soft Light"),
+    HARD_LIGHT("Hard Light"),
     LINEAR_DODGE("Linear Dodge (Add)"),
     DARKEN("Darken"),
     LIGHTEN("Lighten"),
@@ -75,6 +84,8 @@ enum class ZenithBlendMode(val displayName: String) {
             MULTIPLY -> BlendMode.Multiply
             SCREEN -> BlendMode.Screen
             OVERLAY -> BlendMode.Overlay
+            SOFT_LIGHT -> BlendMode.Softlight
+            HARD_LIGHT -> BlendMode.Hardlight
             LINEAR_DODGE -> BlendMode.Plus
             DARKEN -> BlendMode.Darken
             LIGHTEN -> BlendMode.Lighten
@@ -319,10 +330,12 @@ object PhotoshopEffectTemplates {
                 category = "Layer Styles (fx)",
                 effectType = effectType,
                 parameters = mapOf(
-                    "Distance" to EffectParameter("Distance", 10f, 0f, 100f, "px"),
+                    "Distance" to EffectParameter("Distance", 10f, 0f, 3000f, "px"),
                     "Size" to EffectParameter("Size (Blur)", 15f, 0f, 100f, "px"),
                     "Angle" to EffectParameter("Angle", 120f, 0f, 360f, "°"),
-                    "Opacity" to EffectParameter("Opacity", 0.5f, 0f, 1f)
+                    "Opacity" to EffectParameter("Opacity", 0.5f, 0f, 1f),
+                    "Hardness" to EffectParameter("Edge Hardness", 0f, 0f, 1f, ""),
+                    "BlendMode" to EffectParameter("Blend Mode (Norm=0,Mul=1,Scr=2,Add=3,Ovl=4,Lgt=5,Dkn=6)", 1f, 0f, 6f)
                 )
             )
             "InnerShadow" -> StudioEffect.PhotoshopEffect(
@@ -335,7 +348,8 @@ object PhotoshopEffectTemplates {
                     "Choke" to EffectParameter("Choke", 0f, 0f, 100f, "%"),
                     "Size" to EffectParameter("Size", 10f, 0f, 120f, "px"),
                     "Angle" to EffectParameter("Angle", 120f, 0f, 360f, "°"),
-                    "Opacity" to EffectParameter("Opacity", 0.5f, 0f, 1f)
+                    "Opacity" to EffectParameter("Opacity", 0.5f, 0f, 1f),
+                    "BlendMode" to EffectParameter("Blend Mode (Norm=0,Mul=1,Scr=2,Add=3,Ovl=4,Lgt=5,Dkn=6)", 1f, 0f, 6f)
                 )
             )
             "OuterGlow" -> StudioEffect.PhotoshopEffect(
@@ -346,7 +360,8 @@ object PhotoshopEffectTemplates {
                 parameters = mapOf(
                     "Size" to EffectParameter("Size", 20f, 0f, 100f, "px"),
                     "Spread" to EffectParameter("Spread", 10f, 0f, 100f, "%"),
-                    "Opacity" to EffectParameter("Opacity", 0.75f, 0f, 1f)
+                    "Opacity" to EffectParameter("Opacity", 0.75f, 0f, 1f),
+                    "BlendMode" to EffectParameter("Blend Mode (Norm=0,Mul=1,Scr=2,Add=3,Ovl=4,Lgt=5,Dkn=6)", 2f, 0f, 6f)
                 )
             )
             "InnerGlow" -> StudioEffect.PhotoshopEffect(
@@ -355,8 +370,16 @@ object PhotoshopEffectTemplates {
                 category = "Layer Styles (fx)",
                 effectType = effectType,
                 parameters = mapOf(
-                    "Choke" to EffectParameter("Choke", 15f, 1f, 50f, "px"),
-                    "Opacity" to EffectParameter("Opacity", 0.65f, 0f, 1f)
+                    "Distance" to EffectParameter("Distance", 0f, 0f, 100f, "px"),
+                    "Size" to EffectParameter("Size (Blur)", 15f, 0f, 100f, "px"),
+                    "Angle" to EffectParameter("Angle", 120f, 0f, 360f, "°"),
+                    "Opacity" to EffectParameter("Opacity", 0.65f, 0f, 1f),
+                    "Hardness" to EffectParameter("Hardness", 0.0f, 0.0f, 1.0f),
+                    "Choke" to EffectParameter("Choke", 15f, 0f, 100f, "%"),
+                    "BlendMode" to EffectParameter("Blend Mode (Norm=0,Mul=1,Scr=2,Add=3,Ovl=4,Lgt=5,Dkn=6)", 2f, 0f, 6f),
+                    "Red" to EffectParameter("Color Red", 1.0f, 0f, 1f),
+                    "Green" to EffectParameter("Color Green", 1.0f, 0f, 1f),
+                    "Blue" to EffectParameter("Color Blue", 1.0f, 0f, 1f)
                 )
             )
             "BevelEmboss" -> StudioEffect.PhotoshopEffect(
@@ -365,11 +388,16 @@ object PhotoshopEffectTemplates {
                 category = "Layer Styles (fx)",
                 effectType = effectType,
                 parameters = mapOf(
+                    "Style" to EffectParameter("Style (0=Inner,1=Outer,2=Emboss,3=Pillow)", 0f, 0f, 3f),
+                    "Technique" to EffectParameter("Technique (0=Smooth,1=Chisel Hard,2=Chisel Soft)", 0f, 0f, 2f),
+                    "Direction" to EffectParameter("Direction (0=Up,1=Down)", 0f, 0f, 1f),
                     "Depth" to EffectParameter("Depth", 100f, 1f, 1000f, "%"),
-                    "Size" to EffectParameter("Size", 5f, 1f, 100f, "px"),
+                    "Size" to EffectParameter("Size", 8f, 1f, 100f, "px"),
                     "Soften" to EffectParameter("Soften", 0f, 0f, 32f, "px"),
                     "Angle" to EffectParameter("Angle", 120f, 0f, 360f, "°"),
-                    "Altitude" to EffectParameter("Altitude", 30f, 0f, 90f, "°")
+                    "Altitude" to EffectParameter("Altitude", 30f, 0f, 90f, "°"),
+                    "Highlight Opacity" to EffectParameter("Highlight Opacity", 0.75f, 0f, 1f),
+                    "Shadow Opacity" to EffectParameter("Shadow Opacity", 0.75f, 0f, 1f)
                 )
             )
             "Satin" -> StudioEffect.PhotoshopEffect(
@@ -391,6 +419,18 @@ object PhotoshopEffectTemplates {
                 parameters = mapOf(
                     "HueShift" to EffectParameter("Hue Shift", 0f, -180f, 180f, "°"),
                     "Opacity" to EffectParameter("Opacity", 1f, 0f, 1f)
+                )
+            )
+            "SolidColor" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Solid Color",
+                category = "Layer Styles (fx)",
+                effectType = effectType,
+                parameters = mapOf(
+                    "Red" to EffectParameter("Color Red", 0.0f, 0f, 1f),
+                    "Green" to EffectParameter("Color Green", 0.9f, 0f, 1f),
+                    "Blue" to EffectParameter("Color Blue", 1.0f, 0f, 1f),
+                    "Opacity" to EffectParameter("Opacity", 1.0f, 0f, 1f)
                 )
             )
             "GradientOverlay" -> StudioEffect.PhotoshopEffect(
@@ -417,8 +457,16 @@ object PhotoshopEffectTemplates {
                 category = "Layer Styles (fx)",
                 effectType = effectType,
                 parameters = mapOf(
-                    "Scale" to EffectParameter("Scale", 100f, 1f, 200f, "%"),
-                    "Opacity" to EffectParameter("Opacity", 1f, 0f, 1f)
+                    "Scale" to EffectParameter("Scale", 100f, 5f, 300f, "%"),
+                    "Angle" to EffectParameter("Rotation Angle", 0f, 0f, 360f, "°"),
+                    "Opacity" to EffectParameter("Opacity", 1f, 0f, 1f),
+                    "X Offset" to EffectParameter("X Offset", 0f, -200f, 200f, "px"),
+                    "Y Offset" to EffectParameter("Y Offset", 0f, -200f, 200f, "px"),
+                    "Pattern Style" to EffectParameter("Pattern Style", 0f, 0f, 6f),
+                    "Hide Base Shape" to EffectParameter("Hide Base Shape", 1f, 0f, 1f),
+                    "Color Red" to EffectParameter("Color Red", 1.0f, 0f, 1f),
+                    "Color Green" to EffectParameter("Color Green", 1.0f, 0f, 1f),
+                    "Color Blue" to EffectParameter("Color Blue", 1.0f, 0f, 1f)
                 )
             )
             "Stroke" -> StudioEffect.PhotoshopEffect(
@@ -431,6 +479,21 @@ object PhotoshopEffectTemplates {
                     "Opacity" to EffectParameter("Opacity", 1f, 0f, 1f)
                 )
             )
+            "Grid", "Grids" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Grids",
+                category = "Layer Styles (fx)",
+                effectType = "Grids",
+                parameters = mapOf(
+                    "Columns" to EffectParameter("Columns", 8f, 1f, 100f),
+                    "Rows" to EffectParameter("Rows", 8f, 1f, 100f),
+                    "Width" to EffectParameter("Line Width", 1.5f, 0.5f, 20f, "px"),
+                    "ColorRed" to EffectParameter("Color Red", 1.0f, 0f, 1f),
+                    "ColorGreen" to EffectParameter("Color Green", 1.0f, 0f, 1f),
+                    "ColorBlue" to EffectParameter("Color Blue", 1.0f, 0f, 1f),
+                    "ColorAlpha" to EffectParameter("Color Alpha", 1.0f, 0f, 1f)
+                )
+            )
             "BordersAndShadows" -> StudioEffect.PhotoshopEffect(
                 id = id,
                 name = "Borders & Shadows",
@@ -438,7 +501,7 @@ object PhotoshopEffectTemplates {
                 effectType = effectType,
                 parameters = mapOf(
                     "DropShadow_Enabled" to EffectParameter("Drop Shadow Enabled", 0f, 0f, 1f),
-                    "DropShadow_Distance" to EffectParameter("Drop Shadow Distance", 10f, 0f, 100f, "px"),
+                    "DropShadow_Distance" to EffectParameter("Drop Shadow Distance", 10f, 0f, 3000f, "px"),
                     "DropShadow_Size" to EffectParameter("Drop Shadow Size (Blur)", 15f, 0f, 120f, "px"),
                     "DropShadow_Angle" to EffectParameter("Drop Shadow Angle", 120f, 0f, 360f, "°"),
                     "DropShadow_Opacity" to EffectParameter("Drop Shadow Opacity", 0.5f, 0f, 1f),
@@ -464,6 +527,7 @@ object PhotoshopEffectTemplates {
 
                     "InnerBorder_Enabled" to EffectParameter("Inner Border Enabled", 0f, 0f, 1f),
                     "InnerBorder_Size" to EffectParameter("Inner Border Size", 0f, 0f, 100f, "px"),
+                    "InnerBorder_CornerRadius" to EffectParameter("Inner Border Corner Radius", 0f, 0f, 100f, "px"),
                     "InnerBorder_Opacity" to EffectParameter("Inner Border Opacity", 1f, 0f, 1f),
                     "InnerBorder_Color_R" to EffectParameter("Inner Border Color Red", 1f, 0f, 1f),
                     "InnerBorder_Color_G" to EffectParameter("Inner Border Color Green", 1f, 0f, 1f),
@@ -471,6 +535,7 @@ object PhotoshopEffectTemplates {
 
                     "OuterBorder_Enabled" to EffectParameter("Outer Border Enabled", 0f, 0f, 1f),
                     "OuterBorder_Size" to EffectParameter("Outer Border Size", 0f, 0f, 100f, "px"),
+                    "OuterBorder_CornerRadius" to EffectParameter("Outer Border Corner Radius", 0f, 0f, 100f, "px"),
                     "OuterBorder_Opacity" to EffectParameter("Outer Border Opacity", 1f, 0f, 1f),
                     "OuterBorder_Color_R" to EffectParameter("Outer Border Color Red", 1f, 0f, 1f),
                     "OuterBorder_Color_G" to EffectParameter("Outer Border Color Green", 1f, 0f, 1f),
@@ -478,6 +543,7 @@ object PhotoshopEffectTemplates {
 
                     "InnerStroke_Enabled" to EffectParameter("Inner Stroke Enabled", 0f, 0f, 1f),
                     "InnerStroke_Size" to EffectParameter("Inner Stroke Size", 0f, 0f, 100f, "px"),
+                    "InnerStroke_CornerRadius" to EffectParameter("Inner Stroke Corner Radius", 0f, 0f, 100f, "px"),
                     "InnerStroke_Opacity" to EffectParameter("Inner Stroke Opacity", 1f, 0f, 1f),
                     "InnerStroke_Color_R" to EffectParameter("Inner Stroke Color Red", 1f, 0f, 1f),
                     "InnerStroke_Color_G" to EffectParameter("Inner Stroke Color Green", 1f, 0f, 1f),
@@ -485,6 +551,7 @@ object PhotoshopEffectTemplates {
 
                     "OuterStroke_Enabled" to EffectParameter("Outer Stroke Enabled", 0f, 0f, 1f),
                     "OuterStroke_Size" to EffectParameter("Outer Stroke Size", 0f, 0f, 100f, "px"),
+                    "OuterStroke_CornerRadius" to EffectParameter("Outer Stroke Corner Radius", 0f, 0f, 100f, "px"),
                     "OuterStroke_Opacity" to EffectParameter("Outer Stroke Opacity", 1f, 0f, 1f),
                     "OuterStroke_Color_R" to EffectParameter("Outer Stroke Color Red", 1f, 0f, 1f),
                     "OuterStroke_Color_G" to EffectParameter("Outer Stroke Color Green", 1f, 0f, 1f),
@@ -495,7 +562,85 @@ object PhotoshopEffectTemplates {
                     "CenterStroke_Opacity" to EffectParameter("Center Stroke Opacity", 1f, 0f, 1f),
                     "CenterStroke_Color_R" to EffectParameter("Center Stroke Color Red", 1f, 0f, 1f),
                     "CenterStroke_Color_G" to EffectParameter("Center Stroke Color Green", 1f, 0f, 1f),
-                    "CenterStroke_Color_B" to EffectParameter("Center Stroke Color Blue", 1f, 0f, 1f)
+                    "CenterStroke_Color_B" to EffectParameter("Center Stroke Color Blue", 1f, 0f, 1f),
+
+                    // Gradients for Shadows and Borders
+                    "DropShadow_Grad_Enabled" to EffectParameter("Drop Shadow Grad Enabled", 0f, 0f, 1f),
+                    "DropShadow_Grad_R1" to EffectParameter("Drop Shadow Grad Start R", 1f, 0f, 1f),
+                    "DropShadow_Grad_G1" to EffectParameter("Drop Shadow Grad Start G", 1f, 0f, 1f),
+                    "DropShadow_Grad_B1" to EffectParameter("Drop Shadow Grad Start B", 1f, 0f, 1f),
+                    "DropShadow_Grad_A1" to EffectParameter("Drop Shadow Grad Start A", 1f, 0f, 1f),
+                    "DropShadow_Grad_R2" to EffectParameter("Drop Shadow Grad End R", 0f, 0f, 1f),
+                    "DropShadow_Grad_G2" to EffectParameter("Drop Shadow Grad End G", 0f, 0f, 1f),
+                    "DropShadow_Grad_B2" to EffectParameter("Drop Shadow Grad End B", 0f, 0f, 1f),
+                    "DropShadow_Grad_A2" to EffectParameter("Drop Shadow Grad End A", 1f, 0f, 1f),
+                    "DropShadow_Grad_Angle" to EffectParameter("Drop Shadow Grad Angle", 90f, 0f, 360f, "°"),
+
+                    "InnerShadow_Grad_Enabled" to EffectParameter("Inner Shadow Grad Enabled", 0f, 0f, 1f),
+                    "InnerShadow_Grad_R1" to EffectParameter("Inner Shadow Grad Start R", 1f, 0f, 1f),
+                    "InnerShadow_Grad_G1" to EffectParameter("Inner Shadow Grad Start G", 1f, 0f, 1f),
+                    "InnerShadow_Grad_B1" to EffectParameter("Inner Shadow Grad Start B", 1f, 0f, 1f),
+                    "InnerShadow_Grad_A1" to EffectParameter("Inner Shadow Grad Start A", 1f, 0f, 1f),
+                    "InnerShadow_Grad_R2" to EffectParameter("Inner Shadow Grad End R", 0f, 0f, 1f),
+                    "InnerShadow_Grad_G2" to EffectParameter("Inner Shadow Grad End G", 0f, 0f, 1f),
+                    "InnerShadow_Grad_B2" to EffectParameter("Inner Shadow Grad End B", 0f, 0f, 1f),
+                    "InnerShadow_Grad_A2" to EffectParameter("Inner Shadow Grad End A", 1f, 0f, 1f),
+                    "InnerShadow_Grad_Angle" to EffectParameter("Inner Shadow Grad Angle", 90f, 0f, 360f, "°"),
+
+                    "InnerBorder_Grad_Enabled" to EffectParameter("Inner Border Grad Enabled", 0f, 0f, 1f),
+                    "InnerBorder_Grad_R1" to EffectParameter("Inner Border Grad Start R", 1f, 0f, 1f),
+                    "InnerBorder_Grad_G1" to EffectParameter("Inner Border Grad Start G", 1f, 0f, 1f),
+                    "InnerBorder_Grad_B1" to EffectParameter("Inner Border Grad Start B", 1f, 0f, 1f),
+                    "InnerBorder_Grad_A1" to EffectParameter("Inner Border Grad Start A", 1f, 0f, 1f),
+                    "InnerBorder_Grad_R2" to EffectParameter("Inner Border Grad End R", 0f, 0f, 1f),
+                    "InnerBorder_Grad_G2" to EffectParameter("Inner Border Grad End G", 0f, 0f, 1f),
+                    "InnerBorder_Grad_B2" to EffectParameter("Inner Border Grad End B", 0f, 0f, 1f),
+                    "InnerBorder_Grad_A2" to EffectParameter("Inner Border Grad End A", 1f, 0f, 1f),
+                    "InnerBorder_Grad_Angle" to EffectParameter("Inner Border Grad Angle", 90f, 0f, 360f, "°"),
+
+                    "OuterBorder_Grad_Enabled" to EffectParameter("Outer Border Grad Enabled", 0f, 0f, 1f),
+                    "OuterBorder_Grad_R1" to EffectParameter("Outer Border Grad Start R", 1f, 0f, 1f),
+                    "OuterBorder_Grad_G1" to EffectParameter("Outer Border Grad Start G", 1f, 0f, 1f),
+                    "OuterBorder_Grad_B1" to EffectParameter("Outer Border Grad Start B", 1f, 0f, 1f),
+                    "OuterBorder_Grad_A1" to EffectParameter("Outer Border Grad Start A", 1f, 0f, 1f),
+                    "OuterBorder_Grad_R2" to EffectParameter("Outer Border Grad End R", 0f, 0f, 1f),
+                    "OuterBorder_Grad_G2" to EffectParameter("Outer Border Grad End G", 0f, 0f, 1f),
+                    "OuterBorder_Grad_B2" to EffectParameter("Outer Border Grad End B", 0f, 0f, 1f),
+                    "OuterBorder_Grad_A2" to EffectParameter("Outer Border Grad End A", 1f, 0f, 1f),
+                    "OuterBorder_Grad_Angle" to EffectParameter("Outer Border Grad Angle", 90f, 0f, 360f, "°"),
+
+                    "InnerStroke_Grad_Enabled" to EffectParameter("Inner Stroke Grad Enabled", 0f, 0f, 1f),
+                    "InnerStroke_Grad_R1" to EffectParameter("Inner Stroke Grad Start R", 1f, 0f, 1f),
+                    "InnerStroke_Grad_G1" to EffectParameter("Inner Stroke Grad Start G", 1f, 0f, 1f),
+                    "InnerStroke_Grad_B1" to EffectParameter("Inner Stroke Grad Start B", 1f, 0f, 1f),
+                    "InnerStroke_Grad_A1" to EffectParameter("Inner Stroke Grad Start A", 1f, 0f, 1f),
+                    "InnerStroke_Grad_R2" to EffectParameter("Inner Stroke Grad End R", 0f, 0f, 1f),
+                    "InnerStroke_Grad_G2" to EffectParameter("Inner Stroke Grad End G", 0f, 0f, 1f),
+                    "InnerStroke_Grad_B2" to EffectParameter("Inner Stroke Grad End B", 0f, 0f, 1f),
+                    "InnerStroke_Grad_A2" to EffectParameter("Inner Stroke Grad End A", 1f, 0f, 1f),
+                    "InnerStroke_Grad_Angle" to EffectParameter("Inner Stroke Grad Angle", 90f, 0f, 360f, "°"),
+
+                    "OuterStroke_Grad_Enabled" to EffectParameter("Outer Stroke Grad Enabled", 0f, 0f, 1f),
+                    "OuterStroke_Grad_R1" to EffectParameter("Outer Stroke Grad Start R", 1f, 0f, 1f),
+                    "OuterStroke_Grad_G1" to EffectParameter("Outer Stroke Grad Start G", 1f, 0f, 1f),
+                    "OuterStroke_Grad_B1" to EffectParameter("Outer Stroke Grad Start B", 1f, 0f, 1f),
+                    "OuterStroke_Grad_A1" to EffectParameter("Outer Stroke Grad Start A", 1f, 0f, 1f),
+                    "OuterStroke_Grad_R2" to EffectParameter("Outer Stroke Grad End R", 0f, 0f, 1f),
+                    "OuterStroke_Grad_G2" to EffectParameter("Outer Stroke Grad End G", 0f, 0f, 1f),
+                    "OuterStroke_Grad_B2" to EffectParameter("Outer Stroke Grad End B", 0f, 0f, 1f),
+                    "OuterStroke_Grad_A2" to EffectParameter("Outer Stroke Grad End A", 1f, 0f, 1f),
+                    "OuterStroke_Grad_Angle" to EffectParameter("Outer Stroke Grad Angle", 90f, 0f, 360f, "°"),
+
+                    "CenterStroke_Grad_Enabled" to EffectParameter("Center Stroke Grad Enabled", 0f, 0f, 1f),
+                    "CenterStroke_Grad_R1" to EffectParameter("Center Stroke Grad Start R", 1f, 0f, 1f),
+                    "CenterStroke_Grad_G1" to EffectParameter("Center Stroke Grad Start G", 1f, 0f, 1f),
+                    "CenterStroke_Grad_B1" to EffectParameter("Center Stroke Grad Start B", 1f, 0f, 1f),
+                    "CenterStroke_Grad_A1" to EffectParameter("Center Stroke Grad Start A", 1f, 0f, 1f),
+                    "CenterStroke_Grad_R2" to EffectParameter("Center Stroke Grad End R", 0f, 0f, 1f),
+                    "CenterStroke_Grad_G2" to EffectParameter("Center Stroke Grad End G", 0f, 0f, 1f),
+                    "CenterStroke_Grad_B2" to EffectParameter("Center Stroke Grad End B", 0f, 0f, 1f),
+                    "CenterStroke_Grad_A2" to EffectParameter("Center Stroke Grad End A", 1f, 0f, 1f),
+                    "CenterStroke_Grad_Angle" to EffectParameter("Center Stroke Grad Angle", 90f, 0f, 360f, "°")
                 )
             )
 
@@ -1256,13 +1401,14 @@ object PhotoshopEffectTemplates {
                     "Pressure" to EffectParameter("Pressure", 50f, 1f, 100f, "%")
                 )
             )
-            "CameraRaw" -> StudioEffect.PhotoshopEffect(
+            "CameraRaw", "Fast Adjusting", "FastAdjusting", "color_fast_adjusting", "fast_adj" -> StudioEffect.PhotoshopEffect(
                 id = id,
-                name = "Camera Raw Filter",
+                name = if (effectType.contains("Fast", ignoreCase = true)) "Fast Adjusting" else "Camera Raw Filter",
                 category = "Advanced & AI Engines",
                 effectType = effectType,
                 parameters = mapOf(
                     "Exposure" to EffectParameter("Exposure", 0f, -5f, 5f, "ev"),
+                    "Brightness" to EffectParameter("Brightness", 0f, -100f, 100f, "%"),
                     "Contrast" to EffectParameter("Contrast", 0f, -100f, 100f, "%"),
                     "Highlights" to EffectParameter("Highlights", 0f, -100f, 100f, "%"),
                     "Shadows" to EffectParameter("Shadows", 0f, -100f, 100f, "%"),
@@ -1301,20 +1447,6 @@ object PhotoshopEffectTemplates {
                     "WarpFrequency" to EffectParameter("Warp Wave Frequency", 1f, 0f, 5f),
                     "SubjectCutout" to EffectParameter("Subject Cutout Opacity", 1f, 0f, 1f),
                     "CutoutThreshold" to EffectParameter("Cutout Threshold", 230f, 0f, 255f)
-                )
-            )
-            "RasterExtrude" -> StudioEffect.PhotoshopEffect(
-                id = id,
-                name = "Raster Extrude",
-                category = "3D",
-                effectType = effectType,
-                parameters = mapOf(
-                    "Alpha" to EffectParameter("Orientation Alpha", 57f, -180f, 180f, "°"),
-                    "Beta" to EffectParameter("Orientation Beta", 0f, -180f, 180f, "°"),
-                    "RotX" to EffectParameter("Rotation X", 0f, -180f, 180f, "°"),
-                    "RotY" to EffectParameter("Rotation Y", 39f, -180f, 180f, "°"),
-                    "RotZ" to EffectParameter("Rotation Z", 0f, -180f, 180f, "°"),
-                    "ExtrusionDepth" to EffectParameter("Extrusion Depth / Width", 20f, 0f, 200f, "%")
                 )
             )
             "ColorGrading" -> StudioEffect.PhotoshopEffect(
@@ -1440,7 +1572,13 @@ object PhotoshopEffectTemplates {
                 category = "Light Effects",
                 effectType = effectType,
                 parameters = mapOf(
-                    "Radius" to EffectParameter("Radius", 104f, 5f, 300f, "px"),
+                    "Distance" to EffectParameter("Distance", 0f, 0f, 100f, "px"),
+                    "Size" to EffectParameter("Size (Blur)", 15f, 0f, 100f, "px"),
+                    "Angle" to EffectParameter("Angle", 120f, 0f, 360f, "°"),
+                    "Opacity" to EffectParameter("Opacity", 0.65f, 0f, 1f),
+                    "Hardness" to EffectParameter("Hardness", 0.0f, 0.0f, 1.0f),
+                    "Choke" to EffectParameter("Choke", 15f, 0f, 100f, "%"),
+                    "BlendMode" to EffectParameter("Blend Mode (Norm=0,Mul=1,Scr=2,Add=3,Ovl=4,Lgt=5,Dkn=6)", 2f, 0f, 6f),
                     "Red" to EffectParameter("Color Red", 1.0f, 0f, 1f),
                     "Green" to EffectParameter("Color Green", 1.0f, 0f, 1f),
                     "Blue" to EffectParameter("Color Blue", 1.0f, 0f, 1f)
@@ -1492,6 +1630,20 @@ object PhotoshopEffectTemplates {
                     "Blue" to EffectParameter("Color Blue", 0f, 0f, 1f)
                 )
             )
+            "ChromaKey" -> StudioEffect.PhotoshopEffect(
+                id = id,
+                name = "Chroma Key (Green Screen)",
+                category = "Core Filters",
+                effectType = effectType,
+                parameters = mapOf(
+                    "KeyRed" to EffectParameter("Key Red", 0f, 0f, 1f),
+                    "KeyGreen" to EffectParameter("Key Green", 1f, 0f, 1f),
+                    "KeyBlue" to EffectParameter("Key Blue", 0f, 0f, 1f),
+                    "Similarity" to EffectParameter("Similarity", 0.35f, 0.01f, 1.0f),
+                    "Smoothness" to EffectParameter("Edge Smoothness", 0.15f, 0.0f, 1.0f),
+                    "SpillSuppression" to EffectParameter("Spill Suppression", 0.5f, 0.0f, 1.0f)
+                )
+            )
             else -> StudioEffect.GaussianBlur(id = id)
         }
     }
@@ -1503,8 +1655,8 @@ object PhotoshopEffectTemplates {
         ),
         "Layer Styles (fx)" to listOf(
             "DropShadow", "InnerShadow", "OuterGlow", "InnerGlow",
-            "BevelEmboss", "Satin", "ColorOverlay", "GradientOverlay",
-            "PatternOverlay", "Stroke", "GlassMorphism", "ReededGlass"
+            "BevelEmboss", "Satin", "ColorOverlay", "SolidColor", "GradientOverlay",
+            "PatternOverlay", "Stroke", "GlassMorphism", "ReededGlass", "Grids"
         ),
         "Core Filters" to listOf(
             "GaussianBlur", "MotionBlur", "RadialBlur", "LensBlur",
@@ -1513,16 +1665,13 @@ object PhotoshopEffectTemplates {
             "ColorHalftone", "Crystallize", "Mosaic", "Pointillize",
             "Clouds", "LensFlare", "LightingEffects", "UnsharpMask",
             "SmartSharpen", "HighPass", "FindEdges", "Emboss",
-            "OilPaint", "Solarize", "Wind", "ColorGrading"
+            "OilPaint", "Solarize", "Wind", "ColorGrading", "ChromaKey"
         ),
         "Filter Gallery" to listOf(
             "Artistic", "BrushStrokes", "Sketch", "Texture"
         ),
         "Advanced & AI Engines" to listOf(
             "Liquify", "CameraRaw", "NeuralFilters", "PixelStretch"
-        ),
-        "3D" to listOf(
-            "RasterExtrude"
         )
     )
 }
@@ -1555,10 +1704,15 @@ data class StudioLayer(
     val effects: List<StudioEffect> = emptyList(),
     // Type specific options
     val textContent: String = "",
-    val baseColor: Color = Color.White,
+    val baseColor: Color = Color.Black,
     val brushPoints: List<Offset> = emptyList(), // Store hand drawings
     val imageResourceId: Int? = null,             // ID of reference vector
     val imageUri: String? = null,                  // Loaded dynamic photo/bitmap path
+    // Crop boundaries (0.0 to 1.0 normalized)
+    val cropLeft: Float = 0f,
+    val cropTop: Float = 0f,
+    val cropRight: Float = 1.0f,
+    val cropBottom: Float = 1.0f,
     // Shape styling parameters (edit shape tab support)
     val cornerRadius: Float = 0f,
     val polygonEdges: Int = 5,
@@ -1568,11 +1722,14 @@ data class StudioLayer(
     val pivotY: Float = 0.5f,
     // Text formatting and font parameters
     val fontSize: Float = 36f,
+    val letterSpacing: Float = 0f,
+    val lineSpacing: Float = 1.0f,
     val fontFamilyName: String = "Sans-Serif",
     val fontIsBold: Boolean = false,
     val fontIsItalic: Boolean = false,
     val fontAlign: String = "Center",
     val fontPath: String? = null,
+    val richTextSpansJson: String = "",
     val parentGroupId: String? = null,
     // Dynamic GPU non-destructive adjustment properties
     val adjBrightness: Float = 0f,
@@ -1580,5 +1737,60 @@ data class StudioLayer(
     val adjSaturation: Float = 1f,
     val adjColorTint: Color = Color.Transparent,
     val adjTintColorIntensity: Float = 0f,
-    val bezierNodeTypes: List<String> = emptyList()
+    val bezierNodeTypes: List<String> = emptyList(),
+    val perspWarpPointsStr: String = "",
+    val meshWarpPointsStr: String = "",
+    val warpRepeatMode: String = "Off",
+    val warpRepeatX: Float = 1.0f,
+    val warpRepeatY: Float = 1.0f,
+    val warpPhaseX: Float = 0.0f,
+    val warpPhaseY: Float = 0.0f,
+    val warpInterpolation: Boolean = true,
+    val warpTarget: String = "Layer",
+    val warpMeshDivisionX: Int = 3,
+    val warpMeshDivisionY: Int = 3,
+    val threeDStateJson: String? = null
 )
+
+data class ImageCropDrawParams(
+    val srcX: Int,
+    val srcY: Int,
+    val srcW: Int,
+    val srcH: Int,
+    val drawW: Float,
+    val drawH: Float,
+    val offsetX: Float,
+    val offsetY: Float
+)
+
+fun calculateImageCropDrawParams(
+    bitmapWidth: Int,
+    bitmapHeight: Int,
+    cropLeft: Float,
+    cropTop: Float,
+    cropRight: Float,
+    cropBottom: Float,
+    layerWidth: Float,
+    layerHeight: Float
+): ImageCropDrawParams {
+    val cL = cropLeft.coerceIn(0f, 0.95f)
+    val cT = cropTop.coerceIn(0f, 0.95f)
+    val cR = cropRight.coerceIn(cL + 0.05f, 1.0f)
+    val cB = cropBottom.coerceIn(cT + 0.05f, 1.0f)
+
+    val srcX = (cL * bitmapWidth).toInt().coerceIn(0, (bitmapWidth - 1).coerceAtLeast(0))
+    val srcY = (cT * bitmapHeight).toInt().coerceIn(0, (bitmapHeight - 1).coerceAtLeast(0))
+    val srcW = ((cR - cL) * bitmapWidth).toInt().coerceIn(1, (bitmapWidth - srcX).coerceAtLeast(1))
+    val srcH = ((cB - cT) * bitmapHeight).toInt().coerceIn(1, (bitmapHeight - srcY).coerceAtLeast(1))
+
+    return ImageCropDrawParams(
+        srcX = srcX,
+        srcY = srcY,
+        srcW = srcW,
+        srcH = srcH,
+        drawW = layerWidth,
+        drawH = layerHeight,
+        offsetX = 0f,
+        offsetY = 0f
+    )
+}

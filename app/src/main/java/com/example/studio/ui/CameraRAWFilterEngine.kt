@@ -49,28 +49,16 @@ uniform highp float uProfile; // Camera Profile 3x3 Matrix Key
 
 // sRGB to Linear Space conversion to operate perfectly on radiometric values
 highp vec3 srgbToLinear(highp vec3 srgb) {
-    highp vec3 linear;
-    for (int i = 0; i < 3; i++) {
-        if (srgb[i] <= 0.04045) {
-            linear[i] = srgb[i] / 12.92;
-        } else {
-            linear[i] = pow((srgb[i] + 0.055) / 1.055, 2.4);
-        }
-    }
-    return linear;
+    highp vec3 bLess = step(vec3(0.04045), srgb);
+    highp vec3 linOut = mix( srgb / vec3(12.92), pow((srgb + vec3(0.055)) / vec3(1.055), vec3(2.4)), bLess );
+    return linOut;
 }
 
 // Linear Space back to sRGB Space mapping
 highp vec3 linearToSrgb(highp vec3 linear) {
-    highp vec3 srgb;
-    for (int i = 0; i < 3; i++) {
-        if (linear[i] <= 0.0031308) {
-            srgb[i] = linear[i] * 12.92;
-        } else {
-            srgb[i] = 1.055 * pow(linear[i], 1.0 / 2.4) - 0.055;
-        }
-    }
-    return srgb;
+    highp vec3 bLess = step(vec3(0.0031308), linear);
+    highp vec3 srgbOut = mix( linear * vec3(12.92), vec3(1.055) * pow(linear, vec3(1.0/2.4)) - vec3(0.055), bLess );
+    return srgbOut;
 }
 
 void main() {
@@ -388,5 +376,89 @@ object CameraRAWFilterEngine {
         }
 
         activeJobs[jobKey] = renderJob
+    }
+}
+
+// Custom GPUImage Chroma Key (Green Screen) Filter
+class GPUImageChromaKeyFilter(
+    private var keyRed: Float = 0f,
+    private var keyGreen: Float = 1f,
+    private var keyBlue: Float = 0f,
+    private var similarity: Float = 0.35f,
+    private var smoothness: Float = 0.15f,
+    private var spillSuppression: Float = 0.5f
+) : jp.co.cyberagent.android.gpuimage.filter.GPUImageFilter(
+    NO_FILTER_VERTEX_SHADER,
+    CHROMA_KEY_FRAGMENT_SHADER
+) {
+    private var keyColorLocation: Int = -1
+    private var similarityLocation: Int = -1
+    private var smoothnessLocation: Int = -1
+    private var spillSuppressionLocation: Int = -1
+
+    override fun onInit() {
+        super.onInit()
+        keyColorLocation = android.opengl.GLES20.glGetUniformLocation(program, "keyColor")
+        similarityLocation = android.opengl.GLES20.glGetUniformLocation(program, "similarity")
+        smoothnessLocation = android.opengl.GLES20.glGetUniformLocation(program, "smoothness")
+        spillSuppressionLocation = android.opengl.GLES20.glGetUniformLocation(program, "spillSuppression")
+    }
+
+    override fun onInitialized() {
+        super.onInitialized()
+        updateParams(keyRed, keyGreen, keyBlue, similarity, smoothness, spillSuppression)
+    }
+
+    fun updateParams(r: Float, g: Float, b: Float, sim: Float, smooth: Float, spill: Float) {
+        keyRed = r
+        keyGreen = g
+        keyBlue = b
+        similarity = sim
+        smoothness = smooth
+        spillSuppression = spill
+        setFloatVec3(keyColorLocation, floatArrayOf(keyRed, keyGreen, keyBlue))
+        setFloat(similarityLocation, similarity)
+        setFloat(smoothnessLocation, smoothness.coerceAtLeast(0.001f))
+        setFloat(spillSuppressionLocation, spillSuppression)
+    }
+
+    companion object {
+        const val CHROMA_KEY_FRAGMENT_SHADER = """
+            varying highp vec2 textureCoordinate;
+            uniform sampler2D inputImageTexture;
+            
+            uniform highp vec3 keyColor;
+            uniform highp float similarity;
+            uniform highp float smoothness;
+            uniform highp float spillSuppression;
+            
+            void main() {
+                highp vec4 textureColor = texture2D(inputImageTexture, textureCoordinate);
+                highp float diff = distance(textureColor.rgb, keyColor);
+                highp float alpha = smoothstep(similarity - smoothness, similarity + 0.001, diff);
+                highp vec3 finalColor = textureColor.rgb;
+                
+                if (spillSuppression > 0.0) {
+                    if (keyColor.g > keyColor.r && keyColor.g > keyColor.b) {
+                        highp float maxOther = max(finalColor.r, finalColor.b);
+                        if (finalColor.g > maxOther) {
+                            finalColor.g = mix(finalColor.g, maxOther, spillSuppression);
+                        }
+                    } else if (keyColor.r > keyColor.g && keyColor.r > keyColor.b) {
+                        highp float maxOtherR = max(finalColor.g, finalColor.b);
+                        if (finalColor.r > maxOtherR) {
+                            finalColor.r = mix(finalColor.r, maxOtherR, spillSuppression);
+                        }
+                    } else if (keyColor.b > keyColor.r && keyColor.b > keyColor.g) {
+                        highp float maxOtherB = max(finalColor.r, finalColor.g);
+                        if (finalColor.b > maxOtherB) {
+                            finalColor.b = mix(finalColor.b, maxOtherB, spillSuppression);
+                        }
+                    }
+                }
+                
+                gl_FragColor = vec4(finalColor * alpha, textureColor.a * alpha);
+            }
+        """
     }
 }

@@ -108,7 +108,7 @@ fun WebAssetImporterDialog(
                             ) {
                                 Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(12.dp), tint = EnergeticYellow)
                                 Spacer(Modifier.width(4.dp))
-                                Text("Local/PSD/PDF", style = Typography.labelSmall.copy(fontSize = 10.sp), color = EnergeticYellow)
+                                Text("Local Files / PDF", style = Typography.labelSmall.copy(fontSize = 10.sp), color = EnergeticYellow)
                             }
                         }
 
@@ -865,11 +865,13 @@ private fun downloadAndSpawnImage(
     onDismissRequest: () -> Unit
 ) {
     coroutineScope.launch(Dispatchers.IO) {
+        var localFile: File? = null
         try {
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, "Streaming full-resolution web stock asset...", Toast.LENGTH_SHORT).show()
             }
-            val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+            // Use desktop User-Agent to bypass mobile/redirect blocks
+            val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 
             var connection = URL(img.second).openConnection() as HttpURLConnection
             connection.setRequestProperty("User-Agent", userAgent)
@@ -900,17 +902,31 @@ private fun downloadAndSpawnImage(
                 redirectCount++
             }
 
+            if (status !in 200..299) {
+                throw java.io.IOException("Server returned status code $status")
+            }
+
             val webAssetsDir = File(context.filesDir, "web_assets")
             if (!webAssetsDir.exists()) webAssetsDir.mkdirs()
 
-            val localFile = File(webAssetsDir, "stock_img_${System.currentTimeMillis()}.jpg")
+            val downloadedFile = File(webAssetsDir, "stock_img_${System.currentTimeMillis()}.jpg")
+            localFile = downloadedFile
             connection.inputStream.use { input ->
-                localFile.outputStream().use { output ->
+                downloadedFile.outputStream().use { output ->
                     input.copyTo(output)
                 }
             }
 
-            val (initW, initH) = getImageAspectRatioDimensions(localFile.absolutePath, 500f)
+            // Validate that the downloaded file is a valid image
+            val sizeOptions = android.graphics.BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            android.graphics.BitmapFactory.decodeFile(downloadedFile.absolutePath, sizeOptions)
+            if (sizeOptions.outWidth <= 0 || sizeOptions.outHeight <= 0) {
+                throw java.io.IOException("Downloaded file is not a valid image format or is corrupted.")
+            }
+
+            val (initW, initH) = getImageAspectRatioDimensions(downloadedFile.absolutePath, 500f)
 
             withContext(Dispatchers.Main) {
                 undoStack.add(layers)
@@ -923,7 +939,7 @@ private fun downloadAndSpawnImage(
                     width = initW,
                     height = initH,
                     baseColor = Color.Transparent,
-                    imageUri = localFile.absolutePath,
+                    imageUri = downloadedFile.absolutePath,
                     isAspectLocked = true
                 )
                 onLayersChanged(listOf(newL) + layers)
@@ -933,6 +949,16 @@ private fun downloadAndSpawnImage(
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            // Clean up the invalid file if it was created
+            try {
+                localFile?.let {
+                    if (it.exists()) {
+                        it.delete()
+                    }
+                }
+            } catch (cleanupEx: Exception) {
+                cleanupEx.printStackTrace()
+            }
             withContext(Dispatchers.Main) {
                 Toast.makeText(context, "Streaming download failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
@@ -1194,6 +1220,18 @@ private suspend fun handleWebDownload(
             if (!webAssetsDir.exists()) webAssetsDir.mkdirs()
             val destFile = File(webAssetsDir, fileName)
             tempFile.copyTo(destFile, overwrite = true)
+
+            // Validate that the image file is valid
+            val sizeOptions = android.graphics.BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            android.graphics.BitmapFactory.decodeFile(destFile.absolutePath, sizeOptions)
+            if (sizeOptions.outWidth <= 0 || sizeOptions.outHeight <= 0) {
+                try {
+                    if (destFile.exists()) destFile.delete()
+                } catch (t: Throwable) {}
+                throw java.io.IOException("The downloaded file is corrupted or not a valid image.")
+            }
 
             val (initW, initH) = getImageAspectRatioDimensions(destFile.absolutePath, 500f)
 

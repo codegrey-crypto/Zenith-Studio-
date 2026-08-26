@@ -19,6 +19,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -138,12 +141,14 @@ fun CrashScreen(
                     fontSize = 12.sp
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = errorMessage,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
+                SelectionContainer {
+                    Text(
+                        text = errorMessage,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = "Stacktrace:",
@@ -160,12 +165,14 @@ fun CrashScreen(
                         .padding(8.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    Text(
-                        text = stackTrace,
-                        color = TextSecondary,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = stackTrace,
+                            color = TextSecondary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             }
         }
@@ -173,6 +180,23 @@ fun CrashScreen(
         Spacer(modifier = Modifier.height(24.dp))
         
         // Control Buttons
+        val clipboardManager = LocalClipboardManager.current
+        OutlinedButton(
+            onClick = { clipboardManager.setText(buildAnnotatedString { append("Error: $errorMessage\n\nStackTrace:\n$stackTrace") }) },
+            border = ButtonDefaults.outlinedButtonBorder.copy(
+                width = 1.dp
+            ),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = IndustrialAmber
+            ),
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text("Copy Error to Clipboard", fontWeight = FontWeight.Bold)
+        }
+        
+        Spacer(modifier = Modifier.height(12.dp))
+
         Button(
             onClick = onRelaunch,
             colors = ButtonDefaults.buttonColors(

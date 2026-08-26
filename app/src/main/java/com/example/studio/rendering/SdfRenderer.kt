@@ -74,26 +74,34 @@ class SdfFontGenerator {
 
     private fun approximateDistance(pixels: ByteArray, w: Int, h: Int, x: Int, y: Int): Float {
         val inside = (pixels[y * w + x].toInt() and 0xff) > 128
-        var minDist = Float.MAX_VALUE
+        var minDistSq = Float.MAX_VALUE
+        val maxSearchRadius = 24
+        val minJ = maxOf(0, y - maxSearchRadius)
+        val maxJ = minOf(h - 1, y + maxSearchRadius)
+        val minI = maxOf(0, x - maxSearchRadius)
+        val maxI = minOf(w - 1, x + maxSearchRadius)
 
-        // Scan subset neighborhood for speed
         val step = 2
-        for (j in 0 until h step step) {
-            for (i in 0 until w step step) {
+        for (j in minJ..maxJ step step) {
+            val dy = (j - y).toFloat()
+            val dySq = dy * dy
+            if (dySq >= minDistSq) continue
+            for (i in minI..maxI step step) {
                 val otherInside = (pixels[j * w + i].toInt() and 0xff) > 128
                 if (otherInside != inside) {
                     val dx = (i - x).toFloat()
-                    val dy = (j - y).toFloat()
-                    val dist = sqrt(dx * dx + dy * dy)
-                    if (dist < minDist) {
-                        minDist = dist
+                    val distSq = dx * dx + dySq
+                    if (distSq < minDistSq) {
+                        minDistSq = distSq
                     }
                 }
             }
         }
 
-        if (minDist == Float.MAX_VALUE) {
-            minDist = if (inside) w.toFloat() else -w.toFloat()
+        val minDist = if (minDistSq == Float.MAX_VALUE) {
+            w.toFloat()
+        } else {
+            sqrt(minDistSq)
         }
 
         return if (inside) minDist else -minDist
