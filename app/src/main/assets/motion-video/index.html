@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zenith Studio — Motion Graphics Launch Video</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+  <div class="ambient-glow"></div>
+
+  <!-- 16:9 Video Canvas Viewport -->
+  <div class="video-stage-wrapper" id="player-container">
+    <canvas id="motion-canvas"></canvas>
+
+    <!-- Glass HUD Overlay -->
+    <div class="hud-overlay" id="hud-overlay">
+      <!-- Scrubber Track -->
+      <div class="timeline-track-container" id="timeline-container">
+        <div class="timeline-rail" id="timeline-rail">
+          <div class="timeline-fill" id="timeline-fill">
+            <div class="timeline-thumb"></div>
+          </div>
+          <!-- Chapter Ticks -->
+          <div class="chapter-mark" style="left: 0%;" data-title="00:00 Reveal"></div>
+          <div class="chapter-mark" style="left: 20%;" data-title="00:04 Bezier"></div>
+          <div class="chapter-mark" style="left: 40%;" data-title="00:08 3D GPU"></div>
+          <div class="chapter-mark" style="left: 65%;" data-title="00:13 Type"></div>
+          <div class="chapter-mark" style="left: 85%;" data-title="00:17 Finale"></div>
+        </div>
+      </div>
+
+      <!-- Controls Row -->
+      <div class="hud-controls-row">
+        <!-- Left: Play/Pause & Step & Timecode -->
+        <div class="hud-left">
+          <button class="hud-btn hud-btn-primary" id="btn-play-pause" title="Play/Pause (Space)">▶</button>
+          <button class="hud-btn" id="btn-prev-frame" title="Previous Frame (Left Arrow)">⏮</button>
+          <button class="hud-btn" id="btn-next-frame" title="Next Frame (Right Arrow)">⏭</button>
+
+          <div class="time-display">
+            <span class="time-current" id="time-current">00:00.00</span>
+            <span>/</span>
+            <span id="time-duration">00:20.00</span>
+          </div>
+
+          <span class="badge-tag" id="scene-badge">Scene 1: Monolith Reveal</span>
+        </div>
+
+        <!-- Center: Chapter Quick Selectors -->
+        <div class="hud-center">
+          <button class="hud-btn" style="width: auto; padding: 0 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace;" data-seek-frame="0">1. Reveal</button>
+          <button class="hud-btn" style="width: auto; padding: 0 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace;" data-seek-frame="240">2. Vector</button>
+          <button class="hud-btn" style="width: auto; padding: 0 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace;" data-seek-frame="480">3. 3D GPU</button>
+          <button class="hud-btn" style="width: auto; padding: 0 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace;" data-seek-frame="780">4. Kinetic</button>
+          <button class="hud-btn" style="width: auto; padding: 0 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace;" data-seek-frame="1020">5. Finale</button>
+        </div>
+
+        <!-- Right: Speed, Audio, Loop, Snapshot, Fullscreen -->
+        <div class="hud-right">
+          <button class="hud-btn" id="btn-speed" title="Playback Speed">1.0x</button>
+          <button class="hud-btn" id="btn-audio" title="Synthesizer Sound (M)">🔊</button>
+          <button class="hud-btn active" id="btn-loop" title="Loop Playback">🔁</button>
+          <button class="hud-btn" id="btn-snapshot" title="Capture PNG Snapshot (S)">📸</button>
+          <button class="hud-btn" id="btn-fullscreen" title="Fullscreen (F)">⛶</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Project Info Bar -->
+  <div class="video-info-bar">
+    <div class="project-title-group">
+      <h1>
+        <span>⚡ Zenith Studio</span>
+        <span class="badge-tag">Launch Reel • 16:9 • 60 FPS</span>
+      </h1>
+      <p>Parametric motion graphics video generator inspired by latent-spaces/brag launch architecture.</p>
+    </div>
+
+    <div class="actions-group">
+      <button class="action-pill-btn" id="btn-snapshot-footer">
+        <span>📸</span>
+        <span>Save Snapshot</span>
+      </button>
+      <button class="action-pill-btn glow" id="btn-export-code">
+        <span>🎬</span>
+        <span>Render to MP4 Script</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Export Code Modal -->
+  <div class="modal-backdrop" id="export-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>🎬 Export Video with latent-spaces/brag & Puppeteer</h2>
+        <button class="modal-close" id="modal-close-btn">&times;</button>
+      </div>
+      <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 12px;">
+        To render this 20-second 60FPS motion showcase into a standalone broadcast-quality <code>.mp4</code> video file, run the bundled automated rendering script:
+      </p>
+
+      <div class="modal-code-box"># 1. Install headless rendering dependencies
+npm install puppeteer
+
+# 2. Render all 1200 frames to lossless MP4 with FFmpeg
+node export.js
+
+# Output: zenith-studio-launch.mp4 (1920x1080 @ 60fps)</div>
+
+      <p style="font-size: 13px; color: var(--text-muted);">
+        The script navigates to <code>index.html</code>, steps through each frame synchronously via <code>engine.seek(f)</code>, captures pixel-perfect frames, and encodes them directly to MP4.
+      </p>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 18px;">
+        <button class="action-pill-btn glow" id="btn-modal-done">Got It</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="motion-engine.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const canvas = document.getElementById('motion-canvas');
+      const engine = new ZenithMotionEngine(canvas);
+
+      // DOM elements
+      const btnPlayPause = document.getElementById('btn-play-pause');
+      const btnPrevFrame = document.getElementById('btn-prev-frame');
+      const btnNextFrame = document.getElementById('btn-next-frame');
+      const timeCurrent = document.getElementById('time-current');
+      const timeDuration = document.getElementById('time-duration');
+      const sceneBadge = document.getElementById('scene-badge');
+      const timelineFill = document.getElementById('timeline-fill');
+      const timelineContainer = document.getElementById('timeline-container');
+      const btnSpeed = document.getElementById('btn-speed');
+      const btnAudio = document.getElementById('btn-audio');
+      const btnLoop = document.getElementById('btn-loop');
+      const btnSnapshot = document.getElementById('btn-snapshot');
+      const btnSnapshotFooter = document.getElementById('btn-snapshot-footer');
+      const btnFullscreen = document.getElementById('btn-fullscreen');
+      const playerContainer = document.getElementById('player-container');
+      const exportModal = document.getElementById('export-modal');
+      const btnExportCode = document.getElementById('btn-export-code');
+      const modalCloseBtn = document.getElementById('modal-close-btn');
+      const btnModalDone = document.getElementById('btn-modal-done');
+
+      // Helper to format frame to MM:SS.SS
+      function formatTimecode(frame, fps = 60) {
+        const totalSeconds = frame / fps;
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = Math.floor(totalSeconds % 60);
+        const centis = Math.floor((totalSeconds % 1) * 100);
+        return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(centis).padStart(2, '0')}`;
+      }
+
+      function getSceneName(frame) {
+        if (frame < 240) return "Scene 1: Monolith Reveal";
+        if (frame < 480) return "Scene 2: Sub-pixel Bezier Math";
+        if (frame < 780) return "Scene 3: 3D GPU Layer Explosion";
+        if (frame < 1020) return "Scene 4: Kinetic Typography";
+        return "Scene 5: Launch Lockup & CTA";
+      }
+
+      // Sync UI with Engine
+      engine.onFrameUpdate = (currentFrame, totalFrames) => {
+        const progress = currentFrame / (totalFrames - 1);
+        timelineFill.style.width = `${progress * 100}%`;
+        timeCurrent.textContent = formatTimecode(currentFrame, engine.fps);
+        sceneBadge.textContent = getSceneName(currentFrame);
+      };
+
+      engine.onPlayStateChange = (isPlaying) => {
+        btnPlayPause.textContent = isPlaying ? '⏸' : '▶';
+      };
+
+      // Play / Pause
+      btnPlayPause.addEventListener('click', () => {
+        if (engine.isPlaying) engine.pause();
+        else engine.play();
+      });
+
+      // Frame Stepper
+      btnPrevFrame.addEventListener('click', () => {
+        engine.pause();
+        engine.seek(engine.currentFrame - 1);
+      });
+
+      btnNextFrame.addEventListener('click', () => {
+        engine.pause();
+        engine.seek(engine.currentFrame + 1);
+      });
+
+      // Scrubber Interaction
+      let isScrubbing = false;
+
+      function updateScrub(e) {
+        const rect = timelineContainer.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const t = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        engine.seekNormalized(t);
+      }
+
+      timelineContainer.addEventListener('mousedown', (e) => {
+        isScrubbing = true;
+        engine.pause();
+        updateScrub(e);
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (isScrubbing) updateScrub(e);
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isScrubbing) isScrubbing = false;
+      });
+
+      // Chapter Quick-Select Buttons
+      document.querySelectorAll('[data-seek-frame]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const targetFrame = parseInt(btn.getAttribute('data-seek-frame'), 10);
+          engine.seek(targetFrame);
+        });
+      });
+
+      // Speed selector toggle
+      const speeds = [1.0, 1.5, 2.0, 0.5];
+      let speedIdx = 0;
+      btnSpeed.addEventListener('click', () => {
+        speedIdx = (speedIdx + 1) % speeds.length;
+        const speed = speeds[speedIdx];
+        engine.setPlaybackRate(speed);
+        btnSpeed.textContent = `${speed}x`;
+      });
+
+      // Audio toggle
+      btnAudio.addEventListener('click', () => {
+        const enabled = engine.toggleAudio();
+        btnAudio.textContent = enabled ? '🔊' : '🔇';
+        btnAudio.classList.toggle('active', enabled);
+      });
+
+      // Loop toggle
+      btnLoop.addEventListener('click', () => {
+        const looping = engine.toggleLoop();
+        btnLoop.classList.toggle('active', looping);
+      });
+
+      // Snapshot Download
+      function takeSnapshot() {
+        const dataUrl = engine.captureSnapshot();
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = `zenith-frame-${String(engine.currentFrame).padStart(4, '0')}.png`;
+        a.click();
+      }
+      btnSnapshot.addEventListener('click', takeSnapshot);
+      btnSnapshotFooter.addEventListener('click', takeSnapshot);
+
+      // Fullscreen
+      btnFullscreen.addEventListener('click', () => {
+        if (!document.fullscreenElement) {
+          playerContainer.requestFullscreen().catch(err => alert(err.message));
+        } else {
+          document.exitFullscreen();
+        }
+      });
+
+      // Modal Controls
+      btnExportCode.addEventListener('click', () => exportModal.classList.add('open'));
+      modalCloseBtn.addEventListener('click', () => exportModal.classList.remove('open'));
+      btnModalDone.addEventListener('click', () => exportModal.classList.remove('open'));
+      exportModal.addEventListener('click', (e) => {
+        if (e.target === exportModal) exportModal.classList.remove('open');
+      });
+
+      // Keyboard Shortcuts
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+          e.preventDefault();
+          if (engine.isPlaying) engine.pause();
+          else engine.play();
+        } else if (e.code === 'ArrowLeft') {
+          e.preventDefault();
+          engine.pause();
+          const step = e.shiftKey ? 60 : 1;
+          engine.seek(engine.currentFrame - step);
+        } else if (e.code === 'ArrowRight') {
+          e.preventDefault();
+          engine.pause();
+          const step = e.shiftKey ? 60 : 1;
+          engine.seek(engine.currentFrame + step);
+        } else if (e.code === 'KeyM') {
+          btnAudio.click();
+        } else if (e.code === 'KeyF') {
+          btnFullscreen.click();
+        } else if (e.code === 'KeyS') {
+          takeSnapshot();
+        }
+      });
+
+      // Start auto-playback
+      engine.play();
+    });
+  </script>
+</body>
+</html>

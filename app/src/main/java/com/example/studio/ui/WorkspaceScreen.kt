@@ -4466,6 +4466,10 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     var activeResizingLayerId by remember { mutableStateOf<String?>(null) }
     var liveDragScaleX by remember { mutableStateOf(1.0f) }
     var liveDragScaleY by remember { mutableStateOf(1.0f) }
+    var liveDragPivotX by remember { mutableStateOf(-1f) }
+    var liveDragPivotY by remember { mutableStateOf(-1f) }
+    var shapeAnchorMode by remember { mutableStateOf("CENTER") } // "CENTER", "OPPOSITE", "ORIGIN"
+    var showShapeAnchorMenu by remember { mutableStateOf(false) }
     var startingLayerForResize by remember { mutableStateOf<com.example.studio.model.StudioLayer?>(null) }
 
     // Floating UI selector for adding specific shapes
@@ -5594,6 +5598,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
     val currentShowGradientControlsState = remember { androidx.compose.runtime.derivedStateOf { showGradientControls } }
     val currentShapeBuilderModeState = remember { androidx.compose.runtime.derivedStateOf { shapeBuilderMode } }
     val currentShapeBuilderTurnIntoPathState = remember { androidx.compose.runtime.derivedStateOf { shapeBuilderTurnIntoPath } }
+    val currentShapeAnchorModeState = remember { androidx.compose.runtime.derivedStateOf { shapeAnchorMode } }
+    val currentLiveDragPivotXState = remember { androidx.compose.runtime.derivedStateOf { liveDragPivotX } }
+    val currentLiveDragPivotYState = remember { androidx.compose.runtime.derivedStateOf { liveDragPivotY } }
     val artboardPositions = remember(artboards) {
         artboards.map { Offset(it.offsetX, it.offsetY) }
     }
@@ -7004,7 +7011,9 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                  isNearBezier = true
                                              }
                                          }
-                                     }
+                                    }
+
+                                    var isTransformingSelectedLayer = false
 
                                     do {
                                         val event = awaitPointerEvent()
@@ -7015,36 +7024,92 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                             isTransforming = true
                                             dragMode = null
 
-                                            val isLocked = currentIsCanvasLockedState.value
-                                            val zoom = if (isLocked) 1f else event.calculateZoom()
-                                            val rotation = if (isLocked) 0f else event.calculateRotation()
-                                            val pan = if (isLocked) Offset.Zero else event.calculatePan()
+                                            val currentSelectedForPinch = lyrs.find { it.id == selId }
+                                            val isShapeOrVectorLayer = currentSelectedForPinch != null && !currentSelectedForPinch.isAlphaLocked &&
+                                                (currentSelectedForPinch.type != LayerType.FREEHAND_DRAWING || currentSelectedForPinch.brushPoints.isNotEmpty())
 
-                                             if (zoom != 1f) {
-                                                 activeScale = (activeScale * zoom).coerceIn(0.1f, 100.0f)
-                                             }
-                                             if (rotation != 0f) {
-                                                 activeRotation = (activeRotation + rotation) % 360f
-                                             }
-                                            if (pan != Offset.Zero) {
-                                                val snappedNewPanX = activePanX + pan.x
-                                                 val snappedNewPanY = activePanY + pan.y
-                                                 val snappedFinalX = if (Math.abs(snappedNewPanX) < 2f) 0f else snappedNewPanX
-                                                 val snappedFinalY = if (Math.abs(snappedNewPanY) < 2f) 0f else snappedNewPanY
-                                                 activePanX = snappedFinalX
-                                                 activePanY = snappedFinalY
+                                            var shouldTransformLayer = isTransformingSelectedLayer
+                                            if (!shouldTransformLayer && isShapeOrVectorLayer && currentSelectedForPinch != null) {
+                                                val p0 = activePointers[0].position
+                                                val p1 = activePointers[1].position
+                                                val midPointScreen = (p0 + p1) / 2f
+                                                val midCanvas = screenToCanvas(
+                                                    screenPos = midPointScreen,
+                                                    viewportWidth = currentViewportWidthState.value,
+                                                    viewportHeight = currentViewportHeightState.value,
+                                                    canvasPanX = canvasPanX,
+                                                    canvasPanY = canvasPanY,
+                                                    canvasRotation = canvasRotation,
+                                                    totalScale = ts,
+                                                    centerX = currentWorkspaceCenterXState.value,
+                                                    centerY = currentWorkspaceCenterYState.value,
+                                                    viewportCenterY = visibleViewportCenterY
+                                                )
+                                                val midArtboard = Offset(midCanvas.x - artboardOffsetX, midCanvas.y - artboardOffsetY)
+                                                val localMid = canvasToLayerLocal(midArtboard, currentSelectedForPinch)
+                                                val touchPadding = 140f / ts.coerceAtLeast(0.3f)
+                                                if (localMid.x >= -touchPadding && localMid.x <= currentSelectedForPinch.width + touchPadding &&
+                                                    localMid.y >= -touchPadding && localMid.y <= currentSelectedForPinch.height + touchPadding) {
+                                                    shouldTransformLayer = true
+                                                }
                                             }
 
-                                            scaleFactor = activeScale
-                                            canvasPanX = activePanX
-                                            canvasPanY = activePanY
-                                            canvasRotation = activeRotation
+                                            if (shouldTransformLayer && currentSelectedForPinch != null) {
+                                                isTransformingSelectedLayer = true
+                                                val zoom = event.calculateZoom()
+                                                val rotation = event.calculateRotation()
+                                                val pan = event.calculatePan()
+                                                val panCanvas = screenDeltaToCanvas(pan, canvasRotation, ts)
 
-                                            com.example.studio.ui.CanvasEventLoop.emit(
-                                                com.example.studio.ui.CanvasEvent.UpdateTransform(activePanX, activePanY, activeScale, activeRotation)
-                                            )
+                                                if (zoom != 1f || rotation != 0f || pan != Offset.Zero) {
+                                                    layers = layers.map { layer ->
+                                                        if (layer.id == currentSelectedForPinch.id && !layer.isAlphaLocked) {
+                                                            val newScaleX = (layer.scaleX * zoom).coerceIn(0.05f, 20f)
+                                                            val newScaleY = (layer.scaleY * zoom).coerceIn(0.05f, 20f)
+                                                            val newRot = (layer.rotation + rotation) % 360f
+                                                            layer.copy(
+                                                                scaleX = newScaleX,
+                                                                scaleY = newScaleY,
+                                                                rotation = newRot,
+                                                                positionX = layer.positionX + panCanvas.x,
+                                                                positionY = layer.positionY + panCanvas.y
+                                                            )
+                                                        } else layer
+                                                    }
+                                                }
+                                                event.changes.forEach { it.consume() }
+                                            } else {
+                                                val isLocked = currentIsCanvasLockedState.value
+                                                val zoom = if (isLocked) 1f else event.calculateZoom()
+                                                val rotation = if (isLocked) 0f else event.calculateRotation()
+                                                val pan = if (isLocked) Offset.Zero else event.calculatePan()
 
-                                            event.changes.forEach { it.consume() }
+                                                if (zoom != 1f) {
+                                                    activeScale = (activeScale * zoom).coerceIn(0.1f, 100.0f)
+                                                }
+                                                if (rotation != 0f) {
+                                                    activeRotation = (activeRotation + rotation) % 360f
+                                                }
+                                                if (pan != Offset.Zero) {
+                                                    val snappedNewPanX = activePanX + pan.x
+                                                    val snappedNewPanY = activePanY + pan.y
+                                                    val snappedFinalX = if (Math.abs(snappedNewPanX) < 2f) 0f else snappedNewPanX
+                                                    val snappedFinalY = if (Math.abs(snappedNewPanY) < 2f) 0f else snappedNewPanY
+                                                    activePanX = snappedFinalX
+                                                    activePanY = snappedFinalY
+                                                }
+
+                                                scaleFactor = activeScale
+                                                canvasPanX = activePanX
+                                                canvasPanY = activePanY
+                                                canvasRotation = activeRotation
+
+                                                com.example.studio.ui.CanvasEventLoop.emit(
+                                                    com.example.studio.ui.CanvasEvent.UpdateTransform(activePanX, activePanY, activeScale, activeRotation)
+                                                )
+
+                                                event.changes.forEach { it.consume() }
+                                            }
                                         } else if (activePointers.size == 1 && !isTransforming) {
                                             val pointer = activePointers[0]
                                             val position = pointer.position
@@ -7153,71 +7218,99 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                             
                                                             val artStartX = localStartX - artboardOffsetX
                                                             val artStartY = localStartY - artboardOffsetY
-                                                            val distTL = (artStartX - handleTL.x) * (artStartX - handleTL.x) + (artStartY - handleTL.y) * (artStartY - handleTL.y)
-                                                            val distTR = (artStartX - handleTR.x) * (artStartX - handleTR.x) + (artStartY - handleTR.y) * (artStartY - handleTR.y)
-                                                            val distBL = (artStartX - handleBL.x) * (artStartX - handleBL.x) + (artStartY - handleBL.y) * (artStartY - handleBL.y)
-                                                            val distBR = (artStartX - handleBR.x) * (artStartX - handleBR.x) + (artStartY - handleBR.y) * (artStartY - handleBR.y)
                                                             
-                                                            val distT = (artStartX - handleT.x) * (artStartX - handleT.x) + (artStartY - handleT.y) * (artStartY - handleT.y)
-                                                            val distB = (artStartX - handleB.x) * (artStartX - handleB.x) + (artStartY - handleB.y) * (artStartY - handleB.y)
-                                                            val distL = (artStartX - handleL.x) * (artStartX - handleL.x) + (artStartY - handleL.y) * (artStartY - handleL.y)
-                                                            val distR = (artStartX - handleR.x) * (artStartX - handleR.x) + (artStartY - handleR.y) * (artStartY - handleR.y)
-                                                            
-                                                            val resThreshold = 56f / ts.coerceAtLeast(0.3f)
-                                                            val resThresholdSq = resThreshold * resThreshold
-                                                            
+                                                            val dxTL = (artStartX - handleTL.x) * ts
+                                                            val dyTL = (artStartY - handleTL.y) * ts
+                                                            val distTL = dxTL * dxTL + dyTL * dyTL
+
+                                                            val dxTR = (artStartX - handleTR.x) * ts
+                                                            val dyTR = (artStartY - handleTR.y) * ts
+                                                            val distTR = dxTR * dxTR + dyTR * dyTR
+
+                                                            val dxBL = (artStartX - handleBL.x) * ts
+                                                            val dyBL = (artStartY - handleBL.y) * ts
+                                                            val distBL = dxBL * dxBL + dyBL * dyBL
+
+                                                            val dxBR = (artStartX - handleBR.x) * ts
+                                                            val dyBR = (artStartY - handleBR.y) * ts
+                                                            val distBR = dxBR * dxBR + dyBR * dyBR
+
+                                                            val dxT = (artStartX - handleT.x) * ts
+                                                            val dyT = (artStartY - handleT.y) * ts
+                                                            val distT = dxT * dxT + dyT * dyT
+
+                                                            val dxB = (artStartX - handleB.x) * ts
+                                                            val dyB = (artStartY - handleB.y) * ts
+                                                            val distB = dxB * dxB + dyB * dyB
+
+                                                            val dxL = (artStartX - handleL.x) * ts
+                                                            val dyL = (artStartY - handleL.y) * ts
+                                                            val distL = dxL * dxL + dyL * dyL
+
+                                                            val dxR = (artStartX - handleR.x) * ts
+                                                            val dyR = (artStartY - handleR.y) * ts
+                                                            val distR = dxR * dxR + dyR * dyR
+
+                                                            val cornerHitPx = with(this) { 56.dp.toPx() }
+                                                            val resThresholdSq = cornerHitPx * cornerHitPx
+
                                                             var matchedResizeHandle: String? = null
-                                                            if (!showGradientControls && tool != "Pen") {
-                                                                var minResizeDistSq = Float.MAX_VALUE
-                                                                
-                                                                val resizeDistances = listOf(
-                                                                    Pair("resize_tl", distTL),
-                                                                    Pair("resize_tr", distTR),
-                                                                    Pair("resize_bl", distBL),
-                                                                    Pair("resize_br", distBR),
-                                                                    Pair("resize_t", distT),
-                                                                    Pair("resize_b", distB),
-                                                                    Pair("resize_l", distL),
-                                                                    Pair("resize_r", distR)
+                                                            var minResizeDistSq = Float.MAX_VALUE
+
+                                                            val resizeDistances = listOf(
+                                                                Pair("resize_tl", distTL),
+                                                                Pair("resize_tr", distTR),
+                                                                Pair("resize_bl", distBL),
+                                                                Pair("resize_br", distBR),
+                                                                Pair("resize_t", distT),
+                                                                Pair("resize_b", distB),
+                                                                Pair("resize_l", distL),
+                                                                Pair("resize_r", distR)
+                                                            )
+
+                                                            for (item in resizeDistances) {
+                                                                if (item.second < resThresholdSq && item.second < minResizeDistSq) {
+                                                                    minResizeDistSq = item.second
+                                                                    matchedResizeHandle = item.first
+                                                                }
+                                                            }
+                                                            // If no handle was directly clicked, check if they clicked on the edges
+                                                            if (matchedResizeHandle == null) {
+                                                                fun distToSegmentSq(p: androidx.compose.ui.geometry.Offset, v: androidx.compose.ui.geometry.Offset, w: androidx.compose.ui.geometry.Offset): Float {
+                                                                    val l2 = (v.x - w.x) * (v.x - w.x) + (v.y - w.y) * (v.y - w.y)
+                                                                    if (l2 == 0f) return (p.x - v.x) * (p.x - v.x) + (p.y - v.y) * (p.y - v.y)
+                                                                    var t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2
+                                                                    t = Math.max(0f, Math.min(1f, t))
+                                                                    val proj = androidx.compose.ui.geometry.Offset(v.x + t * (w.x - v.x), v.y + t * (w.y - v.y))
+                                                                    return (p.x - proj.x) * (p.x - proj.x) + (p.y - proj.y) * (p.y - proj.y)
+                                                                }
+                                                                val ptScreen = androidx.compose.ui.geometry.Offset(artStartX * ts, artStartY * ts)
+                                                                val tlScreen = androidx.compose.ui.geometry.Offset(handleTL.x * ts, handleTL.y * ts)
+                                                                val trScreen = androidx.compose.ui.geometry.Offset(handleTR.x * ts, handleTR.y * ts)
+                                                                val blScreen = androidx.compose.ui.geometry.Offset(handleBL.x * ts, handleBL.y * ts)
+                                                                val brScreen = androidx.compose.ui.geometry.Offset(handleBR.x * ts, handleBR.y * ts)
+
+                                                                val distEdgeT = distToSegmentSq(ptScreen, tlScreen, trScreen)
+                                                                val distEdgeB = distToSegmentSq(ptScreen, blScreen, brScreen)
+                                                                val distEdgeL = distToSegmentSq(ptScreen, tlScreen, blScreen)
+                                                                val distEdgeR = distToSegmentSq(ptScreen, trScreen, brScreen)
+                                                                val edgeDistances = listOf(
+                                                                    Pair("resize_t", distEdgeT),
+                                                                    Pair("resize_b", distEdgeB),
+                                                                    Pair("resize_l", distEdgeL),
+                                                                    Pair("resize_r", distEdgeR)
                                                                 )
-                                                                
-                                                                for (item in resizeDistances) {
-                                                                    if (item.second < resThresholdSq && item.second < minResizeDistSq) {
+                                                                val edgeHitPx = with(this) { 44.dp.toPx() }
+                                                                val edgeThresholdSq = edgeHitPx * edgeHitPx
+                                                                for (item in edgeDistances) {
+                                                                    if (item.second < edgeThresholdSq && item.second < minResizeDistSq) {
                                                                         minResizeDistSq = item.second
                                                                         matchedResizeHandle = item.first
                                                                     }
                                                                 }
-                                                                // If no handle was directly clicked, check if they clicked on the edges
-                                                                if (matchedResizeHandle == null) {
-                                                                    fun distToSegmentSq(p: androidx.compose.ui.geometry.Offset, v: androidx.compose.ui.geometry.Offset, w: androidx.compose.ui.geometry.Offset): Float {
-                                                                        val l2 = (v.x - w.x) * (v.x - w.x) + (v.y - w.y) * (v.y - w.y)
-                                                                        if (l2 == 0f) return (p.x - v.x) * (p.x - v.x) + (p.y - v.y) * (p.y - v.y)
-                                                                        var t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2
-                                                                        t = Math.max(0f, Math.min(1f, t))
-                                                                        val proj = androidx.compose.ui.geometry.Offset(v.x + t * (w.x - v.x), v.y + t * (w.y - v.y))
-                                                                        return (p.x - proj.x) * (p.x - proj.x) + (p.y - proj.y) * (p.y - proj.y)
-                                                                    }
-                                                                    val pt = androidx.compose.ui.geometry.Offset(artStartX, artStartY)
-                                                                    val distEdgeT = distToSegmentSq(pt, handleTL, handleTR)
-                                                                    val distEdgeB = distToSegmentSq(pt, handleBL, handleBR)
-                                                                    val distEdgeL = distToSegmentSq(pt, handleTL, handleBL)
-                                                                    val distEdgeR = distToSegmentSq(pt, handleTR, handleBR)
-                                                                    val edgeDistances = listOf(
-                                                                        Pair("resize_t", distEdgeT),
-                                                                        Pair("resize_b", distEdgeB),
-                                                                        Pair("resize_l", distEdgeL),
-                                                                        Pair("resize_r", distEdgeR)
-                                                                    )
-                                                                    for (item in edgeDistances) {
-                                                                        if (item.second < resThresholdSq && item.second < minResizeDistSq) {
-                                                                            minResizeDistSq = item.second
-                                                                            matchedResizeHandle = item.first
-                                                                        }
-                                                                    }
-                                                                }
                                                             }
                                                              
-                                                             val distBr = distBR
+                                                            val distBr = distBR
 
                                                             isNearBezier = false
                                                             if (currentSelected.type == LayerType.VECTOR_BEZIER && tool == "Pen") {
@@ -7631,7 +7724,7 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                 dragMode = targetDragMode
                                                             } else if (matchedGradientOption) {
                                                                 // Handled on-canvas gradient selection/stops append
-                                                            } else if (matchedResizeHandle != null && !isLocked) {
+                                                            } else if (matchedResizeHandle != null && !isLocked && !isNearBezier) {
                                                                 val isEmptyLayerSelected = currentSelected != null && currentSelected.type == LayerType.FREEHAND_DRAWING && currentSelected.brushPoints.isEmpty()
                                                                 if (!isEmptyLayerSelected) {
                                                                     dragMode = matchedResizeHandle
@@ -7640,6 +7733,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                     startingLayerForResize = currentSelected
                                                                     liveDragScaleX = 1.0f
                                                                     liveDragScaleY = 1.0f
+                                                                    liveDragPivotX = -1f
+                                                                    liveDragPivotY = -1f
                                                                 }
                                                             } else if (tool == "Shape Builder") {
                                                                 dragMode = "shape_builder"
@@ -8072,18 +8167,109 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                              val artboardOffsetY = activeArtboard?.offsetY ?: 0f
                                                              val artboardRelativeTouch = Offset(localChangeX - artboardOffsetX, localChangeY - artboardOffsetY)
                                                              val localTouch = canvasToLayerLocal(artboardRelativeTouch, startL)
-                                                            val pivotX = startL.width / 2f
-                                                            val pivotY = startL.height / 2f
-                                                            val targetW = 2f * Math.abs(localTouch.x - pivotX)
-                                                            val targetH = 2f * Math.abs(localTouch.y - pivotY)
-                                                            var scaleX = targetW / startL.width.coerceAtLeast(1f)
-                                                            var scaleY = targetH / startL.height.coerceAtLeast(1f)
-                                                            
+                                                            val anchorMode = currentShapeAnchorModeState.value
+
+                                                            var targetW = startL.width
+                                                            var targetH = startL.height
+                                                            var pivotX = startL.width / 2f
+                                                            var pivotY = startL.height / 2f
+
+                                                            when (anchorMode) {
+                                                                "OPPOSITE" -> {
+                                                                    when (dragMode) {
+                                                                        "resize_br" -> {
+                                                                            targetW = localTouch.x
+                                                                            targetH = localTouch.y
+                                                                            pivotX = 0f
+                                                                            pivotY = 0f
+                                                                        }
+                                                                        "resize_tl" -> {
+                                                                            targetW = startL.width - localTouch.x
+                                                                            targetH = startL.height - localTouch.y
+                                                                            pivotX = startL.width
+                                                                            pivotY = startL.height
+                                                                        }
+                                                                        "resize_tr" -> {
+                                                                            targetW = localTouch.x
+                                                                            targetH = startL.height - localTouch.y
+                                                                            pivotX = 0f
+                                                                            pivotY = startL.height
+                                                                        }
+                                                                        "resize_bl" -> {
+                                                                            targetW = startL.width - localTouch.x
+                                                                            targetH = localTouch.y
+                                                                            pivotX = startL.width
+                                                                            pivotY = 0f
+                                                                        }
+                                                                        "resize_r" -> {
+                                                                            targetW = localTouch.x
+                                                                            targetH = startL.height
+                                                                            pivotX = 0f
+                                                                            pivotY = startL.height / 2f
+                                                                        }
+                                                                        "resize_l" -> {
+                                                                            targetW = startL.width - localTouch.x
+                                                                            targetH = startL.height
+                                                                            pivotX = startL.width
+                                                                            pivotY = startL.height / 2f
+                                                                        }
+                                                                        "resize_b" -> {
+                                                                            targetW = startL.width
+                                                                            targetH = localTouch.y
+                                                                            pivotX = startL.width / 2f
+                                                                            pivotY = 0f
+                                                                        }
+                                                                        "resize_t" -> {
+                                                                            targetW = startL.width
+                                                                            targetH = startL.height - localTouch.y
+                                                                            pivotX = startL.width / 2f
+                                                                            pivotY = startL.height
+                                                                        }
+                                                                    }
+                                                                }
+                                                                "ORIGIN" -> {
+                                                                    pivotX = 0f
+                                                                    pivotY = 0f
+                                                                    when (dragMode) {
+                                                                        "resize_tl" -> {
+                                                                            targetW = Math.abs(localTouch.x)
+                                                                            targetH = Math.abs(localTouch.y)
+                                                                        }
+                                                                        "resize_tr" -> {
+                                                                            targetW = localTouch.x
+                                                                            targetH = Math.abs(localTouch.y)
+                                                                        }
+                                                                        "resize_bl" -> {
+                                                                            targetW = Math.abs(localTouch.x)
+                                                                            targetH = localTouch.y
+                                                                        }
+                                                                        "resize_l" -> {
+                                                                            targetW = Math.abs(localTouch.x)
+                                                                            targetH = startL.height
+                                                                        }
+                                                                        "resize_t" -> {
+                                                                            targetW = startL.width
+                                                                            targetH = Math.abs(localTouch.y)
+                                                                        }
+                                                                        else -> {
+                                                                            targetW = localTouch.x
+                                                                            targetH = localTouch.y
+                                                                        }
+                                                                    }
+                                                                }
+                                                                else -> { // "CENTER"
+                                                                    pivotX = startL.width / 2f
+                                                                    pivotY = startL.height / 2f
+                                                                    targetW = 2f * Math.abs(localTouch.x - pivotX)
+                                                                    targetH = 2f * Math.abs(localTouch.y - pivotY)
+                                                                }
+                                                            }
+
                                                             val minW = 20f
                                                             val minH = 20f
-                                                            var scX = scaleX.coerceAtLeast(minW / startL.width.coerceAtLeast(1f))
-                                                            var scY = scaleY.coerceAtLeast(minH / startL.height.coerceAtLeast(1f))
-                                                            
+                                                            var scX = (targetW / startL.width.coerceAtLeast(1f)).coerceAtLeast(minW / startL.width.coerceAtLeast(1f))
+                                                            var scY = (targetH / startL.height.coerceAtLeast(1f)).coerceAtLeast(minH / startL.height.coerceAtLeast(1f))
+
                                                             if (dragMode == "resize_t" || dragMode == "resize_b") {
                                                                 scX = 1.0f
                                                             } else if (dragMode == "resize_l" || dragMode == "resize_r") {
@@ -8095,9 +8281,11 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                                     scY = scale
                                                                 }
                                                             }
-                                                            
+
                                                             liveDragScaleX = scX
                                                             liveDragScaleY = scY
+                                                            liveDragPivotX = pivotX
+                                                            liveDragPivotY = pivotY
                                                         }
                                                     } else if (1 == 2) {
                                                         layers = layers.map { layer ->
@@ -8763,8 +8951,20 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                                 if (layer.id == targetId) {
                                                     val newW = (startL.width * finalDragScaleXSnapshot).coerceIn(20f, 5000f)
                                                     val newH = (startL.height * finalDragScaleYSnapshot).coerceIn(20f, 5000f)
-                                                    val newX = startL.positionX + (startL.width - newW) / 2f
-                                                    val newY = startL.positionY + (startL.height - newH) / 2f
+                                                    val anchorMode = currentShapeAnchorModeState.value
+                                                    val (newX, newY) = when (anchorMode) {
+                                                        "ORIGIN" -> Pair(startL.positionX, startL.positionY)
+                                                        "OPPOSITE" -> when (dragMode) {
+                                                            "resize_br", "resize_r", "resize_b" -> Pair(startL.positionX, startL.positionY)
+                                                            "resize_tl" -> Pair(startL.positionX + startL.width - newW, startL.positionY + startL.height - newH)
+                                                            "resize_tr" -> Pair(startL.positionX, startL.positionY + startL.height - newH)
+                                                            "resize_bl" -> Pair(startL.positionX + startL.width - newW, startL.positionY)
+                                                            "resize_l" -> Pair(startL.positionX + startL.width - newW, startL.positionY)
+                                                            "resize_t" -> Pair(startL.positionX, startL.positionY + startL.height - newH)
+                                                            else -> Pair(startL.positionX + (startL.width - newW) / 2f, startL.positionY + (startL.height - newH) / 2f)
+                                                        }
+                                                        else -> Pair(startL.positionX + (startL.width - newW) / 2f, startL.positionY + (startL.height - newH) / 2f)
+                                                    }
                                                     val scX = newW / startL.width.coerceAtLeast(1f)
                                                     val scY = newH / startL.height.coerceAtLeast(1f)
                                                     val updatedPerspStr = if (layer.perspWarpPointsStr.isNotEmpty()) {
@@ -8861,11 +9061,19 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                          }
                                      }
 
+                                     if (isTransformingSelectedLayer) {
+                                         undoStack.add(layers)
+                                         redoStack.clear()
+                                         isTransformingSelectedLayer = false
+                                     }
+
                                     isResizingActive = false
                                     activeResizingLayerId = null
                                     startingLayerForResize = null
                                     liveDragScaleX = 1.0f
                                     liveDragScaleY = 1.0f
+                                    liveDragPivotX = -1f
+                                    liveDragPivotY = -1f
 
                                     snapVerticalLine = null
                                     snapHorizontalLine = null
@@ -9676,6 +9884,8 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                                         activeTool = activeTool,
                                         liveDragScaleX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleX else 1.0f,
                                         liveDragScaleY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragScaleY else 1.0f,
+                                        liveDragPivotX = if (isResizingActive && layer.id == activeResizingLayerId) liveDragPivotX else -1f,
+                                        liveDragPivotY = if (isResizingActive && layer.id == activeResizingLayerId) liveDragPivotY else -1f,
                                         viewportWidth = currentViewportWidthState.value,
                                         viewportHeight = currentViewportHeightState.value,
                                         panX = canvasPanX,
@@ -11596,6 +11806,246 @@ fun WorkspaceScreen(modifier: Modifier = Modifier) {
                             },
                             modifier = Modifier
                         )
+                    }
+
+                    // Floating Shape Transform HUD (Quick Dimensions, Symmetric scaling & Aspect Lock)
+                    val isShapeOrVectorLayer = selectedLayer != null && (
+                        selectedLayer.type != LayerType.FREEHAND_DRAWING || selectedLayer.brushPoints.isNotEmpty()
+                    ) && selectedLayer.type != LayerType.GROUP && selectedLayer.type != LayerType.ADJUSTMENT_LAYER
+
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = isShapeOrVectorLayer && selectedLayer != null && !isResizingActive && activeFullScreenSheet == null,
+                        enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.slideInVertically { it / 2 },
+                        exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.slideOutVertically { it / 2 },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = if (workspaceLayoutMode == "Mobile" && isMobileBottomDockVisible) 88.dp else 20.dp)
+                            .zIndex(16f)
+                    ) {
+                        selectedLayer?.let { activeShapeLayer ->
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = DarkOnyx.copy(alpha = 0.94f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, EnergeticYellow.copy(alpha = 0.4f)),
+                                shadowElevation = 8.dp,
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp)
+                                    .testTag("shape_transform_hud")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    // Shape Type Icon & Dimensions Readout
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        modifier = Modifier
+                                            .background(MidSlate.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Category,
+                                            contentDescription = "Shape Icon",
+                                            tint = EnergeticYellow,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = "${activeShapeLayer.width.toInt()} × ${activeShapeLayer.height.toInt()} px",
+                                            style = Typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = TextPrimary
+                                        )
+                                    }
+
+                                    // Proportional lock toggle
+                                    IconButton(
+                                        onClick = {
+                                            undoStack.add(layers)
+                                            redoStack.clear()
+                                            layers = layers.map {
+                                                if (it.id == activeShapeLayer.id) it.copy(isAspectLocked = !it.isAspectLocked) else it
+                                            }
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (activeShapeLayer.isAspectLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                            contentDescription = "Aspect Ratio Lock",
+                                            tint = if (activeShapeLayer.isAspectLocked) IndustrialAmber else TextSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+
+                                    // Symmetrical Center / Anchor Mode Dropdown Badge
+                                    Box {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(Color(0xFF0F766E).copy(alpha = 0.45f))
+                                                .border(0.8.dp, Color(0xFF14B8A6), RoundedCornerShape(6.dp))
+                                                .clickable { showShapeAnchorMenu = true }
+                                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = when (shapeAnchorMode) {
+                                                        "OPPOSITE" -> Icons.Default.CropFree
+                                                        "ORIGIN" -> Icons.Default.VerticalAlignTop
+                                                        else -> Icons.Default.FilterCenterFocus
+                                                    },
+                                                    contentDescription = null,
+                                                    tint = Color(0xFF2DD4BF),
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                                Text(
+                                                    text = when (shapeAnchorMode) {
+                                                        "OPPOSITE" -> "Anchor: Opposite"
+                                                        "ORIGIN" -> "Anchor: Origin"
+                                                        else -> "Anchor: Center"
+                                                    },
+                                                    style = Typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.SemiBold),
+                                                    color = Color(0xFF2DD4BF)
+                                                )
+                                                Icon(
+                                                    imageVector = Icons.Default.ArrowDropDown,
+                                                    contentDescription = "Anchor Mode Menu",
+                                                    tint = Color(0xFF2DD4BF),
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                            }
+                                        }
+
+                                        DropdownMenu(
+                                            expanded = showShapeAnchorMenu,
+                                            onDismissRequest = { showShapeAnchorMenu = false },
+                                            modifier = Modifier
+                                                .background(Color(0xFF1E293B))
+                                                .border(1.dp, Color(0xFF334155), RoundedCornerShape(8.dp))
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Column {
+                                                        Text("Center Symmetrical", style = Typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+                                                        Text("Scale equally outward from shape center", style = Typography.labelSmall, color = TextSecondary)
+                                                    }
+                                                },
+                                                leadingIcon = {
+                                                    Icon(Icons.Default.FilterCenterFocus, contentDescription = null, tint = if (shapeAnchorMode == "CENTER") Color(0xFF2DD4BF) else TextSecondary)
+                                                },
+                                                trailingIcon = if (shapeAnchorMode == "CENTER") {
+                                                    { Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF2DD4BF), modifier = Modifier.size(18.dp)) }
+                                                } else null,
+                                                onClick = {
+                                                    shapeAnchorMode = "CENTER"
+                                                    showShapeAnchorMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Column {
+                                                        Text("Opposite Corner", style = Typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+                                                        Text("Opposite corner stays anchored in place", style = Typography.labelSmall, color = TextSecondary)
+                                                    }
+                                                },
+                                                leadingIcon = {
+                                                    Icon(Icons.Default.CropFree, contentDescription = null, tint = if (shapeAnchorMode == "OPPOSITE") Color(0xFF2DD4BF) else TextSecondary)
+                                                },
+                                                trailingIcon = if (shapeAnchorMode == "OPPOSITE") {
+                                                    { Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF2DD4BF), modifier = Modifier.size(18.dp)) }
+                                                } else null,
+                                                onClick = {
+                                                    shapeAnchorMode = "OPPOSITE"
+                                                    showShapeAnchorMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Column {
+                                                        Text("Fixed Origin (Top-Left)", style = Typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+                                                        Text("Top-left origin remains stationary", style = Typography.labelSmall, color = TextSecondary)
+                                                    }
+                                                },
+                                                leadingIcon = {
+                                                    Icon(Icons.Default.VerticalAlignTop, contentDescription = null, tint = if (shapeAnchorMode == "ORIGIN") Color(0xFF2DD4BF) else TextSecondary)
+                                                },
+                                                trailingIcon = if (shapeAnchorMode == "ORIGIN") {
+                                                    { Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFF2DD4BF), modifier = Modifier.size(18.dp)) }
+                                                } else null,
+                                                onClick = {
+                                                    shapeAnchorMode = "ORIGIN"
+                                                    showShapeAnchorMenu = false
+                                                }
+                                            )
+                                            HorizontalDivider(color = Color.White.copy(alpha = 0.12f), modifier = Modifier.padding(vertical = 4.dp))
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = if (activeShapeLayer.isAspectLocked) "Aspect Ratio: Locked" else "Aspect Ratio: Free",
+                                                        style = Typography.bodyMedium,
+                                                        color = if (activeShapeLayer.isAspectLocked) IndustrialAmber else TextSecondary
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        if (activeShapeLayer.isAspectLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                                        contentDescription = null,
+                                                        tint = if (activeShapeLayer.isAspectLocked) IndustrialAmber else TextSecondary
+                                                    )
+                                                },
+                                                onClick = {
+                                                    layers = layers.map {
+                                                        if (it.id == activeShapeLayer.id) it.copy(isAspectLocked = !it.isAspectLocked) else it
+                                                    }
+                                                    showShapeAnchorMenu = false
+                                                }
+                                            )
+                                        }
+                                    }
+
+                                    // Quick Nudge Buttons (-20, +20)
+                                    val onResizeDelta = { delta: Float ->
+                                        undoStack.add(layers)
+                                        redoStack.clear()
+                                        layers = layers.map { lyr ->
+                                            if (lyr.id == activeShapeLayer.id) {
+                                                val ratio = if (lyr.isAspectLocked && lyr.height > 0f) lyr.width / lyr.height else 1f
+                                                val newW = (lyr.width + delta).coerceIn(20f, 4000f)
+                                                val newH = if (lyr.isAspectLocked) (newW / ratio).coerceIn(20f, 4000f) else (lyr.height + delta).coerceIn(20f, 4000f)
+                                                val newX = lyr.positionX + (lyr.width - newW) / 2f
+                                                val newY = lyr.positionY + (lyr.height - newH) / 2f
+                                                lyr.copy(width = newW, height = newH, positionX = newX, positionY = newY)
+                                            } else lyr
+                                        }
+                                    }
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(SlatePanel)
+                                                .clickable { onResizeDelta(-20f) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("-20", style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(SlatePanel)
+                                                .clickable { onResizeDelta(20f) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("+20", style = Typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = TextPrimary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -14673,6 +15123,7 @@ fun MiniShapePreview(type: LayerType, color: Color = DefaultShapeGrey, modifier:
                 redoStack.clear()
                 layers = listOf(newL) + layers
                 selectedLayerId = newL.id
+                activeTool = "Move"
                 showAddShapeDialog = false
             }
 
@@ -29523,7 +29974,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAllEffectsAndLa
     }
 
     // Sizing frames and anchors drawn locally
-    if (layer.id == selectedLayerId && activeTool != "Pen") {
+    if (layer.id == selectedLayerId && (activeTool != "Pen" || layer.type != com.example.studio.model.LayerType.VECTOR_BEZIER)) {
         drawRect(
             color = IndustrialAmber.copy(0.8f),
             topLeft = androidx.compose.ui.geometry.Offset(-6f, -6f),
@@ -29765,6 +30216,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLayerWithFullPi
     activeTool: String,
     liveDragScaleX: Float,
     liveDragScaleY: Float,
+    liveDragPivotX: Float = -1f,
+    liveDragPivotY: Float = -1f,
     viewportWidth: Float,
     viewportHeight: Float,
     panX: Float,
@@ -29821,6 +30274,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLayerWithFullPi
                 composeBlendMode = composeBlendMode, sharedTransformMatrix = sharedTransformMatrix,
                 backdropBitmap = currentBackdrop, globalX = layer.positionX, globalY = layer.positionY,
                 activeTool = activeTool, allLayers = allLayers, liveDragScaleX = liveDragScaleX, liveDragScaleY = liveDragScaleY,
+                liveDragPivotX = liveDragPivotX, liveDragPivotY = liveDragPivotY,
                 viewportWidth = viewportWidth, viewportHeight = viewportHeight, panX = panX, panY = panY,
                 canvasWidth = canvasWidth, canvasHeight = canvasHeight, pulseAlpha = pulseAlpha, spinAngle = spinAngle,
                 activeBezierPointIndex = activeBezierPointIndex, activeWarpNodeIndex = activeWarpNodeIndex,
@@ -29838,6 +30292,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLayerWithFullPi
                 composeBlendMode = composeBlendMode, sharedTransformMatrix = sharedTransformMatrix,
                 backdropBitmap = currentBackdrop, globalX = layer.positionX, globalY = layer.positionY,
                 activeTool = activeTool, allLayers = allLayers, liveDragScaleX = liveDragScaleX, liveDragScaleY = liveDragScaleY,
+                liveDragPivotX = liveDragPivotX, liveDragPivotY = liveDragPivotY,
                 viewportWidth = viewportWidth, viewportHeight = viewportHeight, panX = panX, panY = panY,
                 canvasWidth = canvasWidth, canvasHeight = canvasHeight, pulseAlpha = pulseAlpha, spinAngle = spinAngle,
                 activeBezierPointIndex = activeBezierPointIndex, activeWarpNodeIndex = activeWarpNodeIndex,
@@ -29856,6 +30311,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLayerWithFullPi
                     composeBlendMode = clipped.blendMode.toComposeBlendMode(), sharedTransformMatrix = sharedTransformMatrix,
                     backdropBitmap = null, globalX = clipped.positionX, globalY = clipped.positionY,
                     activeTool = activeTool, allLayers = allLayers, liveDragScaleX = liveDragScaleX, liveDragScaleY = liveDragScaleY,
+                    liveDragPivotX = liveDragPivotX, liveDragPivotY = liveDragPivotY,
                     viewportWidth = viewportWidth, viewportHeight = viewportHeight, panX = panX, panY = panY,
                     canvasWidth = canvasWidth, canvasHeight = canvasHeight, pulseAlpha = pulseAlpha, spinAngle = spinAngle,
                     activeBezierPointIndex = activeBezierPointIndex, activeWarpNodeIndex = activeWarpNodeIndex,
@@ -29876,6 +30332,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLayerWithFullPi
             composeBlendMode = composeBlendMode, sharedTransformMatrix = sharedTransformMatrix,
             backdropBitmap = currentBackdrop, globalX = layer.positionX, globalY = layer.positionY,
             activeTool = activeTool, allLayers = allLayers, liveDragScaleX = liveDragScaleX, liveDragScaleY = liveDragScaleY,
+            liveDragPivotX = liveDragPivotX, liveDragPivotY = liveDragPivotY,
             viewportWidth = viewportWidth, viewportHeight = viewportHeight, panX = panX, panY = panY,
             canvasWidth = canvasWidth, canvasHeight = canvasHeight, pulseAlpha = pulseAlpha, spinAngle = spinAngle,
             activeBezierPointIndex = activeBezierPointIndex, activeWarpNodeIndex = activeWarpNodeIndex,
@@ -29905,6 +30362,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     allLayers: List<com.example.studio.model.StudioLayer> = emptyList(),
     liveDragScaleX: Float = 1.0f,
     liveDragScaleY: Float = 1.0f,
+    liveDragPivotX: Float = -1f,
+    liveDragPivotY: Float = -1f,
     viewportWidth: Float = 0f,
     viewportHeight: Float = 0f,
     panX: Float = 0f,
@@ -30043,8 +30502,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
                 }
                 tempCanvas.translate(layer.positionX, layer.positionY)
                 if (liveDragScaleX != 1.0f || liveDragScaleY != 1.0f) {
-                    val pivotX = layer.width / 2f
-                    val pivotY = layer.height / 2f
+                    val pivotX = if (liveDragPivotX >= 0f) liveDragPivotX else layer.width / 2f
+                    val pivotY = if (liveDragPivotY >= 0f) liveDragPivotY else layer.height / 2f
                     tempCanvas.translate(pivotX, pivotY)
                     tempCanvas.scale(liveDragScaleX, liveDragScaleY)
                     tempCanvas.translate(-pivotX, -pivotY)
@@ -30137,8 +30596,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
     }
     drawContext.canvas.translate(layer.positionX, layer.positionY)
     if (liveDragScaleX != 1.0f || liveDragScaleY != 1.0f) {
-        val pivotX = layer.width / 2f
-        val pivotY = layer.height / 2f
+        val pivotX = if (liveDragPivotX >= 0f) liveDragPivotX else layer.width / 2f
+        val pivotY = if (liveDragPivotY >= 0f) liveDragPivotY else layer.height / 2f
         drawContext.canvas.translate(pivotX, pivotY)
         drawContext.canvas.scale(liveDragScaleX, liveDragScaleY)
         drawContext.canvas.translate(-pivotX, -pivotY)
@@ -31152,7 +31611,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
             drawContext.canvas.nativeCanvas.restore()
         }
 
-        if (layer.id == selectedLayerId && activeTool != "Pen") {
+        if (layer.id == selectedLayerId) {
             if (activeTool == "Perspective") {
                 val corners = if (layer.perspWarpPointsStr.isEmpty()) {
                     listOf(
@@ -31418,7 +31877,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
                         )
                     }
                 }
-            } else if (activeTool != "Perspective" && activeTool != "Mesh" && activeTool != "Pen") {
+            } else if (activeTool != "Perspective" && activeTool != "Mesh" && (activeTool != "Pen" || layer.type != com.example.studio.model.LayerType.VECTOR_BEZIER)) {
                 drawRect(
                     color = IndustrialAmber.copy(0.8f),
                     topLeft = androidx.compose.ui.geometry.Offset(-6f, -6f),
@@ -31430,44 +31889,71 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSingleConnected
                 )
                 
                 // Draw 8 resize handles on corners and middles of all sides for clear visual feedback
-                val handlesList = listOf(
+                val cornerHandles = listOf(
                     androidx.compose.ui.geometry.Offset(0f, 0f),                         // Top-Left (TL)
                     androidx.compose.ui.geometry.Offset(layer.width, 0f),                // Top-Right (TR)
                     androidx.compose.ui.geometry.Offset(0f, layer.height),               // Bottom-Left (BL)
-                    androidx.compose.ui.geometry.Offset(layer.width, layer.height),      // Bottom-Right (BR)
+                    androidx.compose.ui.geometry.Offset(layer.width, layer.height)       // Bottom-Right (BR)
+                )
+                val sideHandles = listOf(
                     androidx.compose.ui.geometry.Offset(layer.width / 2f, 0f),           // Top-Middle (T)
                     androidx.compose.ui.geometry.Offset(layer.width / 2f, layer.height),  // Bottom-Middle (B)
                     androidx.compose.ui.geometry.Offset(0f, layer.height / 2f),          // Left-Middle (L)
                     androidx.compose.ui.geometry.Offset(layer.width, layer.height / 2f)     // Right-Middle (R)
                 )
                 
-                val handleRadius = 6.5f / totalScale.coerceAtLeast(0.5f)
-                val innerRadius = 3f / totalScale.coerceAtLeast(0.5f)
+                val cornerOuterRadius = 11f / totalScale.coerceAtLeast(0.4f)
+                val cornerInnerRadius = 6.5f / totalScale.coerceAtLeast(0.4f)
+                val sideRadius = 8f / totalScale.coerceAtLeast(0.4f)
+                val sideInnerRadius = 4.5f / totalScale.coerceAtLeast(0.4f)
                 
-                if (!showGradientControls || layer.id != selectedLayerId) {
-                    for (pt in handlesList) {
+                val hasActiveGradOverlay = showGradientControls && layer.effects.any { it is com.example.studio.model.StudioEffect.PhotoshopEffect && it.effectType == "GradientOverlay" }
+                if (!hasActiveGradOverlay || layer.id != selectedLayerId) {
+                    for (pt in sideHandles) {
+                        drawCircle(
+                            color = androidx.compose.ui.graphics.Color(0xFF1E293B),
+                            radius = sideRadius + 2.5f / totalScale.coerceAtLeast(0.4f),
+                            center = pt
+                        )
                         drawCircle(
                             color = EnergeticYellow,
-                            radius = handleRadius,
+                            radius = sideRadius,
                             center = pt
                         )
                         drawCircle(
                             color = androidx.compose.ui.graphics.Color.White,
-                            radius = innerRadius,
+                            radius = sideInnerRadius,
+                            center = pt
+                        )
+                    }
+                    for (pt in cornerHandles) {
+                        drawCircle(
+                            color = androidx.compose.ui.graphics.Color(0xFF0F172A),
+                            radius = cornerOuterRadius + 2.5f / totalScale.coerceAtLeast(0.4f),
+                            center = pt
+                        )
+                        drawCircle(
+                            color = EnergeticYellow,
+                            radius = cornerOuterRadius,
+                            center = pt
+                        )
+                        drawCircle(
+                            color = androidx.compose.ui.graphics.Color.White,
+                            radius = cornerInnerRadius,
+                            center = pt
+                        )
+                        drawCircle(
+                            color = IndustrialAmber,
+                            radius = 2.5f / totalScale.coerceAtLeast(0.4f),
                             center = pt
                         )
                     }
                     
-                    // Keep a larger, distinctive double-ring accent badge on the bottom-right corner as the main corner scale handle
-                    drawCircle(
-                        color = EnergeticYellow,
-                        radius = 10f / totalScale.coerceAtLeast(0.5f),
-                        center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
-                    )
                     drawCircle(
                         color = androidx.compose.ui.graphics.Color(0xFFFF5722),
-                        radius = 5f / totalScale.coerceAtLeast(0.5f),
-                        center = androidx.compose.ui.geometry.Offset(layer.width, layer.height)
+                        radius = 13f / totalScale.coerceAtLeast(0.4f),
+                        center = androidx.compose.ui.geometry.Offset(layer.width, layer.height),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f / totalScale.coerceAtLeast(0.4f))
                     )
                 }
             }
